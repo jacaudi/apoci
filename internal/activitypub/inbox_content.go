@@ -26,13 +26,14 @@ func (h *InboxHandler) processCreate(ctx context.Context, activity *RawActivity)
 	}
 
 	objType, _ := objectMap["type"].(string)
-	switch objType {
-	case "OCIManifest":
+	if objType == "OCIManifest" {
 		return h.ingestManifest(ctx, objectMap, activity.Actor)
-	default:
-		h.logger.Debug("inbox: unhandled Create object type", "type", objType)
-		return nil
 	}
+	if a := h.lookupAdapter(objType); a != nil {
+		return a.Ingest(ctx, "Create", objType, objectMap, activity.Actor)
+	}
+	h.logger.Debug("inbox: unhandled Create object type", "type", objType)
+	return nil
 }
 
 func (h *InboxHandler) processUpdate(ctx context.Context, activity *RawActivity) error {
@@ -54,10 +55,12 @@ func (h *InboxHandler) processUpdate(ctx context.Context, activity *RawActivity)
 			h.actorCache.Invalidate(activity.Actor)
 		}
 		return nil
-	default:
-		h.logger.Debug("inbox: unhandled Update object type", "type", objType)
-		return nil
 	}
+	if a := h.lookupAdapter(objType); a != nil {
+		return a.Ingest(ctx, "Update", objType, objectMap, activity.Actor)
+	}
+	h.logger.Debug("inbox: unhandled Update object type", "type", objType)
+	return nil
 }
 
 func (h *InboxHandler) processAnnounce(ctx context.Context, activity *RawActivity) error {
@@ -71,13 +74,14 @@ func (h *InboxHandler) processAnnounce(ctx context.Context, activity *RawActivit
 	}
 
 	objType, _ := objectMap["type"].(string)
-	switch objType {
-	case "OCIBlob":
+	if objType == "OCIBlob" {
 		return h.ingestBlobRef(ctx, objectMap, activity.Actor)
-	default:
-		h.logger.Debug("inbox: unhandled Announce object type", "type", objType)
-		return nil
 	}
+	if a := h.lookupAdapter(objType); a != nil {
+		return a.Ingest(ctx, "Announce", objType, objectMap, activity.Actor)
+	}
+	h.logger.Debug("inbox: unhandled Announce object type", "type", objType)
+	return nil
 }
 
 func (h *InboxHandler) processDelete(ctx context.Context, activity *RawActivity) error {
@@ -97,10 +101,19 @@ func (h *InboxHandler) processDelete(ctx context.Context, activity *RawActivity)
 		return h.deleteManifest(ctx, objectMap, activity.Actor)
 	case "OCITag":
 		return h.deleteTag(ctx, objectMap, activity.Actor)
-	default:
-		h.logger.Debug("inbox: unhandled Delete object type", "type", objType)
+	}
+	if a := h.lookupAdapter(objType); a != nil {
+		return a.Ingest(ctx, "Delete", objType, objectMap, activity.Actor)
+	}
+	h.logger.Debug("inbox: unhandled Delete object type", "type", objType)
+	return nil
+}
+
+func (h *InboxHandler) lookupAdapter(apType string) FederationAdapter {
+	if h.adapters == nil {
 		return nil
 	}
+	return h.adapters.Lookup(apType)
 }
 
 func (h *InboxHandler) requireRepoOwner(ctx context.Context, repo, actorURL string) (*database.Repository, error) {

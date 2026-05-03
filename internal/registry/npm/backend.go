@@ -9,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"git.erwanleboucher.dev/eleboucher/apoci/internal/activitypub"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/blobstore"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/database"
 )
@@ -19,22 +20,24 @@ const (
 )
 
 type Backend struct {
-	db       *database.DB
-	blobs    blobstore.BlobStore
-	logger   *slog.Logger
-	endpoint string
-	token    string
-	owner    string
-	handler  http.Handler
+	db        *database.DB
+	blobs     blobstore.BlobStore
+	logger    *slog.Logger
+	endpoint  string
+	token     string
+	owner     string
+	publisher activitypub.PackagePublisher
+	handler   http.Handler
 }
 
 type Config struct {
-	DB       *database.DB
-	Blobs    blobstore.BlobStore
-	Endpoint string
-	Token    string
-	Owner    string
-	Logger   *slog.Logger
+	DB        *database.DB
+	Blobs     blobstore.BlobStore
+	Endpoint  string
+	Token     string
+	Owner     string
+	Publisher activitypub.PackagePublisher
+	Logger    *slog.Logger
 }
 
 func New(cfg Config) *Backend {
@@ -42,12 +45,13 @@ func New(cfg Config) *Backend {
 		cfg.Logger = slog.Default()
 	}
 	b := &Backend{
-		db:       cfg.DB,
-		blobs:    cfg.Blobs,
-		logger:   cfg.Logger,
-		endpoint: strings.TrimRight(cfg.Endpoint, "/"),
-		token:    cfg.Token,
-		owner:    cfg.Owner,
+		db:        cfg.DB,
+		blobs:     cfg.Blobs,
+		logger:    cfg.Logger,
+		endpoint:  strings.TrimRight(cfg.Endpoint, "/"),
+		token:     cfg.Token,
+		owner:     cfg.Owner,
+		publisher: cfg.Publisher,
 	}
 	b.handler = b.routes()
 	return b

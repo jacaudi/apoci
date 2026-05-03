@@ -48,8 +48,7 @@ func newTestServer(t *testing.T) *httptest.Server {
 	return srv
 }
 
-// publishBody constructs a valid npm publish payload. tarball bytes need not
-// be a real gzip; only the SHA-512 integrity must match for ParsePackage.
+// tarball bytes don't need to be a real gzip; only the SHA-512 integrity is checked.
 func publishBody(t *testing.T, name, version string, tarball []byte, distTag string) []byte {
 	t.Helper()
 	bare := name
@@ -275,7 +274,7 @@ func TestDistTagPutMissingVersion(t *testing.T) {
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
 }
 
-func TestRePublishOverwritesMetadata(t *testing.T) {
+func TestRePublishConflicts(t *testing.T) {
 	srv := newTestServer(t)
 
 	tarball1 := []byte("v1-tarball")
@@ -288,17 +287,15 @@ func TestRePublishOverwritesMetadata(t *testing.T) {
 	body2 := publishBody(t, "lodash", "1.0.0", tarball2, "latest")
 	resp = doRequest(t, srv, http.MethodPut, "/npm/lodash", body2, true)
 	defer func() { _ = resp.Body.Close() }()
-	require.Equal(t, http.StatusCreated, resp.StatusCode, "republish should succeed")
+	require.Equal(t, http.StatusConflict, resp.StatusCode)
 
 	resp2 := doRequest(t, srv, http.MethodGet, "/npm/lodash/-/lodash-1.0.0.tgz", nil, false)
 	defer func() { _ = resp2.Body.Close() }()
 	got, _ := io.ReadAll(resp2.Body)
-	assert.Equal(t, tarball2, got, "tarball reflects most recent publish")
+	assert.Equal(t, tarball1, got, "first publish remains, immutable")
 }
 
 func TestUnconfiguredOwnerRejected(t *testing.T) {
-	// Confirm the GetOrCreatePackage owner check fires when a publish
-	// arrives for an existing package owned by someone else.
 	db, err := database.OpenSQLite(t.TempDir(), 0, 0, nopLog())
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })

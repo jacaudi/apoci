@@ -51,6 +51,12 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("GET /ap/followers", s.followersHandler)
 	mux.Handle("GET /ap/following", s.followingHandler)
 
+	for _, b := range s.packageBackends.Backends() {
+		prefix := b.RoutePrefix()
+		mux.Handle(prefix+"/", b.Handler())
+		mux.Handle(prefix, b.Handler())
+	}
+
 	mux.Handle("/api/admin/", http.StripPrefix("/api/admin", s.adminRouter()))
 
 	var handler http.Handler = mux

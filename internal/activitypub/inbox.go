@@ -72,6 +72,7 @@ type InboxHandler struct {
 	enqueue        EnqueueFunc
 	worker         ActivityEnqueuer
 	notifier       Notifier
+	adapters       *AdapterRegistry
 
 	maxManifestSize int64
 	maxBlobSize     int64
@@ -179,6 +180,10 @@ func (h *InboxHandler) SetWorker(w ActivityEnqueuer) {
 
 func (h *InboxHandler) SetNotifier(n Notifier) {
 	h.notifier = n
+}
+
+func (h *InboxHandler) SetAdapters(r *AdapterRegistry) {
+	h.adapters = r
 }
 
 // SetNamespaceForActor pre-populates the namespace cache for a given actor,

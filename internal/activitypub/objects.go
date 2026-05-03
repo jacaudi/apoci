@@ -70,6 +70,6 @@ func ociContext() []string {
 	return []string{ContextActivityStreams, ContextSecurity, ContextOCI}
 }
 
-func nowRFC3339() string {
+func NowRFC3339() string {
 	return time.Now().UTC().Format(time.RFC3339)
 }

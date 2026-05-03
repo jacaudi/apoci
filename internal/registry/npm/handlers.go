@@ -31,15 +31,13 @@ const (
 	versionMediaType = "application/json"
 )
 
-// publishPayload mirrors Gitea's unexported packageUpload so we can pull the
-// per-version metadata that ParsePackage drops.
+// gtnpm.ParsePackage drops per-version metadata; re-decode to capture it.
 type publishPayload struct {
 	gtnpm.PackageMetadata
 	Attachments map[string]*gtnpm.PackageAttachment `json:"_attachments"`
 }
 
-// storedVersion holds what we persist per version. Integrity and Shasum are
-// captured at publish so packument reads don't rehash the tarball.
+// Captured at publish so packument reads don't rehash the tarball.
 type storedVersion struct {
 	Meta      *gtnpm.PackageMetadataVersion `json:"meta"`
 	Integrity string                        `json:"integrity"`
@@ -96,7 +94,20 @@ func (b *Backend) handlePublish(w http.ResponseWriter, r *http.Request) {
 
 	dbPkg, err := b.db.GetOrCreatePackage(ctx, packageType, pkg.Name, b.owner)
 	if err != nil {
-		writeError(w, http.StatusForbidden, err.Error())
+		if errors.Is(err, database.ErrPackageOwnerMismatch) {
+			writeError(w, http.StatusForbidden, "package is owned by another actor")
+			return
+		}
+		b.logger.Error("npm publish: get-or-create package failed", "err", err, "name", pkg.Name)
+		writeError(w, http.StatusInternalServerError, "package access")
+		return
+	}
+
+	if existing, err := b.db.GetPackageVersion(ctx, dbPkg.ID, pkg.Version); err != nil {
+		writeError(w, http.StatusInternalServerError, "lookup version")
+		return
+	} else if existing != nil {
+		writeError(w, http.StatusConflict, "version "+pkg.Version+" already exists")
 		return
 	}
 
@@ -145,6 +156,11 @@ func (b *Backend) handlePublish(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusInternalServerError, "put dist-tag")
 			return
 		}
+	}
+
+	b.publishVersion(ctx, pkg.Name, v, file, stored.Integrity, stored.Shasum, versionMeta)
+	for _, tag := range pkg.DistTags {
+		b.publishTagSet(ctx, pkg.Name, tag, pkg.Version)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -273,9 +289,6 @@ func (b *Backend) handleTarball(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// findTarball derives the version from the filename ("foo-1.2.3.tgz" →
-// "1.2.3") and looks up the file row directly, avoiding a scan of every
-// version of the package.
 func (b *Backend) findTarball(ctx context.Context, pkg *database.Package, filename string) (*database.PackageFile, error) {
 	version := versionFromTarballFilename(pkg.Name, filename)
 	if version == "" {
@@ -374,6 +387,7 @@ func (b *Backend) handleDistTagPut(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "put tag")
 		return
 	}
+	b.publishTagSet(ctx, name, tag, version)
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(`{"ok":true}`))
 }
@@ -400,6 +414,7 @@ func (b *Backend) handleDistTagDelete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "delete tag")
 		return
 	}
+	b.publishTagDelete(ctx, name, tag)
 	w.Header().Set("Content-Type", "application/json")
 	_, _ = w.Write([]byte(`{"ok":true}`))
 }

@@ -4,7 +4,7 @@
 
 You self-host Forgejo, your container registry, and everything else on one homelab. If that homelab dies, how will you rebootstrap it. apoci solves this: federate your registry over ActivityPub so a handful of friends mirror your artifacts. When your server goes down, your peers still serve your images and you can bootstrap from any of them.
 
-Each node is a single-user registry and an AP actor (`@registry@foo.com`). Push an artifact and it federates to your followers.
+Each node is a single-user multi-format registry and an AP actor (`@registry@foo.com`). Push an artifact (OCI image, npm package, Cargo crate, Python wheel) and it federates to your followers.
 
 ```
   foo.com               bar.com              baz.com
@@ -70,6 +70,39 @@ docker push foo.com/foo.com/myapp:v1
 
 > **Note:** Docker refuses plaintext registries by default. If you're not behind a TLS-terminating reverse proxy yet, add `"insecure-registries": ["foo.com:5000"]` to your Docker daemon config (`/etc/docker/daemon.json`), or set up TLS / a reverse proxy first (see [Deploy](#deploy)).
 
+## Package backends
+
+apoci speaks four package-manager protocols out of the box. The same node, the same auth token, the same federation channel for all of them.
+
+| Backend | Route | Client config |
+|---------|-------|---------------|
+| OCI | `/v2/` | `docker login foo.com -u registry -p $TOKEN` |
+| npm | `/npm/` | `npm config set //foo.com/npm/:_authToken $TOKEN`, `registry=https://foo.com/npm/` |
+| Cargo | `/cargo/` | `~/.cargo/config.toml`: `[registries.apoci] index = "sparse+https://foo.com/cargo/"`, then `cargo login --registry apoci $TOKEN` |
+| PyPI | `/pypi/` | `~/.pypirc`: `[apoci] repository = https://foo.com/pypi/`, then `twine upload --repository apoci dist/*` |
+
+All four use the single `RegistryToken` from `apoci.yaml`. Federation is automatic and on by default for every backend.
+
+### Quick examples
+
+**npm**
+```bash
+npm publish --registry https://foo.com/npm/
+npm install @scope/myapp --registry https://foo.com/npm/
+```
+
+**Cargo**
+```bash
+cargo publish --registry apoci
+cargo add my-crate --registry apoci
+```
+
+**PyPI**
+```bash
+twine upload --repository apoci dist/*
+pip install --index-url https://foo.com/pypi/simple/ my-package
+```
+
 ## Addressing
 
 Repos are namespaced by domain, same idea as `@user@domain` in the fediverse. This prevents collisions when federating -- two operators on different domains can never clash.
@@ -120,15 +153,38 @@ By default, every follow requires operator approval. Set `federation.autoAccept:
 
 ### What gets federated
 
-When you push a manifest, three AP activities fire immediately on push:
+Every backend emits its own AP activities on write. Peers ingest them through a per-type adapter (see [`docs/federation.md`](docs/federation.md) for the contract).
+
+**OCI**
 
 | Push event | Activity | Effect on peer |
 |-----------|----------|----------------|
-| Manifest pushed | `Create` `OCIManifest` | Peer stores manifest metadata + content |
-| Tag created/updated | `Update` `OCITag` | Peer maps tag to digest |
-| Blob uploaded | `Announce` `OCIBlob` | Peer records blob location for pull-through |
+| Manifest pushed | `Create OCIManifest` | Peer stores manifest metadata + content |
+| Tag created/updated | `Update OCITag` | Peer maps tag to digest |
+| Blob uploaded | `Announce OCIBlob` | Peer records blob location for pull-through |
 
-Peers eagerly replicate blobs in the background. If the origin goes down, peers already have the data.
+**npm**
+
+| Push event | Activity | Effect on peer |
+|-----------|----------|----------------|
+| `npm publish` | `Create NpmVersion` | Peer stores per-version metadata + tarball reference |
+| dist-tag set | `Update NpmTag` | Peer maps tag to version |
+| dist-tag delete | `Delete NpmTag` | Peer removes tag |
+
+**Cargo**
+
+| Push event | Activity | Effect on peer |
+|-----------|----------|----------------|
+| `cargo publish` | `Create CargoVersion` | Peer stores crate metadata + .crate reference |
+| `cargo yank` / `cargo unyank` | `Update CargoYank` | Peer toggles the yanked flag |
+
+**PyPI**
+
+| Push event | Activity | Effect on peer |
+|-----------|----------|----------------|
+| `twine upload` (per file) | `Create PypiFile` | Peer stores file metadata; serves via the simple index |
+
+For OCI, peers eagerly replicate blob bytes in the background. For the other backends, file bytes are fetched lazily from the origin endpoint when first requested. If the origin goes down before a peer has fetched, that file becomes unavailable.
 
 ### Delivery
 

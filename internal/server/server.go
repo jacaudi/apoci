@@ -21,6 +21,10 @@ import (
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/notify"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/oci"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/peering"
+	pkgreg "git.erwanleboucher.dev/eleboucher/apoci/internal/registry"
+	"git.erwanleboucher.dev/eleboucher/apoci/internal/registry/cargo"
+	"git.erwanleboucher.dev/eleboucher/apoci/internal/registry/npm"
+	"git.erwanleboucher.dev/eleboucher/apoci/internal/registry/pypi"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/upstream"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/validate"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/workers"
@@ -45,6 +49,7 @@ type Server struct {
 	inboxLimiter        *ipRateLimiter
 	registryPushLimiter *ipRateLimiter
 	httpServer          *http.Server
+	packageBackends     *pkgreg.Manager
 	uiTemplates         *template.Template
 	logger              *slog.Logger
 }
@@ -135,6 +140,77 @@ func New(cfg *config.Config, db *database.DB, blobs blobstore.BlobStore, identit
 	inboxHandler.SetActorCache(apPublisher.ActorCache())
 	inboxHandler.SetNotifier(notifier)
 
+	packageBackends := pkgreg.NewManager()
+	adapters := activitypub.NewAdapterRegistry()
+
+	if cfg.Backends.NPM.IsEnabled() {
+		bcfg := cfg.Backends.NPM
+		var pub activitypub.PackagePublisher
+		if bcfg.IsFederated() {
+			pub = apPublisher
+		}
+		b := npm.New(npm.Config{
+			DB: db, Blobs: blobs, Endpoint: cfg.Endpoint,
+			Token:     bcfg.TokenOr(cfg.RegistryToken),
+			Owner:     identity.ActorURL,
+			Publisher: pub, Logger: logger,
+		})
+		if err := packageBackends.Register(b); err != nil {
+			return nil, fmt.Errorf("registering npm backend: %w", err)
+		}
+		if bcfg.IsFederated() {
+			if err := adapters.Register(b.FederationAdapter()); err != nil {
+				return nil, fmt.Errorf("registering npm adapter: %w", err)
+			}
+		}
+	}
+
+	if cfg.Backends.Cargo.IsEnabled() {
+		bcfg := cfg.Backends.Cargo
+		var pub activitypub.PackagePublisher
+		if bcfg.IsFederated() {
+			pub = apPublisher
+		}
+		b := cargo.New(cargo.Config{
+			DB: db, Blobs: blobs, Endpoint: cfg.Endpoint,
+			Token:     bcfg.TokenOr(cfg.RegistryToken),
+			Owner:     identity.ActorURL,
+			Publisher: pub, Logger: logger,
+		})
+		if err := packageBackends.Register(b); err != nil {
+			return nil, fmt.Errorf("registering cargo backend: %w", err)
+		}
+		if bcfg.IsFederated() {
+			if err := adapters.Register(b.FederationAdapter()); err != nil {
+				return nil, fmt.Errorf("registering cargo adapter: %w", err)
+			}
+		}
+	}
+
+	if cfg.Backends.PyPI.IsEnabled() {
+		bcfg := cfg.Backends.PyPI
+		var pub activitypub.PackagePublisher
+		if bcfg.IsFederated() {
+			pub = apPublisher
+		}
+		b := pypi.New(pypi.Config{
+			DB: db, Blobs: blobs, Endpoint: cfg.Endpoint,
+			Token:     bcfg.TokenOr(cfg.RegistryToken),
+			Owner:     identity.ActorURL,
+			Publisher: pub, Logger: logger,
+		})
+		if err := packageBackends.Register(b); err != nil {
+			return nil, fmt.Errorf("registering pypi backend: %w", err)
+		}
+		if bcfg.IsFederated() {
+			if err := adapters.Register(b.FederationAdapter()); err != nil {
+				return nil, fmt.Errorf("registering pypi adapter: %w", err)
+			}
+		}
+	}
+
+	inboxHandler.SetAdapters(adapters)
+
 	inboxWorker := activitypub.NewInboxWorker(inboxHandler, logger)
 	inboxHandler.SetWorker(inboxWorker)
 
@@ -196,6 +272,7 @@ func New(cfg *config.Config, db *database.DB, blobs blobstore.BlobStore, identit
 			Logger:   logger,
 		},
 		registry:            registry,
+		packageBackends:     packageBackends,
 		workers:             w,
 		ociHandler:          registry.Handler(),
 		actorHandler:        activitypub.NewActorHandler(identity, cfg.Name, cfg.Endpoint),

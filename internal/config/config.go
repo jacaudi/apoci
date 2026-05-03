@@ -44,6 +44,7 @@ type Config struct {
 	Notifications Notifications `yaml:"notifications" envPrefix:"APOCI_NOTIFICATIONS_"`
 	Upstreams     Upstreams     `yaml:"upstreams"     envPrefix:"APOCI_UPSTREAMS_"`
 	UI            UI            `yaml:"ui"            envPrefix:"APOCI_UI_"`
+	Backends      Backends      `yaml:"backends"      envPrefix:"APOCI_BACKENDS_"`
 
 	Domain string `yaml:"-" env:"-"`
 }
@@ -168,6 +169,36 @@ type UI struct {
 	Enabled bool `yaml:"enabled" env:"ENABLED"`
 }
 
+// Backends configures the per-package-format registries (OCI is wired
+// separately and always-on). Each block defaults to enabled with federation on.
+type Backends struct {
+	NPM   BackendConfig `yaml:"npm"   envPrefix:"NPM_"`
+	Cargo BackendConfig `yaml:"cargo" envPrefix:"CARGO_"`
+	PyPI  BackendConfig `yaml:"pypi"  envPrefix:"PYPI_"`
+}
+
+type BackendConfig struct {
+	Enabled  *bool  `yaml:"enabled"  env:"ENABLED"`  // default true
+	Federate *bool  `yaml:"federate" env:"FEDERATE"` // default true; false = no outbound publish, no adapter registration
+	Token    string `yaml:"token"    env:"TOKEN"`    // optional override; falls back to the global RegistryToken
+}
+
+func (b BackendConfig) IsEnabled() bool {
+	return b.Enabled == nil || *b.Enabled
+}
+
+func (b BackendConfig) IsFederated() bool {
+	return b.Federate == nil || *b.Federate
+}
+
+// TokenOr returns the per-backend Token, or fallback when unset.
+func (b BackendConfig) TokenOr(fallback string) string {
+	if b.Token != "" {
+		return b.Token
+	}
+	return fallback
+}
+
 func Load(path string) (*Config, error) {
 	cfg := &Config{}
 
@@ -219,6 +250,7 @@ func applyDefaults(cfg *Config) error {
 	applyGCDefaults(cfg)
 	applyUpstreamDefaults(cfg)
 	applyFederationDefaults(cfg)
+	applyBackendsDefaults(cfg)
 	return applyTokenDefaults(cfg)
 }
 
@@ -288,6 +320,19 @@ func applyFederationDefaults(cfg *Config) {
 	}
 	if cfg.Federation.OutgoingFollowRejectedTTL == 0 {
 		cfg.Federation.OutgoingFollowRejectedTTL = 24 * time.Hour // 24 hours
+	}
+}
+
+func applyBackendsDefaults(cfg *Config) {
+	for _, b := range []*BackendConfig{&cfg.Backends.NPM, &cfg.Backends.Cargo, &cfg.Backends.PyPI} {
+		if b.Enabled == nil {
+			t := true
+			b.Enabled = &t
+		}
+		if b.Federate == nil {
+			t := true
+			b.Federate = &t
+		}
 	}
 }
 

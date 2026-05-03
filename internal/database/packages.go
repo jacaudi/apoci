@@ -11,7 +11,10 @@ import (
 	"github.com/uptrace/bun/dialect/pgdialect"
 )
 
-var ErrTagImmutable = errors.New("tag is immutable and cannot be overwritten")
+var (
+	ErrTagImmutable         = errors.New("tag is immutable and cannot be overwritten")
+	ErrPackageOwnerMismatch = errors.New("package is owned by another actor")
+)
 
 const ociPackageType = "oci"
 
@@ -59,7 +62,7 @@ func (db *DB) GetOrCreatePackage(ctx context.Context, pkgType, name, ownerID str
 	}
 	if err == nil {
 		if existing.OwnerID != ownerID {
-			return nil, fmt.Errorf("package %s/%s owned by %s, not %s", pkgType, name, existing.OwnerID, ownerID)
+			return nil, fmt.Errorf("%w: %s/%s owned by %s, not %s", ErrPackageOwnerMismatch, pkgType, name, existing.OwnerID, ownerID)
 		}
 		return &existing, nil
 	}
@@ -79,7 +82,7 @@ func (db *DB) GetOrCreatePackage(ctx context.Context, pkgType, name, ownerID str
 		return nil, fmt.Errorf("reading package after create: %w", err)
 	}
 	if pkg.OwnerID != ownerID {
-		return nil, fmt.Errorf("package %s/%s owned by %s, not %s", pkgType, name, pkg.OwnerID, ownerID)
+		return nil, fmt.Errorf("%w: %s/%s owned by %s, not %s", ErrPackageOwnerMismatch, pkgType, name, pkg.OwnerID, ownerID)
 	}
 
 	if err := tx.Commit(); err != nil {

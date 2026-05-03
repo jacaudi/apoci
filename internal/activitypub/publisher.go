@@ -58,7 +58,7 @@ func (p *APPublisher) PublishManifest(ctx context.Context, repo, tag, digest, me
 		Type:         "OCIManifest",
 		ID:           objectID,
 		AttributedTo: p.identity.ActorURL,
-		Published:    nowRFC3339(),
+		Published:    NowRFC3339(),
 		Repository:   repo,
 		Digest:       digest,
 		MediaType:    mediaType,
@@ -81,13 +81,17 @@ func (p *APPublisher) PublishTag(ctx context.Context, repo, tag, digest string) 
 		Type:         "OCITag",
 		ID:           objectID,
 		AttributedTo: p.identity.ActorURL,
-		Published:    nowRFC3339(),
+		Published:    NowRFC3339(),
 		Repository:   repo,
 		Tag:          tag,
 		Digest:       digest,
 	}
 
 	return p.createAndDeliver(ctx, "Update", object)
+}
+
+func (p *APPublisher) Publish(ctx context.Context, activityType string, object any) error {
+	return p.createAndDeliver(ctx, activityType, object)
 }
 
 func (p *APPublisher) PublishBlobRef(ctx context.Context, digest string, size int64) error {
@@ -98,7 +102,7 @@ func (p *APPublisher) PublishBlobRef(ctx context.Context, digest string, size in
 		Type:         "OCIBlob",
 		ID:           objectID,
 		AttributedTo: p.identity.ActorURL,
-		Published:    nowRFC3339(),
+		Published:    NowRFC3339(),
 		Digest:       digest,
 		Size:         size,
 		Endpoint:     p.endpoint,

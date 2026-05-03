@@ -94,6 +94,54 @@ func TestFileNotFound(t *testing.T) {
 	require.Error(t, err, "expected error for missing file")
 }
 
+func TestBackendsDefaults(t *testing.T) {
+	dir := t.TempDir()
+	path := writeConfig(t, fmt.Sprintf(`
+endpoint: "https://test.example.com"
+dataDir: %q
+`, dir))
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	for _, name := range []string{"npm", "cargo", "pypi"} {
+		var b BackendConfig
+		switch name {
+		case "npm":
+			b = cfg.Backends.NPM
+		case "cargo":
+			b = cfg.Backends.Cargo
+		case "pypi":
+			b = cfg.Backends.PyPI
+		}
+		require.True(t, b.IsEnabled(), "%s default-enabled", name)
+		require.True(t, b.IsFederated(), "%s default-federated", name)
+		require.Equal(t, "the-fallback", b.TokenOr("the-fallback"), "%s token falls back", name)
+	}
+}
+
+func TestBackendsToggles(t *testing.T) {
+	dir := t.TempDir()
+	path := writeConfig(t, fmt.Sprintf(`
+endpoint: "https://test.example.com"
+dataDir: %q
+backends:
+  npm:
+    enabled: false
+  cargo:
+    federate: false
+    token: cargo-only
+`, dir))
+	cfg, err := Load(path)
+	require.NoError(t, err)
+
+	require.False(t, cfg.Backends.NPM.IsEnabled())
+	require.True(t, cfg.Backends.Cargo.IsEnabled())
+	require.False(t, cfg.Backends.Cargo.IsFederated())
+	require.Equal(t, "cargo-only", cfg.Backends.Cargo.TokenOr("global"))
+	require.Equal(t, "global", cfg.Backends.NPM.TokenOr("global"))
+	require.True(t, cfg.Backends.PyPI.IsEnabled(), "unspecified backend stays default-enabled")
+}
+
 func TestLimitsDefaults(t *testing.T) {
 	dir := t.TempDir()
 	path := writeConfig(t, fmt.Sprintf(`
