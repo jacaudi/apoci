@@ -22,6 +22,152 @@ func testDB(t *testing.T) *DB {
 	return db
 }
 
+func TestMigrateV6FromV5Data(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+
+	// Re-bootstrap the pre-v6 schema on top of an already-migrated DB and
+	// re-run v6. Idempotent because v6 uses IF NOT EXISTS / WHERE NOT EXISTS / IF EXISTS.
+	require.NoError(t, db.migrateV1(ctx))
+	require.NoError(t, db.migrateV3(ctx))
+	require.NoError(t, db.migrateV4(ctx))
+
+	_, err := db.bun.ExecContext(ctx,
+		`INSERT INTO repositories (name, owner_id, private) VALUES ('foo.com/legacy', 'https://alice.example.com/ap/actor', false)`)
+	require.NoError(t, err)
+	var repoID int64
+	require.NoError(t, db.bun.NewRaw("SELECT id FROM repositories WHERE name = ?", "foo.com/legacy").Scan(ctx, &repoID))
+
+	_, err = db.bun.ExecContext(ctx,
+		`INSERT INTO manifests (repository_id, digest, media_type, size_bytes, content)
+		 VALUES (?, 'sha256:legacy', 'application/vnd.oci.image.manifest.v1+json', 200, ?)`,
+		repoID, []byte(`{"schemaVersion":2}`))
+	require.NoError(t, err)
+	var manifestID int64
+	require.NoError(t, db.bun.NewRaw("SELECT id FROM manifests WHERE digest = ?", "sha256:legacy").Scan(ctx, &manifestID))
+
+	require.NoError(t, db.PutBlob(ctx, "sha256:legacylayer", 4096, nil, true))
+	_, err = db.bun.ExecContext(ctx,
+		`INSERT INTO manifest_layers (manifest_id, blob_digest) VALUES (?, ?)`,
+		manifestID, "sha256:legacylayer")
+	require.NoError(t, err)
+
+	_, err = db.bun.ExecContext(ctx,
+		`INSERT INTO tags (repository_id, name, manifest_digest, immutable) VALUES (?, ?, ?, ?)`,
+		repoID, "v1.0", "sha256:legacy", true)
+	require.NoError(t, err)
+
+	_, err = db.bun.ExecContext(ctx,
+		`INSERT INTO deleted_manifests (digest, repo_name, source_actor) VALUES (?, ?, ?)`,
+		"sha256:tombstoned", "foo.com/legacy", "https://alice.example.com/ap/actor")
+	require.NoError(t, err)
+
+	require.NoError(t, db.migrateV6(ctx))
+
+	require.False(t, db.tableExists(ctx, "repositories"))
+	require.False(t, db.tableExists(ctx, "manifests"))
+	require.False(t, db.tableExists(ctx, "tags"))
+	require.False(t, db.tableExists(ctx, "manifest_layers"))
+	require.False(t, db.tableExists(ctx, "deleted_manifests"))
+	require.False(t, db.tableExists(ctx, "repository_owners"))
+
+	got, err := db.GetRepository(ctx, "foo.com/legacy")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.Equal(t, repoID, got.ID)
+
+	manifest, err := db.GetManifestByDigest(ctx, repoID, "sha256:legacy")
+	require.NoError(t, err)
+	require.NotNil(t, manifest)
+	require.Equal(t, manifestID, manifest.ID)
+	require.Equal(t, "application/vnd.oci.image.manifest.v1+json", manifest.MediaType)
+	require.Equal(t, []byte(`{"schemaVersion":2}`), manifest.Content)
+
+	files, err := db.ListPackageFiles(ctx, manifestID)
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+	require.Equal(t, "sha256:legacylayer", files[0].BlobDigest)
+	require.Equal(t, int64(4096), files[0].SizeBytes)
+
+	tag, err := db.GetTag(ctx, repoID, "v1.0")
+	require.NoError(t, err)
+	require.NotNil(t, tag)
+	require.Equal(t, "sha256:legacy", tag.ManifestDigest)
+	require.True(t, tag.Immutable)
+
+	deleted, err := db.IsManifestDeleted(ctx, "sha256:tombstoned")
+	require.NoError(t, err)
+	require.True(t, deleted)
+}
+
+func TestMigrateV6PartialReRun(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+
+	require.NoError(t, db.migrateV1(ctx))
+	require.NoError(t, db.migrateV3(ctx))
+	require.NoError(t, db.migrateV4(ctx))
+
+	_, err := db.bun.ExecContext(ctx,
+		`INSERT INTO repositories (id, name, owner_id, private) VALUES (42, 'foo.com/already', 'https://alice.example.com/ap/actor', false)`)
+	require.NoError(t, err)
+	_, err = db.bun.ExecContext(ctx,
+		`INSERT INTO manifests (id, repository_id, digest, media_type, size_bytes, content)
+		 VALUES (7, 42, 'sha256:already', 'application/vnd.oci.image.manifest.v1+json', 1, ?)`,
+		[]byte(`{}`))
+	require.NoError(t, err)
+	_, err = db.bun.ExecContext(ctx,
+		`INSERT INTO tags (id, repository_id, name, manifest_digest, immutable) VALUES (3, 42, 'latest', 'sha256:already', false)`)
+	require.NoError(t, err)
+
+	// Pre-seed new tables with a different id but matching natural key.
+	_, err = db.bun.ExecContext(ctx,
+		`INSERT INTO packages (id, type, name, owner_id, private) VALUES (999, 'oci', 'foo.com/already', 'https://alice.example.com/ap/actor', false)`)
+	require.NoError(t, err)
+	_, err = db.bun.ExecContext(ctx,
+		`INSERT INTO package_versions (id, package_id, version, metadata, media_type, size_bytes) VALUES (998, 999, 'sha256:already', ?, 'application/vnd.oci.image.manifest.v1+json', 1)`,
+		[]byte(`{}`))
+	require.NoError(t, err)
+	_, err = db.bun.ExecContext(ctx,
+		`INSERT INTO package_tags (id, package_id, name, version, immutable) VALUES (997, 999, 'latest', 'sha256:already', false)`)
+	require.NoError(t, err)
+
+	require.NoError(t, db.migrateV6(ctx))
+
+	pkg, err := db.GetPackage(ctx, "oci", "foo.com/already")
+	require.NoError(t, err)
+	require.NotNil(t, pkg)
+	require.Equal(t, int64(999), pkg.ID)
+}
+
+func TestMigrateV6OrphanLayer(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+
+	require.NoError(t, db.migrateV1(ctx))
+	require.NoError(t, db.migrateV3(ctx))
+	require.NoError(t, db.migrateV4(ctx))
+
+	_, err := db.bun.ExecContext(ctx,
+		`INSERT INTO repositories (id, name, owner_id, private) VALUES (1, 'foo.com/orphan', 'https://alice.example.com/ap/actor', false)`)
+	require.NoError(t, err)
+	_, err = db.bun.ExecContext(ctx,
+		`INSERT INTO manifests (id, repository_id, digest, media_type, size_bytes, content) VALUES (1, 1, 'sha256:m', 'application/vnd.oci.image.manifest.v1+json', 1, ?)`,
+		[]byte(`{}`))
+	require.NoError(t, err)
+	_, err = db.bun.ExecContext(ctx,
+		`INSERT INTO manifest_layers (manifest_id, blob_digest) VALUES (1, 'sha256:vanished')`)
+	require.NoError(t, err)
+
+	require.NoError(t, db.migrateV6(ctx))
+
+	files, err := db.ListPackageFiles(ctx, 1)
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+	require.Equal(t, "sha256:vanished", files[0].BlobDigest)
+	require.Equal(t, int64(0), files[0].SizeBytes)
+}
+
 func TestRepositoryCRUD(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()
@@ -280,23 +426,18 @@ func TestManifestLayers(t *testing.T) {
 		Content:      []byte(`{}`),
 	}
 	require.NoError(t, db.PutManifest(ctx, m))
-
 	got, _ := db.GetManifestByDigest(ctx, repo.ID, "sha256:manifest-with-layers")
+
+	require.NoError(t, db.PutBlob(ctx, "sha256:layer1", 100, nil, true))
+	require.NoError(t, db.PutBlob(ctx, "sha256:layer2", 200, nil, true))
 	require.NoError(t, db.PutManifestLayers(ctx, got.ID, []string{"sha256:layer1", "sha256:layer2"}))
 
-	// Verify via direct query
-	rows, err := db.QueryContext(ctx,
-		"SELECT blob_digest FROM manifest_layers WHERE manifest_id = ? ORDER BY blob_digest", got.ID)
+	files, err := db.ListPackageFiles(ctx, got.ID)
 	require.NoError(t, err)
-	defer func() { _ = rows.Close() }()
-
-	var digests []string
-	for rows.Next() {
-		var d string
-		require.NoError(t, rows.Scan(&d))
-		digests = append(digests, d)
-	}
-	require.Len(t, digests, 2)
+	require.Len(t, files, 2)
+	digests := []string{files[0].BlobDigest, files[1].BlobDigest}
+	require.Contains(t, digests, "sha256:layer1")
+	require.Contains(t, digests, "sha256:layer2")
 }
 
 func TestFollowsCRUD(t *testing.T) {

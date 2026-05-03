@@ -34,15 +34,14 @@ func (db *DB) PutBlob(ctx context.Context, digest string, sizeBytes int64, media
 	return nil
 }
 
-// BlobExistsInRepo checks whether a blob is referenced by any manifest in the given repository.
 func (db *DB) BlobExistsInRepo(ctx context.Context, repoName string, digest string) (bool, error) {
 	var exists bool
 	err := db.bun.NewRaw(
 		`SELECT EXISTS(
-			SELECT 1 FROM manifest_layers ml
-			JOIN manifests m ON m.id = ml.manifest_id
-			JOIN repositories r ON r.id = m.repository_id
-			WHERE r.name = ? AND ml.blob_digest = ?
+			SELECT 1 FROM package_files pf
+			JOIN package_versions pv ON pv.id = pf.version_id
+			JOIN packages p ON p.id = pv.package_id
+			WHERE p.type = 'oci' AND p.name = ? AND pf.blob_digest = ?
 		)`, repoName, digest).Scan(ctx, &exists)
 	if err != nil {
 		return false, fmt.Errorf("checking blob in repo: %w", err)
@@ -50,14 +49,13 @@ func (db *DB) BlobExistsInRepo(ctx context.Context, repoName string, digest stri
 	return exists, nil
 }
 
-// FindRepoForBlob returns the name of a repository that references this blob via manifest layers.
 func (db *DB) FindRepoForBlob(ctx context.Context, digest string) (string, error) {
 	var name string
 	err := db.bun.NewRaw(
-		`SELECT r.name FROM repositories r
-		 JOIN manifests m ON m.repository_id = r.id
-		 JOIN manifest_layers ml ON ml.manifest_id = m.id
-		 WHERE ml.blob_digest = ?
+		`SELECT p.name FROM packages p
+		 JOIN package_versions pv ON pv.package_id = p.id
+		 JOIN package_files pf ON pf.version_id = pv.id
+		 WHERE p.type = 'oci' AND pf.blob_digest = ?
 		 LIMIT 1`, digest).Scan(ctx, &name)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -76,14 +74,14 @@ func (db *DB) DeleteBlob(ctx context.Context, digest string) error {
 	return nil
 }
 
-// OrphanedBlobs returns blob digests that are not stored locally, not referenced by
-// any manifest layer, and have no peer blob references.
+// OrphanedBlobs returns digests of blobs that aren't stored locally, aren't
+// referenced by any package file, and have no peer references.
 func (db *DB) OrphanedBlobs(ctx context.Context, limit int) ([]string, error) {
 	var digests []string
 	err := db.bun.NewRaw(
 		`SELECT b.digest FROM blobs b
 		 WHERE b.stored_locally = false
-		   AND NOT EXISTS (SELECT 1 FROM manifest_layers ml WHERE ml.blob_digest = b.digest)
+		   AND NOT EXISTS (SELECT 1 FROM package_files pf WHERE pf.blob_digest = b.digest)
 		   AND NOT EXISTS (SELECT 1 FROM peer_blobs pb WHERE pb.blob_digest = b.digest)
 		 LIMIT ?`, limit).Scan(ctx, &digests)
 	if err != nil {

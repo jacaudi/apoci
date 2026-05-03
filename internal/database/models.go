@@ -13,40 +13,109 @@ const (
 	FollowStatusRejected = "rejected"
 )
 
-type Repository struct {
-	bun.BaseModel `bun:"table:repositories"`
+// Package: (Type, Name) is unique. Name format is backend-specific
+// ("foo.com/myapp" for OCI, "@scope/foo" for npm, "com.example:lib" for Maven).
+type Package struct {
+	bun.BaseModel `bun:"table:packages"`
 
 	ID        int64     `bun:"id,pk,autoincrement"`
-	Name      string    `bun:"name,notnull,unique"`
+	Type      string    `bun:"type,notnull"`
+	Name      string    `bun:"name,notnull"`
 	OwnerID   string    `bun:"owner_id,notnull"`
 	Private   bool      `bun:"private,notnull,default:false"`
 	CreatedAt time.Time `bun:"created_at,notnull,default:current_timestamp"`
 }
 
-type Manifest struct {
-	bun.BaseModel `bun:"table:manifests"`
+// PackageVersion's Version is the backend's identifier (digest for OCI,
+// semver for npm, GAV.V for Maven). Metadata holds the canonical bytes for
+// backends that need them (the manifest body for OCI). MediaType/SizeBytes
+// describe Metadata. SubjectDigest/ArtifactType implement OCI referrers.
+type PackageVersion struct {
+	bun.BaseModel `bun:"table:package_versions"`
 
 	ID            int64     `bun:"id,pk,autoincrement"`
-	RepositoryID  int64     `bun:"repository_id,notnull"`
-	Digest        string    `bun:"digest,notnull"`
-	MediaType     string    `bun:"media_type,notnull"`
-	SizeBytes     int64     `bun:"size_bytes,notnull"`
-	Content       []byte    `bun:"content"`
+	PackageID     int64     `bun:"package_id,notnull"`
+	Version       string    `bun:"version,notnull"`
+	Metadata      []byte    `bun:"metadata"`
+	MediaType     string    `bun:"media_type,notnull,default:''"`
+	SizeBytes     int64     `bun:"size_bytes,notnull,default:0"`
 	SourceActor   *string   `bun:"source_actor"`
 	SubjectDigest *string   `bun:"subject_digest"`
 	ArtifactType  *string   `bun:"artifact_type"`
 	CreatedAt     time.Time `bun:"created_at,notnull,default:current_timestamp"`
 }
 
-type Tag struct {
-	bun.BaseModel `bun:"table:tags"`
+// PackageFile attaches a blob to a version. For OCI Filename == BlobDigest.
+type PackageFile struct {
+	bun.BaseModel `bun:"table:package_files"`
 
-	ID             int64     `bun:"id,pk,autoincrement"`
-	RepositoryID   int64     `bun:"repository_id,notnull"`
-	Name           string    `bun:"name,notnull"`
-	ManifestDigest string    `bun:"manifest_digest,notnull"`
-	Immutable      bool      `bun:"immutable,notnull,default:false"`
-	UpdatedAt      time.Time `bun:"updated_at,notnull,default:current_timestamp"`
+	ID          int64     `bun:"id,pk,autoincrement"`
+	VersionID   int64     `bun:"version_id,notnull"`
+	Filename    string    `bun:"filename,notnull"`
+	BlobDigest  string    `bun:"blob_digest,notnull"`
+	SizeBytes   int64     `bun:"size_bytes,notnull"`
+	ContentType *string   `bun:"content_type"`
+	CreatedAt   time.Time `bun:"created_at,notnull,default:current_timestamp"`
+}
+
+// PackageTag points a name to a version string. Version is denormalized
+// (not an FK) to match the prior OCI tag→digest semantics.
+type PackageTag struct {
+	bun.BaseModel `bun:"table:package_tags"`
+
+	ID        int64     `bun:"id,pk,autoincrement"`
+	PackageID int64     `bun:"package_id,notnull"`
+	Name      string    `bun:"name,notnull"`
+	Version   string    `bun:"version,notnull"`
+	Immutable bool      `bun:"immutable,notnull,default:false"`
+	UpdatedAt time.Time `bun:"updated_at,notnull,default:current_timestamp"`
+}
+
+// DeletedVersion tombstones a deleted version so federation cannot re-create
+// it. OCI uses a digest-only lookup; other backends key by (type, name).
+type DeletedVersion struct {
+	bun.BaseModel `bun:"table:deleted_versions"`
+
+	ID          int64     `bun:"id,pk,autoincrement"`
+	PackageType string    `bun:"package_type,notnull"`
+	PackageName string    `bun:"package_name,notnull"`
+	Version     string    `bun:"version,notnull"`
+	SourceActor string    `bun:"source_actor,notnull"`
+	DeletedAt   time.Time `bun:"deleted_at,notnull,default:current_timestamp"`
+}
+
+// Repository is an OCI-shaped DTO over the packages table (type='oci').
+type Repository struct {
+	ID        int64
+	Name      string
+	OwnerID   string
+	Private   bool
+	CreatedAt time.Time
+}
+
+// Manifest is an OCI-shaped DTO over package_versions
+// (Digest=Version, Content=Metadata).
+type Manifest struct {
+	ID            int64
+	RepositoryID  int64
+	Digest        string
+	MediaType     string
+	SizeBytes     int64
+	Content       []byte
+	SourceActor   *string
+	SubjectDigest *string
+	ArtifactType  *string
+	CreatedAt     time.Time
+}
+
+// Tag is an OCI-shaped DTO over package_tags (ManifestDigest=Version).
+type Tag struct {
+	ID             int64
+	RepositoryID   int64
+	Name           string
+	ManifestDigest string
+	Immutable      bool
+	UpdatedAt      time.Time
 }
 
 type Blob struct {
@@ -58,21 +127,6 @@ type Blob struct {
 	MediaType     *string   `bun:"media_type"`
 	StoredLocally bool      `bun:"stored_locally,notnull,default:false"`
 	CreatedAt     time.Time `bun:"created_at,notnull,default:current_timestamp"`
-}
-
-type RepositoryOwner struct {
-	bun.BaseModel `bun:"table:repository_owners"`
-
-	RepositoryID int64     `bun:"repository_id,notnull"`
-	OwnerID      string    `bun:"owner_id,notnull"`
-	GrantedAt    time.Time `bun:"granted_at,notnull,default:current_timestamp"`
-}
-
-type ManifestLayer struct {
-	bun.BaseModel `bun:"table:manifest_layers"`
-
-	ManifestID int64  `bun:"manifest_id,notnull"`
-	BlobDigest string `bun:"blob_digest,notnull"`
 }
 
 type PeerBlob struct {
@@ -186,13 +240,4 @@ type Delivery struct {
 	LastError     *string   `bun:"last_error"`
 	Status        string    `bun:"status,notnull,default:'pending'"`
 	CreatedAt     time.Time `bun:"created_at,notnull,default:current_timestamp"`
-}
-
-type DeletedManifest struct {
-	bun.BaseModel `bun:"table:deleted_manifests"`
-
-	Digest      string    `bun:"digest,pk"`
-	RepoName    string    `bun:"repo_name,notnull"`
-	DeletedAt   time.Time `bun:"deleted_at,notnull,default:current_timestamp"`
-	SourceActor string    `bun:"source_actor,notnull"`
 }

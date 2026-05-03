@@ -181,9 +181,182 @@ func (db *DB) migrate(ctx context.Context) error {
 		}
 		version = 5
 	}
+
+	if version < 6 {
+		if err := db.migrateV6(ctx); err != nil {
+			return fmt.Errorf("migration v6: %w", err)
+		}
+		if _, err := db.bun.ExecContext(ctx, `UPDATE schema_version SET version = 6`); err != nil {
+			return fmt.Errorf("updating schema version to 6: %w", err)
+		}
+		version = 6
+	}
 	_ = version // used by future migrations
 
 	return nil
+}
+
+// migrateV6 unifies the OCI tables into the generic package schema. Row IDs
+// are preserved so OCI callers that round-trip IDs stay consistent.
+func (db *DB) migrateV6(ctx context.Context) error {
+	models := []any{
+		(*Package)(nil),
+		(*PackageVersion)(nil),
+		(*PackageFile)(nil),
+		(*PackageTag)(nil),
+		(*DeletedVersion)(nil),
+	}
+	for _, model := range models {
+		if _, err := db.bun.NewCreateTable().Model(model).IfNotExists().Exec(ctx); err != nil {
+			return fmt.Errorf("creating package table for %T: %w", model, err)
+		}
+	}
+
+	indexes := []string{
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_packages_type_name ON packages (type, name)",
+		"CREATE INDEX IF NOT EXISTS idx_packages_owner ON packages (owner_id)",
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_package_versions_pkg_version ON package_versions (package_id, version)",
+		"CREATE INDEX IF NOT EXISTS idx_package_versions_digest ON package_versions (version)",
+		"CREATE INDEX IF NOT EXISTS idx_package_versions_source_actor ON package_versions (source_actor)",
+		"CREATE INDEX IF NOT EXISTS idx_package_versions_subject ON package_versions (package_id, subject_digest)",
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_package_files_version_filename ON package_files (version_id, filename)",
+		"CREATE INDEX IF NOT EXISTS idx_package_files_blob_digest ON package_files (blob_digest)",
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_package_tags_pkg_name ON package_tags (package_id, name)",
+		"CREATE INDEX IF NOT EXISTS idx_package_tags_version ON package_tags (version)",
+		"CREATE INDEX IF NOT EXISTS idx_deleted_versions_lookup ON deleted_versions (package_type, version)",
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_deleted_versions_unique ON deleted_versions (package_type, package_name, version)",
+		"CREATE INDEX IF NOT EXISTS idx_deleted_versions_at ON deleted_versions (deleted_at)",
+	}
+	for _, ddl := range indexes {
+		if _, err := db.bun.ExecContext(ctx, ddl); err != nil {
+			return fmt.Errorf("creating package index: %w", err)
+		}
+	}
+
+	if err := db.copyV5DataToV6(ctx); err != nil {
+		return fmt.Errorf("copying v5 data: %w", err)
+	}
+
+	if err := db.dropV5OCITables(ctx); err != nil {
+		return fmt.Errorf("dropping legacy OCI tables: %w", err)
+	}
+
+	if _, isPostgres := db.bun.Dialect().(*pgdialect.Dialect); isPostgres {
+		if err := db.resetV6PostgresSequences(ctx); err != nil {
+			return fmt.Errorf("resetting postgres sequences: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func (db *DB) copyV5DataToV6(ctx context.Context) error {
+	// SQLite's INSERT...SELECT rejects ON CONFLICT, so each guard is a
+	// WHERE NOT EXISTS keyed on the table's natural unique constraint (not
+	// id), and layers LEFT JOIN blobs so orphan rows are preserved.
+	statements := []struct{ name, sql string }{
+		{
+			"packages from repositories",
+			`INSERT INTO packages (id, type, name, owner_id, private, created_at)
+			 SELECT r.id, 'oci', r.name, r.owner_id, r.private, r.created_at FROM repositories r
+			 WHERE NOT EXISTS (SELECT 1 FROM packages p WHERE p.type = 'oci' AND p.name = r.name)`,
+		},
+		{
+			"package_versions from manifests",
+			`INSERT INTO package_versions (id, package_id, version, metadata, media_type, size_bytes, source_actor, subject_digest, artifact_type, created_at)
+			 SELECT m.id, m.repository_id, m.digest, m.content, COALESCE(m.media_type, ''), m.size_bytes, m.source_actor, m.subject_digest, m.artifact_type, m.created_at
+			 FROM manifests m
+			 WHERE NOT EXISTS (SELECT 1 FROM package_versions pv WHERE pv.package_id = m.repository_id AND pv.version = m.digest)`,
+		},
+		{
+			"package_files from manifest_layers",
+			`INSERT INTO package_files (version_id, filename, blob_digest, size_bytes, content_type)
+			 SELECT ml.manifest_id, ml.blob_digest, ml.blob_digest, COALESCE(b.size_bytes, 0), b.media_type
+			 FROM manifest_layers ml
+			 LEFT JOIN blobs b ON b.digest = ml.blob_digest
+			 WHERE NOT EXISTS (
+			   SELECT 1 FROM package_files pf
+			   WHERE pf.version_id = ml.manifest_id AND pf.filename = ml.blob_digest
+			 )`,
+		},
+		{
+			"package_tags from tags",
+			`INSERT INTO package_tags (id, package_id, name, version, immutable, updated_at)
+			 SELECT t.id, t.repository_id, t.name, t.manifest_digest, t.immutable, t.updated_at FROM tags t
+			 WHERE NOT EXISTS (SELECT 1 FROM package_tags pt WHERE pt.package_id = t.repository_id AND pt.name = t.name)`,
+		},
+		{
+			"deleted_versions from deleted_manifests",
+			`INSERT INTO deleted_versions (package_type, package_name, version, source_actor, deleted_at)
+			 SELECT 'oci', dm.repo_name, dm.digest, dm.source_actor, dm.deleted_at FROM deleted_manifests dm
+			 WHERE NOT EXISTS (
+			   SELECT 1 FROM deleted_versions dv
+			   WHERE dv.package_type = 'oci' AND dv.package_name = dm.repo_name AND dv.version = dm.digest
+			 )`,
+		},
+	}
+	for _, s := range statements {
+		if _, err := db.bun.ExecContext(ctx, s.sql); err != nil {
+			if isMissingTableErr(err) {
+				continue
+			}
+			return fmt.Errorf("copying %s: %w", s.name, err)
+		}
+	}
+	return nil
+}
+
+func (db *DB) dropV5OCITables(ctx context.Context) error {
+	stmts := []string{
+		"DROP INDEX IF EXISTS idx_manifests_repo_digest",
+		"DROP INDEX IF EXISTS idx_tags_repo_name",
+		"DROP INDEX IF EXISTS idx_repo_owners_pk",
+		"DROP INDEX IF EXISTS idx_manifest_layers_pk",
+		"DROP INDEX IF EXISTS idx_manifests_digest",
+		"DROP INDEX IF EXISTS idx_manifests_repo",
+		"DROP INDEX IF EXISTS idx_repositories_owner",
+		"DROP INDEX IF EXISTS idx_tags_manifest_digest",
+		"DROP INDEX IF EXISTS idx_manifest_layers_blob_digest",
+		"DROP INDEX IF EXISTS idx_deleted_manifests_deleted_at",
+		"DROP TABLE IF EXISTS manifest_layers",
+		"DROP TABLE IF EXISTS tags",
+		"DROP TABLE IF EXISTS manifests",
+		"DROP TABLE IF EXISTS repository_owners",
+		"DROP TABLE IF EXISTS repositories",
+		"DROP TABLE IF EXISTS deleted_manifests",
+	}
+	for _, ddl := range stmts {
+		if _, err := db.bun.ExecContext(ctx, ddl); err != nil {
+			return fmt.Errorf("executing %q: %w", ddl, err)
+		}
+	}
+	return nil
+}
+
+// resetV6PostgresSequences advances auto-increment sequences past the
+// preserved IDs (Postgres doesn't update them on explicit-id inserts; SQLite does).
+func (db *DB) resetV6PostgresSequences(ctx context.Context) error {
+	tables := []string{"packages", "package_versions", "package_files", "package_tags", "deleted_versions"}
+	for _, t := range tables {
+		stmt := fmt.Sprintf(
+			`SELECT setval(pg_get_serial_sequence('%s', 'id'), GREATEST(COALESCE((SELECT MAX(id) FROM %s), 0), 1))`,
+			t, t,
+		)
+		if _, err := db.bun.ExecContext(ctx, stmt); err != nil {
+			return fmt.Errorf("setval on %s: %w", t, err)
+		}
+	}
+	return nil
+}
+
+func isMissingTableErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "no such table") ||
+		strings.Contains(msg, "does not exist") ||
+		strings.Contains(msg, "undefined table")
 }
 
 func (db *DB) migrateV4(ctx context.Context) error {
@@ -211,15 +384,12 @@ func (db *DB) migrateV4(ctx context.Context) error {
 	return nil
 }
 
-// migrateV1 creates base tables, constraints, and indexes.
+// migrateV1 creates the legacy OCI tables (dropped in v6) and the shared
+// infrastructure tables. On a fresh install the OCI tables are created and
+// immediately dropped by v6.
 func (db *DB) migrateV1(ctx context.Context) error {
-	models := []any{
-		(*Repository)(nil),
-		(*Manifest)(nil),
-		(*Tag)(nil),
+	bunModels := []any{
 		(*Blob)(nil),
-		(*RepositoryOwner)(nil),
-		(*ManifestLayer)(nil),
 		(*PeerBlob)(nil),
 		(*Actor)(nil),
 		(*FollowRequest)(nil),
@@ -227,10 +397,64 @@ func (db *DB) migrateV1(ctx context.Context) error {
 		(*UploadSession)(nil),
 		(*Delivery)(nil),
 	}
-
-	for _, model := range models {
+	for _, model := range bunModels {
 		if _, err := db.bun.NewCreateTable().Model(model).IfNotExists().Exec(ctx); err != nil {
 			return fmt.Errorf("creating table for %T: %w", model, err)
+		}
+	}
+
+	_, isPostgres := db.bun.Dialect().(*pgdialect.Dialect)
+	autoIncID := "INTEGER PRIMARY KEY AUTOINCREMENT"
+	if isPostgres {
+		autoIncID = "BIGSERIAL PRIMARY KEY"
+	}
+
+	legacyTables := []string{
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS repositories (
+			id %s,
+			name TEXT NOT NULL UNIQUE,
+			owner_id TEXT NOT NULL,
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`, autoIncID),
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS manifests (
+			id %s,
+			repository_id BIGINT NOT NULL,
+			digest TEXT NOT NULL,
+			media_type TEXT NOT NULL,
+			size_bytes BIGINT NOT NULL,
+			content BYTEA,
+			source_actor TEXT,
+			subject_digest TEXT,
+			artifact_type TEXT,
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`, autoIncID),
+		fmt.Sprintf(`CREATE TABLE IF NOT EXISTS tags (
+			id %s,
+			repository_id BIGINT NOT NULL,
+			name TEXT NOT NULL,
+			manifest_digest TEXT NOT NULL,
+			immutable BOOLEAN NOT NULL DEFAULT FALSE,
+			updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`, autoIncID),
+		`CREATE TABLE IF NOT EXISTS repository_owners (
+			repository_id BIGINT NOT NULL,
+			owner_id TEXT NOT NULL,
+			granted_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`CREATE TABLE IF NOT EXISTS manifest_layers (
+			manifest_id BIGINT NOT NULL,
+			blob_digest TEXT NOT NULL
+		)`,
+	}
+	if !isPostgres {
+		for i := range legacyTables {
+			legacyTables[i] = strings.ReplaceAll(legacyTables[i], "BYTEA", "BLOB")
+			legacyTables[i] = strings.ReplaceAll(legacyTables[i], "BIGINT", "INTEGER")
+		}
+	}
+	for _, ddl := range legacyTables {
+		if _, err := db.bun.ExecContext(ctx, ddl); err != nil {
+			return fmt.Errorf("creating legacy OCI table: %w", err)
 		}
 	}
 
@@ -280,9 +504,14 @@ func (db *DB) migrateV1(ctx context.Context) error {
 	return nil
 }
 
-// migrateV3 creates the deleted_manifests table for tombstone tracking.
+// migrateV3 creates the legacy deleted_manifests table (dropped in v6).
 func (db *DB) migrateV3(ctx context.Context) error {
-	if _, err := db.bun.NewCreateTable().Model((*DeletedManifest)(nil)).IfNotExists().Exec(ctx); err != nil {
+	if _, err := db.bun.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS deleted_manifests (
+		digest TEXT PRIMARY KEY,
+		repo_name TEXT NOT NULL,
+		deleted_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+		source_actor TEXT NOT NULL
+	)`); err != nil {
 		return fmt.Errorf("creating deleted_manifests table: %w", err)
 	}
 	if _, err := db.bun.ExecContext(ctx,
