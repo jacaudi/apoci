@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/url"
 
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/activitypub"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/database"
+	"git.erwanleboucher.dev/eleboucher/apoci/internal/registry/pkgfed"
 )
 
 const (
@@ -15,8 +17,8 @@ const (
 	apTypeTag     = "NpmTag"
 )
 
-// NpmVersion: tarball is fetched lazily from NpmTarball; npmMeta is the
-// per-version package.json fragment.
+// NpmVersion: peers store metadata; tarball requests are 302'd back to a peer
+// that holds the blob. npmMeta is the per-version package.json fragment.
 type NpmVersion struct {
 	Context      []string        `json:"@context"`
 	Type         string          `json:"type"`
@@ -41,10 +43,6 @@ type NpmTag struct {
 	NpmName    string   `json:"npmName"`
 	NpmTag     string   `json:"npmTag"`
 	NpmVersion string   `json:"npmVersion,omitempty"`
-}
-
-func npmContext() []string {
-	return []string{activitypub.ContextActivityStreams, activitypub.ContextSecurity}
 }
 
 type federationAdapter struct {
@@ -94,7 +92,7 @@ func (a *federationAdapter) ingestVersion(ctx context.Context, obj map[string]an
 		stored.Shasum = shasum
 	}
 	if meta, ok := obj["npmMeta"]; ok && meta != nil {
-		if err := remarshalInto(meta, &stored.Meta); err != nil {
+		if err := pkgfed.RemarshalInto(meta, &stored.Meta); err != nil {
 			return fmt.Errorf("npm version: decode meta: %w", err)
 		}
 	}
@@ -123,6 +121,9 @@ func (a *federationAdapter) ingestVersion(ctx context.Context, obj map[string]an
 			if err := a.backend.db.PutBlob(ctx, blobDigest, int64(size), &contentType, false); err != nil {
 				return fmt.Errorf("npm version: put blob ref: %w", err)
 			}
+			if err := pkgfed.RecordPeerBlob(ctx, a.backend.db, actorURL, blobDigest); err != nil {
+				return fmt.Errorf("npm version: put peer blob: %w", err)
+			}
 		}
 		file := &database.PackageFile{
 			VersionID:   v.ID,
@@ -144,7 +145,7 @@ func (a *federationAdapter) deleteVersion(ctx context.Context, obj map[string]an
 	if name == "" || version == "" {
 		return fmt.Errorf("npm delete: missing npmName or npmVersion")
 	}
-	dbPkg, err := lookupOwnedPackage(ctx, a.backend.db, name, actorURL)
+	dbPkg, err := pkgfed.LookupOwnedPackage(ctx, a.backend.db, packageType, name, actorURL)
 	if err != nil || dbPkg == nil {
 		return err
 	}
@@ -158,7 +159,7 @@ func (a *federationAdapter) upsertTag(ctx context.Context, obj map[string]any, a
 	if name == "" || tag == "" || version == "" {
 		return fmt.Errorf("npm tag: missing fields")
 	}
-	dbPkg, err := lookupOwnedPackage(ctx, a.backend.db, name, actorURL)
+	dbPkg, err := pkgfed.LookupOwnedPackage(ctx, a.backend.db, packageType, name, actorURL)
 	if err != nil || dbPkg == nil {
 		return err
 	}
@@ -171,14 +172,15 @@ func (a *federationAdapter) deleteTag(ctx context.Context, obj map[string]any, a
 	if name == "" || tag == "" {
 		return fmt.Errorf("npm tag delete: missing fields")
 	}
-	dbPkg, err := lookupOwnedPackage(ctx, a.backend.db, name, actorURL)
+	dbPkg, err := pkgfed.LookupOwnedPackage(ctx, a.backend.db, packageType, name, actorURL)
 	if err != nil || dbPkg == nil {
 		return err
 	}
 	return a.backend.db.DeletePackageTag(ctx, dbPkg.ID, tag)
 }
 
-// publishVersion broadcasts on publish. Errors must not block the local write.
+// Publish errors are logged, not returned: federation is best-effort and must
+// not block the local write that already committed.
 func (b *Backend) publishVersion(ctx context.Context, name string, v *database.PackageVersion, file *database.PackageFile, integrity, shasum string, meta any) {
 	if b.publisher == nil {
 		return
@@ -189,7 +191,7 @@ func (b *Backend) publishVersion(ctx context.Context, name string, v *database.P
 		return
 	}
 	obj := NpmVersion{
-		Context:      npmContext(),
+		Context:      activitypub.BaseContext(),
 		Type:         apTypeVersion,
 		ID:           b.endpoint + "/ap/objects/npm-version/" + url.PathEscape(name) + "/" + url.PathEscape(v.Version),
 		Published:    activitypub.NowRFC3339(),
@@ -221,7 +223,7 @@ func (b *Backend) publishTag(ctx context.Context, activityType, name, tag, versi
 		return
 	}
 	obj := NpmTag{
-		Context:    npmContext(),
+		Context:    activitypub.BaseContext(),
 		Type:       apTypeTag,
 		ID:         b.endpoint + "/ap/objects/npm-tag/" + url.PathEscape(name) + "/" + url.PathEscape(tag),
 		Published:  activitypub.NowRFC3339(),
@@ -234,29 +236,14 @@ func (b *Backend) publishTag(ctx context.Context, activityType, name, tag, versi
 	}
 }
 
-// lookupOwnedPackage returns nil,nil for an unknown package (delete-before-create
-// is a no-op rather than an error) and an error if the sender doesn't own it.
-func lookupOwnedPackage(ctx context.Context, db *database.DB, name, actorURL string) (*database.Package, error) {
-	pkg, err := db.GetPackage(ctx, packageType, name)
-	if err != nil {
-		return nil, fmt.Errorf("lookup package: %w", err)
+// packageName is intentionally not url.PathEscape'd: scoped names ("@scope/foo")
+// rely on the embedded slash being a path separator on the upstream peer.
+func (b *Backend) redirectToPeer(ctx context.Context, w http.ResponseWriter, r *http.Request, digest, packageName, filename string) bool {
+	peers, err := b.db.FindPeersWithBlob(ctx, digest)
+	if err != nil || len(peers) == 0 {
+		return false
 	}
-	if pkg == nil {
-		return nil, nil
-	}
-	if pkg.OwnerID != actorURL {
-		return nil, fmt.Errorf("npm package %s not owned by %s", name, actorURL)
-	}
-	return pkg, nil
-}
-
-// remarshalInto round-trips a decoded JSON value through Marshal so it can be
-// re-Unmarshaled into a typed target. Needed because map[string]any decoding
-// loses the json.RawMessage form of nested objects.
-func remarshalInto(v any, target any) error {
-	raw, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-	return json.Unmarshal(raw, target)
+	target := peers[0].PeerEndpoint + routePrefix + "/" + packageName + "/-/" + url.PathEscape(filename)
+	http.Redirect(w, r, target, http.StatusFound)
+	return true
 }

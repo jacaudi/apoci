@@ -1,11 +1,9 @@
 package npm
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -13,32 +11,10 @@ import (
 
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/blobstore"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/database"
+	"git.erwanleboucher.dev/eleboucher/apoci/internal/registry/pkgfed/pkgfedtest"
 )
 
-type capturedActivity struct {
-	Type   string
-	Object any
-}
-
-type stubPublisher struct {
-	mu  sync.Mutex
-	out []capturedActivity
-}
-
-func (s *stubPublisher) Publish(_ context.Context, activityType string, object any) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.out = append(s.out, capturedActivity{Type: activityType, Object: object})
-	return nil
-}
-
-func (s *stubPublisher) Activities() []capturedActivity {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return append([]capturedActivity{}, s.out...)
-}
-
-func newTestServerWithPublisher(t *testing.T, p *stubPublisher) *httptest.Server {
+func newTestServerWithPublisher(t *testing.T, p *pkgfedtest.StubPublisher) *httptest.Server {
 	t.Helper()
 	db, err := database.OpenSQLite(t.TempDir(), 0, 0, nopLog())
 	require.NoError(t, err)
@@ -63,7 +39,7 @@ func newTestServerWithPublisher(t *testing.T, p *stubPublisher) *httptest.Server
 }
 
 func TestPublishEmitsActivities(t *testing.T) {
-	pub := &stubPublisher{}
+	pub := &pkgfedtest.StubPublisher{}
 	srv := newTestServerWithPublisher(t, pub)
 
 	body := publishBody(t, "lodash", "1.0.0", []byte("tarball"), "latest")
@@ -90,7 +66,7 @@ func TestPublishEmitsActivities(t *testing.T) {
 }
 
 func TestDistTagPutAndDeleteEmitActivities(t *testing.T) {
-	pub := &stubPublisher{}
+	pub := &pkgfedtest.StubPublisher{}
 	srv := newTestServerWithPublisher(t, pub)
 
 	body := publishBody(t, "react", "1.0.0", []byte("data"), "")
@@ -116,7 +92,7 @@ func TestDistTagPutAndDeleteEmitActivities(t *testing.T) {
 }
 
 func TestAdapterIngestRoundTrip(t *testing.T) {
-	pub := &stubPublisher{}
+	pub := &pkgfedtest.StubPublisher{}
 	srv := newTestServerWithPublisher(t, pub)
 	originActor := srv.URL + "/ap/actor"
 
@@ -165,6 +141,59 @@ func TestAdapterIngestRoundTrip(t *testing.T) {
 	require.Len(t, tags, 1)
 	assert.Equal(t, "latest", tags[0].Name)
 	assert.Equal(t, "1.0.0", tags[0].Version)
+}
+
+func TestPeerRedirectsToOriginOnBlobMiss(t *testing.T) {
+	pub := &pkgfedtest.StubPublisher{}
+	originSrv := newTestServerWithPublisher(t, pub)
+	originActor := originSrv.URL + "/ap/actor"
+
+	body := publishBody(t, "lodash", "1.0.0", []byte("tarball"), "")
+	resp := doRequest(t, originSrv, http.MethodPut, "/npm/lodash", body, true)
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+	_ = resp.Body.Close()
+	originActs := pub.Activities()
+	require.NotEmpty(t, originActs)
+
+	peerDB, err := database.OpenSQLite(t.TempDir(), 0, 0, nopLog())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = peerDB.Close() })
+	peerBlobs, err := blobstore.New(t.TempDir(), nopLog())
+	require.NoError(t, err)
+
+	require.NoError(t, peerDB.UpsertActor(t.Context(), &database.Actor{
+		ActorURL:          originActor,
+		Endpoint:          originSrv.URL,
+		ReplicationPolicy: "lazy",
+		IsHealthy:         true,
+	}))
+
+	peerSrv := httptest.NewServer(nil)
+	t.Cleanup(peerSrv.Close)
+	peer := New(Config{
+		DB:       peerDB,
+		Blobs:    peerBlobs,
+		Endpoint: peerSrv.URL,
+		Owner:    peerSrv.URL + "/ap/actor",
+		Logger:   nopLog(),
+	})
+	peerSrv.Config.Handler = peer.Handler()
+
+	for _, act := range originActs {
+		raw, err := json.Marshal(act.Object)
+		require.NoError(t, err)
+		var asMap map[string]any
+		require.NoError(t, json.Unmarshal(raw, &asMap))
+		apType, _ := asMap["type"].(string)
+		require.NoError(t, peer.FederationAdapter().Ingest(t.Context(), act.Type, apType, asMap, originActor))
+	}
+
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	r, err := client.Get(peerSrv.URL + "/npm/lodash/-/lodash-1.0.0.tgz")
+	require.NoError(t, err)
+	defer func() { _ = r.Body.Close() }()
+	assert.Equal(t, http.StatusFound, r.StatusCode)
+	assert.Equal(t, originSrv.URL+"/npm/lodash/-/lodash-1.0.0.tgz", r.Header.Get("Location"))
 }
 
 func TestAdapterRejectsForeignSender(t *testing.T) {

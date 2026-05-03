@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/url"
 
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/activitypub"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/database"
+	"git.erwanleboucher.dev/eleboucher/apoci/internal/registry/pkgfed"
 )
 
 const (
@@ -15,7 +17,8 @@ const (
 	apTypeYank    = "CargoYank"
 )
 
-// CargoVersion: .crate is fetched lazily via the origin's download endpoint.
+// CargoVersion: peers store metadata; .crate requests are 302'd to a peer that
+// holds the blob.
 type CargoVersion struct {
 	Context      []string        `json:"@context"`
 	Type         string          `json:"type"`
@@ -37,10 +40,6 @@ type CargoYank struct {
 	CargoName    string   `json:"cargoName"`
 	CargoVersion string   `json:"cargoVersion"`
 	CargoYanked  bool     `json:"cargoYanked"`
-}
-
-func cargoContext() []string {
-	return []string{activitypub.ContextActivityStreams, activitypub.ContextSecurity}
 }
 
 type federationAdapter struct {
@@ -81,7 +80,7 @@ func (a *federationAdapter) ingestVersion(ctx context.Context, obj map[string]an
 
 	stored := storedVersion{Cksum: cksum}
 	if meta, ok := obj["cargoMeta"]; ok && meta != nil {
-		if err := remarshalInto(meta, &stored.Meta); err != nil {
+		if err := pkgfed.RemarshalInto(meta, &stored.Meta); err != nil {
 			return fmt.Errorf("cargo version: decode meta: %w", err)
 		}
 	}
@@ -107,6 +106,9 @@ func (a *federationAdapter) ingestVersion(ctx context.Context, obj map[string]an
 		if err := a.backend.db.PutBlob(ctx, blobSHA, int64(size), &contentType, false); err != nil {
 			return fmt.Errorf("cargo version: put blob ref: %w", err)
 		}
+		if err := pkgfed.RecordPeerBlob(ctx, a.backend.db, actorURL, blobSHA); err != nil {
+			return fmt.Errorf("cargo version: put peer blob: %w", err)
+		}
 		file := &database.PackageFile{
 			VersionID:   v.ID,
 			Filename:    crateFilename(name, version),
@@ -128,7 +130,7 @@ func (a *federationAdapter) applyYank(ctx context.Context, obj map[string]any, a
 	if name == "" || version == "" {
 		return fmt.Errorf("cargo yank: missing cargoName or cargoVersion")
 	}
-	dbPkg, err := lookupOwnedPackage(ctx, a.backend.db, name, actorURL)
+	dbPkg, err := pkgfed.LookupOwnedPackage(ctx, a.backend.db, packageType, name, actorURL)
 	if err != nil || dbPkg == nil {
 		return err
 	}
@@ -160,7 +162,7 @@ func (b *Backend) publishVersion(ctx context.Context, name string, v *database.P
 		return
 	}
 	obj := CargoVersion{
-		Context:      cargoContext(),
+		Context:      activitypub.BaseContext(),
 		Type:         apTypeVersion,
 		ID:           b.endpoint + "/ap/objects/cargo-version/" + url.PathEscape(name) + "/" + url.PathEscape(v.Version),
 		Published:    activitypub.NowRFC3339(),
@@ -181,7 +183,7 @@ func (b *Backend) publishYank(ctx context.Context, name, version string, yanked 
 		return
 	}
 	obj := CargoYank{
-		Context:      cargoContext(),
+		Context:      activitypub.BaseContext(),
 		Type:         apTypeYank,
 		ID:           b.endpoint + "/ap/objects/cargo-yank/" + url.PathEscape(name) + "/" + url.PathEscape(version),
 		Published:    activitypub.NowRFC3339(),
@@ -194,26 +196,12 @@ func (b *Backend) publishYank(ctx context.Context, name, version string, yanked 
 	}
 }
 
-// lookupOwnedPackage returns nil,nil for an unknown crate (yank-before-create
-// is a no-op rather than an error) and an error if the sender doesn't own it.
-func lookupOwnedPackage(ctx context.Context, db *database.DB, name, actorURL string) (*database.Package, error) {
-	pkg, err := db.GetPackage(ctx, packageType, name)
-	if err != nil {
-		return nil, fmt.Errorf("lookup package: %w", err)
+func (b *Backend) redirectToPeer(ctx context.Context, w http.ResponseWriter, r *http.Request, digest, name, version string) bool {
+	peers, err := b.db.FindPeersWithBlob(ctx, digest)
+	if err != nil || len(peers) == 0 {
+		return false
 	}
-	if pkg == nil {
-		return nil, nil
-	}
-	if pkg.OwnerID != actorURL {
-		return nil, fmt.Errorf("cargo crate %s not owned by %s", name, actorURL)
-	}
-	return pkg, nil
-}
-
-func remarshalInto(v any, target any) error {
-	raw, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
-	return json.Unmarshal(raw, target)
+	target := peers[0].PeerEndpoint + routePrefix + "/api/v1/crates/" + url.PathEscape(name) + "/" + url.PathEscape(version) + "/download"
+	http.Redirect(w, r, target, http.StatusFound)
+	return true
 }

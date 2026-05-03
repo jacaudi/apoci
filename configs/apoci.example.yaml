@@ -88,3 +88,13 @@ endpoint: "https://registry.example.com"
 
 # ui:
 #   enabled: false               # enable web UI at / to browse images
+
+# backends:
+#   npm:
+#     enabled: true              # default true; false skips routes + federation entirely
+#     federate: true             # default true; false serves clients but doesn't broadcast or accept inbound activities
+#     token: ""                  # default empty -> falls back to the global registryToken
+#   cargo:
+#     enabled: true
+#   pypi:
+#     enabled: true

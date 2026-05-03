@@ -230,6 +230,9 @@ func (b *Backend) handleDownload(w http.ResponseWriter, r *http.Request) {
 	rc, size, err := b.blobs.Open(ctx, file.BlobDigest)
 	if err != nil {
 		if errors.Is(err, blobstore.ErrBlobNotFound) {
+			if b.redirectToPeer(ctx, w, r, file.BlobDigest, name, version) {
+				return
+			}
 			writeError(w, http.StatusNotFound, "blob missing")
 			return
 		}

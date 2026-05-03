@@ -4,15 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"net/url"
 
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/activitypub"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/database"
+	"git.erwanleboucher.dev/eleboucher/apoci/internal/registry/pkgfed"
 )
 
 const apTypeFile = "PypiFile"
 
-// PypiFile: payload is fetched lazily via PypiURL.
+// PypiFile: peers store metadata; file requests are 302'd to a peer that holds
+// the blob.
 type PypiFile struct {
 	Context         []string        `json:"@context"`
 	Type            string          `json:"type"`
@@ -26,10 +29,6 @@ type PypiFile struct {
 	PypiContentType string          `json:"pypiContentType"`
 	PypiURL         string          `json:"pypiURL"`
 	PypiMeta        json.RawMessage `json:"pypiMeta,omitempty"`
-}
-
-func pypiContext() []string {
-	return []string{activitypub.ContextActivityStreams, activitypub.ContextSecurity}
 }
 
 type federationAdapter struct {
@@ -70,7 +69,7 @@ func (a *federationAdapter) ingestFile(ctx context.Context, obj map[string]any, 
 	if v == nil {
 		stored := storedVersion{}
 		if meta, ok := obj["pypiMeta"]; ok && meta != nil {
-			if err := remarshalInto(meta, &stored.Meta); err != nil {
+			if err := pkgfed.RemarshalInto(meta, &stored.Meta); err != nil {
 				return fmt.Errorf("pypi file: decode meta: %w", err)
 			}
 		}
@@ -101,6 +100,9 @@ func (a *federationAdapter) ingestFile(ctx context.Context, obj map[string]any, 
 		if err := a.backend.db.PutBlob(ctx, blobSHA, int64(size), &contentType, false); err != nil {
 			return fmt.Errorf("pypi file: put blob ref: %w", err)
 		}
+		if err := pkgfed.RecordPeerBlob(ctx, a.backend.db, actorURL, blobSHA); err != nil {
+			return fmt.Errorf("pypi file: put peer blob: %w", err)
+		}
 	}
 	file := &database.PackageFile{
 		VersionID:   v.ID,
@@ -129,7 +131,7 @@ func (b *Backend) publishFile(ctx context.Context, name, version string, file *d
 		contentType = *file.ContentType
 	}
 	obj := PypiFile{
-		Context:         pypiContext(),
+		Context:         activitypub.BaseContext(),
 		Type:            apTypeFile,
 		ID:              b.endpoint + "/ap/objects/pypi-file/" + url.PathEscape(name) + "/" + url.PathEscape(version) + "/" + url.PathEscape(file.Filename),
 		Published:       activitypub.NowRFC3339(),
@@ -147,10 +149,12 @@ func (b *Backend) publishFile(ctx context.Context, name, version string, file *d
 	}
 }
 
-func remarshalInto(v any, target any) error {
-	raw, err := json.Marshal(v)
-	if err != nil {
-		return err
+func (b *Backend) redirectToPeer(ctx context.Context, w http.ResponseWriter, r *http.Request, digest, name, version, filename string) bool {
+	peers, err := b.db.FindPeersWithBlob(ctx, digest)
+	if err != nil || len(peers) == 0 {
+		return false
 	}
-	return json.Unmarshal(raw, target)
+	target := peers[0].PeerEndpoint + routePrefix + "/files/" + url.PathEscape(name) + "/" + url.PathEscape(version) + "/" + url.PathEscape(filename)
+	http.Redirect(w, r, target, http.StatusFound)
+	return true
 }

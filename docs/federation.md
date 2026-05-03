@@ -54,6 +54,34 @@ OCI is unaffected: `foo.com/lodash` is scoped to whichever follower owns `foo.co
 
 `Publish` is best-effort. The local write commits before the activity is generated; if persisting the activity row or enqueuing follower deliveries fails, the publish is logged and dropped — peers miss that one event. There is no automatic resync. This matches the OCI behavior in `PublishManifest`/`PublishTag`/`PublishBlobRef`. Operators who need stricter durability should monitor publisher errors in logs and follow up manually.
 
+## Out-of-order activities
+
+Activities for a given package are not strictly ordered across peers. If `Update NpmTag`, `Update CargoYank`, or `Delete NpmVersion` arrives at a peer before the corresponding `Create` for that version, the adapter calls `lookupOwnedPackage`, sees no row, and silently drops the activity. The tag/yank/delete is permanently lost on that peer (the origin's delivery queue marks it delivered). This matches the OCI inbox behavior for tags arriving before manifests. Mitigations are out of scope for v1.
+
+## File bytes
+
+The new backends federate metadata only. Peers don't replicate the underlying tarballs / .crate files / wheels into their local blob store. Instead:
+
+1. On ingest, the adapter calls `PutPeerBlob(senderActor, digest, senderEndpoint)` so the peer remembers where the bytes live.
+2. On a download request, if the local `blobs.Open` returns `ErrBlobNotFound`, the handler calls `FindPeersWithBlob(digest)` and 302-redirects to the first healthy peer that has it (using the per-backend URL pattern).
+3. If no healthy peer is recorded for that digest, the handler 404s.
+
+OCI's `peering.BlobReplicator` does eager pull-through replication for blobs. Adding the same for npm/cargo/pypi is a follow-up — for now, peers act as metadata mirrors with redirect-on-fetch.
+
+## Per-backend configuration
+
+```yaml
+backends:
+  npm:
+    enabled: true     # default true; false skips construction, route mount, and adapter registration
+    federate: true    # default true; false omits the publisher and the inbox adapter
+    token: ""         # default empty → falls back to the global RegistryToken
+  cargo: { ... }
+  pypi:  { ... }
+```
+
+The same fields are also accepted as env vars: `APOCI_BACKENDS_NPM_ENABLED`, `APOCI_BACKENDS_CARGO_FEDERATE`, `APOCI_BACKENDS_PYPI_TOKEN`, etc.
+
 ## Adding a new backend
 
 1. Implement `registry.Backend` (`Type()`, `RoutePrefix()`, `Handler()`).

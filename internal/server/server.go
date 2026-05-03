@@ -143,68 +143,51 @@ func New(cfg *config.Config, db *database.DB, blobs blobstore.BlobStore, identit
 	packageBackends := pkgreg.NewManager()
 	adapters := activitypub.NewAdapterRegistry()
 
-	if cfg.Backends.NPM.IsEnabled() {
-		bcfg := cfg.Backends.NPM
-		var pub activitypub.PackagePublisher
-		if bcfg.IsFederated() {
-			pub = apPublisher
-		}
-		b := npm.New(npm.Config{
-			DB: db, Blobs: blobs, Endpoint: cfg.Endpoint,
-			Token:     bcfg.TokenOr(cfg.RegistryToken),
-			Owner:     identity.ActorURL,
-			Publisher: pub, Logger: logger,
-		})
-		if err := packageBackends.Register(b); err != nil {
-			return nil, fmt.Errorf("registering npm backend: %w", err)
-		}
-		if bcfg.IsFederated() {
-			if err := adapters.Register(b.FederationAdapter()); err != nil {
-				return nil, fmt.Errorf("registering npm adapter: %w", err)
-			}
-		}
+	type backendInit struct {
+		name  string
+		cfg   config.BackendConfig
+		build func(pub activitypub.PackagePublisher) (pkgreg.Backend, activitypub.FederationAdapter)
 	}
 
-	if cfg.Backends.Cargo.IsEnabled() {
-		bcfg := cfg.Backends.Cargo
-		var pub activitypub.PackagePublisher
-		if bcfg.IsFederated() {
-			pub = apPublisher
-		}
-		b := cargo.New(cargo.Config{
-			DB: db, Blobs: blobs, Endpoint: cfg.Endpoint,
-			Token:     bcfg.TokenOr(cfg.RegistryToken),
-			Owner:     identity.ActorURL,
-			Publisher: pub, Logger: logger,
-		})
-		if err := packageBackends.Register(b); err != nil {
-			return nil, fmt.Errorf("registering cargo backend: %w", err)
-		}
-		if bcfg.IsFederated() {
-			if err := adapters.Register(b.FederationAdapter()); err != nil {
-				return nil, fmt.Errorf("registering cargo adapter: %w", err)
-			}
-		}
+	inits := []backendInit{
+		{"npm", cfg.Backends.NPM, func(pub activitypub.PackagePublisher) (pkgreg.Backend, activitypub.FederationAdapter) {
+			b := npm.New(npm.Config{
+				DB: db, Blobs: blobs, Endpoint: cfg.Endpoint, Owner: identity.ActorURL,
+				Token: cfg.Backends.NPM.TokenOr(cfg.RegistryToken), Publisher: pub, Logger: logger,
+			})
+			return b, b.FederationAdapter()
+		}},
+		{"cargo", cfg.Backends.Cargo, func(pub activitypub.PackagePublisher) (pkgreg.Backend, activitypub.FederationAdapter) {
+			b := cargo.New(cargo.Config{
+				DB: db, Blobs: blobs, Endpoint: cfg.Endpoint, Owner: identity.ActorURL,
+				Token: cfg.Backends.Cargo.TokenOr(cfg.RegistryToken), Publisher: pub, Logger: logger,
+			})
+			return b, b.FederationAdapter()
+		}},
+		{"pypi", cfg.Backends.PyPI, func(pub activitypub.PackagePublisher) (pkgreg.Backend, activitypub.FederationAdapter) {
+			b := pypi.New(pypi.Config{
+				DB: db, Blobs: blobs, Endpoint: cfg.Endpoint, Owner: identity.ActorURL,
+				Token: cfg.Backends.PyPI.TokenOr(cfg.RegistryToken), Publisher: pub, Logger: logger,
+			})
+			return b, b.FederationAdapter()
+		}},
 	}
 
-	if cfg.Backends.PyPI.IsEnabled() {
-		bcfg := cfg.Backends.PyPI
+	for _, init := range inits {
+		if !init.cfg.IsEnabled() {
+			continue
+		}
 		var pub activitypub.PackagePublisher
-		if bcfg.IsFederated() {
+		if init.cfg.IsFederated() {
 			pub = apPublisher
 		}
-		b := pypi.New(pypi.Config{
-			DB: db, Blobs: blobs, Endpoint: cfg.Endpoint,
-			Token:     bcfg.TokenOr(cfg.RegistryToken),
-			Owner:     identity.ActorURL,
-			Publisher: pub, Logger: logger,
-		})
+		b, adapter := init.build(pub)
 		if err := packageBackends.Register(b); err != nil {
-			return nil, fmt.Errorf("registering pypi backend: %w", err)
+			return nil, fmt.Errorf("registering %s backend: %w", init.name, err)
 		}
-		if bcfg.IsFederated() {
-			if err := adapters.Register(b.FederationAdapter()); err != nil {
-				return nil, fmt.Errorf("registering pypi adapter: %w", err)
+		if init.cfg.IsFederated() {
+			if err := adapters.Register(adapter); err != nil {
+				return nil, fmt.Errorf("registering %s adapter: %w", init.name, err)
 			}
 		}
 	}

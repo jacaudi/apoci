@@ -81,7 +81,18 @@ apoci speaks four package-manager protocols out of the box. The same node, the s
 | Cargo | `/cargo/` | `~/.cargo/config.toml`: `[registries.apoci] index = "sparse+https://foo.com/cargo/"`, then `cargo login --registry apoci $TOKEN` |
 | PyPI | `/pypi/` | `~/.pypirc`: `[apoci] repository = https://foo.com/pypi/`, then `twine upload --repository apoci dist/*` |
 
-All four use the single `RegistryToken` from `apoci.yaml`. Federation is automatic and on by default for every backend.
+Defaults: all four backends are enabled, federate on every write, and share `RegistryToken` from `apoci.yaml`. Per-backend overrides:
+
+```yaml
+backends:
+  npm:
+    enabled: false        # turn the backend off entirely (no routes, no federation)
+  cargo:
+    federate: false       # serve clients but don't broadcast or accept inbound activities
+    token: "cargo-only"   # use a different auth token for this backend
+```
+
+OCI is wired separately and isn't gated by `backends.*`.
 
 ### Quick examples
 
@@ -184,7 +195,7 @@ Every backend emits its own AP activities on write. Peers ingest them through a 
 |-----------|----------|----------------|
 | `twine upload` (per file) | `Create PypiFile` | Peer stores file metadata; serves via the simple index |
 
-For OCI, peers eagerly replicate blob bytes in the background. For the other backends, file bytes are fetched lazily from the origin endpoint when first requested. If the origin goes down before a peer has fetched, that file becomes unavailable.
+For OCI, peers eagerly replicate blob bytes in the background. For the other backends, peers store metadata only and 302-redirect file requests back to a peer that holds the bytes (recorded in `peer_blobs` at ingest time). If every known peer with the bytes is down or unhealthy, the redirect can't fire and the request 404s.
 
 ### Delivery
 

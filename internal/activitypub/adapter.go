@@ -29,6 +29,13 @@ func NewAdapterRegistry() *AdapterRegistry {
 	}
 }
 
+// Reserved by the legacy OCI dispatch in inbox_content.go.
+var reservedAPTypes = map[string]struct{}{
+	"OCIManifest": {},
+	"OCITag":      {},
+	"OCIBlob":     {},
+}
+
 func (r *AdapterRegistry) Register(a FederationAdapter) error {
 	if a == nil {
 		return fmt.Errorf("nil adapter")
@@ -39,6 +46,9 @@ func (r *AdapterRegistry) Register(a FederationAdapter) error {
 		return fmt.Errorf("adapter for %q already registered", a.PackageType())
 	}
 	for _, t := range a.APTypes() {
+		if _, reserved := reservedAPTypes[t]; reserved {
+			return fmt.Errorf("AP type %q is reserved", t)
+		}
 		if existing, ok := r.byAP[t]; ok {
 			return fmt.Errorf("AP type %q already claimed by %q", t, existing.PackageType())
 		}

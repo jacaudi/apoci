@@ -70,6 +70,12 @@ func ociContext() []string {
 	return []string{ContextActivityStreams, ContextSecurity, ContextOCI}
 }
 
+// BaseContext is the standard AS2 + Security pair used by adapters that don't
+// extend the vocabulary with backend-specific terms.
+func BaseContext() []string {
+	return []string{ContextActivityStreams, ContextSecurity}
+}
+
 func NowRFC3339() string {
 	return time.Now().UTC().Format(time.RFC3339)
 }
