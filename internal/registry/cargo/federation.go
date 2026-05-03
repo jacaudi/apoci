@@ -1,0 +1,219 @@
+package cargo
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/url"
+
+	"git.erwanleboucher.dev/eleboucher/apoci/internal/activitypub"
+	"git.erwanleboucher.dev/eleboucher/apoci/internal/database"
+)
+
+const (
+	apTypeVersion = "CargoVersion"
+	apTypeYank    = "CargoYank"
+)
+
+// CargoVersion: .crate is fetched lazily via the origin's download endpoint.
+type CargoVersion struct {
+	Context      []string        `json:"@context"`
+	Type         string          `json:"type"`
+	ID           string          `json:"id"`
+	Published    string          `json:"published"`
+	CargoName    string          `json:"cargoName"`
+	CargoVersion string          `json:"cargoVersion"`
+	CargoCksum   string          `json:"cargoCksum"`
+	CargoSize    int64           `json:"cargoSize"`
+	CargoBlobSHA string          `json:"cargoBlobSHA256"`
+	CargoMeta    json.RawMessage `json:"cargoMeta"`
+}
+
+type CargoYank struct {
+	Context      []string `json:"@context"`
+	Type         string   `json:"type"`
+	ID           string   `json:"id"`
+	Published    string   `json:"published"`
+	CargoName    string   `json:"cargoName"`
+	CargoVersion string   `json:"cargoVersion"`
+	CargoYanked  bool     `json:"cargoYanked"`
+}
+
+func cargoContext() []string {
+	return []string{activitypub.ContextActivityStreams, activitypub.ContextSecurity}
+}
+
+type federationAdapter struct {
+	backend *Backend
+}
+
+func (b *Backend) FederationAdapter() activitypub.FederationAdapter {
+	return &federationAdapter{backend: b}
+}
+
+func (a *federationAdapter) PackageType() string { return packageType }
+func (a *federationAdapter) APTypes() []string   { return []string{apTypeVersion, apTypeYank} }
+
+func (a *federationAdapter) Ingest(ctx context.Context, _, apType string, obj map[string]any, actorURL string) error {
+	switch apType {
+	case apTypeVersion:
+		return a.ingestVersion(ctx, obj, actorURL)
+	case apTypeYank:
+		return a.applyYank(ctx, obj, actorURL)
+	}
+	return nil
+}
+
+func (a *federationAdapter) ingestVersion(ctx context.Context, obj map[string]any, actorURL string) error {
+	name, _ := obj["cargoName"].(string)
+	version, _ := obj["cargoVersion"].(string)
+	if name == "" || version == "" {
+		return fmt.Errorf("cargo version: missing cargoName or cargoVersion")
+	}
+	dbPkg, err := a.backend.db.GetOrCreatePackage(ctx, packageType, name, actorURL)
+	if err != nil {
+		return fmt.Errorf("cargo version: get-or-create: %w", err)
+	}
+
+	cksum, _ := obj["cargoCksum"].(string)
+	size, _ := obj["cargoSize"].(float64)
+	blobSHA, _ := obj["cargoBlobSHA256"].(string)
+
+	stored := storedVersion{Cksum: cksum}
+	if meta, ok := obj["cargoMeta"]; ok && meta != nil {
+		if err := remarshalInto(meta, &stored.Meta); err != nil {
+			return fmt.Errorf("cargo version: decode meta: %w", err)
+		}
+	}
+	metaBytes, err := json.Marshal(stored)
+	if err != nil {
+		return fmt.Errorf("cargo version: encode stored: %w", err)
+	}
+
+	v := &database.PackageVersion{
+		PackageID:   dbPkg.ID,
+		Version:     version,
+		Metadata:    metaBytes,
+		MediaType:   versionMediaType,
+		SizeBytes:   int64(len(metaBytes)),
+		SourceActor: &actorURL,
+	}
+	if err := a.backend.db.PutPackageVersion(ctx, v); err != nil {
+		return fmt.Errorf("cargo version: put version: %w", err)
+	}
+
+	if blobSHA != "" {
+		contentType := crateMediaType
+		if err := a.backend.db.PutBlob(ctx, blobSHA, int64(size), &contentType, false); err != nil {
+			return fmt.Errorf("cargo version: put blob ref: %w", err)
+		}
+		file := &database.PackageFile{
+			VersionID:   v.ID,
+			Filename:    crateFilename(name, version),
+			BlobDigest:  blobSHA,
+			SizeBytes:   int64(size),
+			ContentType: &contentType,
+		}
+		if err := a.backend.db.PutPackageFile(ctx, file); err != nil {
+			return fmt.Errorf("cargo version: put file: %w", err)
+		}
+	}
+	return nil
+}
+
+func (a *federationAdapter) applyYank(ctx context.Context, obj map[string]any, actorURL string) error {
+	name, _ := obj["cargoName"].(string)
+	version, _ := obj["cargoVersion"].(string)
+	yanked, _ := obj["cargoYanked"].(bool)
+	if name == "" || version == "" {
+		return fmt.Errorf("cargo yank: missing cargoName or cargoVersion")
+	}
+	dbPkg, err := lookupOwnedPackage(ctx, a.backend.db, name, actorURL)
+	if err != nil || dbPkg == nil {
+		return err
+	}
+	v, err := a.backend.db.GetPackageVersion(ctx, dbPkg.ID, version)
+	if err != nil || v == nil {
+		return err
+	}
+	var stored storedVersion
+	if err := json.Unmarshal(v.Metadata, &stored); err != nil {
+		return fmt.Errorf("cargo yank: decode stored: %w", err)
+	}
+	stored.Yanked = yanked
+	updated, err := json.Marshal(stored)
+	if err != nil {
+		return fmt.Errorf("cargo yank: encode stored: %w", err)
+	}
+	v.Metadata = updated
+	v.SizeBytes = int64(len(updated))
+	return a.backend.db.PutPackageVersion(ctx, v)
+}
+
+func (b *Backend) publishVersion(ctx context.Context, name string, v *database.PackageVersion, file *database.PackageFile, cksum string, meta any) {
+	if b.publisher == nil {
+		return
+	}
+	rawMeta, err := json.Marshal(meta)
+	if err != nil {
+		b.logger.Warn("cargo federation: marshal meta", "err", err)
+		return
+	}
+	obj := CargoVersion{
+		Context:      cargoContext(),
+		Type:         apTypeVersion,
+		ID:           b.endpoint + "/ap/objects/cargo-version/" + url.PathEscape(name) + "/" + url.PathEscape(v.Version),
+		Published:    activitypub.NowRFC3339(),
+		CargoName:    name,
+		CargoVersion: v.Version,
+		CargoCksum:   cksum,
+		CargoSize:    file.SizeBytes,
+		CargoBlobSHA: file.BlobDigest,
+		CargoMeta:    rawMeta,
+	}
+	if err := b.publisher.Publish(ctx, "Create", obj); err != nil {
+		b.logger.Warn("cargo federation: publish version", "err", err, "name", name, "version", v.Version)
+	}
+}
+
+func (b *Backend) publishYank(ctx context.Context, name, version string, yanked bool) {
+	if b.publisher == nil {
+		return
+	}
+	obj := CargoYank{
+		Context:      cargoContext(),
+		Type:         apTypeYank,
+		ID:           b.endpoint + "/ap/objects/cargo-yank/" + url.PathEscape(name) + "/" + url.PathEscape(version),
+		Published:    activitypub.NowRFC3339(),
+		CargoName:    name,
+		CargoVersion: version,
+		CargoYanked:  yanked,
+	}
+	if err := b.publisher.Publish(ctx, "Update", obj); err != nil {
+		b.logger.Warn("cargo federation: publish yank", "err", err, "name", name, "version", version, "yanked", yanked)
+	}
+}
+
+// lookupOwnedPackage returns nil,nil for an unknown crate (yank-before-create
+// is a no-op rather than an error) and an error if the sender doesn't own it.
+func lookupOwnedPackage(ctx context.Context, db *database.DB, name, actorURL string) (*database.Package, error) {
+	pkg, err := db.GetPackage(ctx, packageType, name)
+	if err != nil {
+		return nil, fmt.Errorf("lookup package: %w", err)
+	}
+	if pkg == nil {
+		return nil, nil
+	}
+	if pkg.OwnerID != actorURL {
+		return nil, fmt.Errorf("cargo crate %s not owned by %s", name, actorURL)
+	}
+	return pkg, nil
+}
+
+func remarshalInto(v any, target any) error {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(raw, target)
+}
