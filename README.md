@@ -195,7 +195,7 @@ Every backend emits its own AP activities on write. Peers ingest them through a 
 |-----------|----------|----------------|
 | `twine upload` (per file) | `Create PypiFile` | Peer stores file metadata; serves via the simple index |
 
-For OCI, peers eagerly replicate blob bytes in the background. For the other backends, peers store metadata only and 302-redirect file requests back to a peer that holds the bytes (recorded in `peer_blobs` at ingest time). If every known peer with the bytes is down or unhealthy, the redirect can't fire and the request 404s.
+All four backends eagerly replicate file bytes in the background after ingest. The OCI side does it via `BlobReplicator.ReplicateBlob` (driven by `Announce OCIBlob`); npm/cargo/pypi do it via `BlobReplicator.ReplicateFromURL` (driven by the per-version Create activities, using the per-backend download URL on the peer endpoint). If replication hasn't completed yet, or it failed, the download handler 302-redirects to a peer that has the bytes in `peer_blobs`; if every known peer is down, the request 404s.
 
 ### Delivery
 

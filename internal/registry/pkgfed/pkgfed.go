@@ -50,3 +50,10 @@ func RecordPeerBlob(ctx context.Context, db *database.DB, actorURL, digest strin
 	}
 	return db.PutPeerBlob(ctx, actorURL, digest, endpoint)
 }
+
+// Replicator eagerly fetches a content-addressed blob from a peer URL into
+// the local blobstore. The interface lives here so backends can accept it via
+// Config without importing peering directly.
+type Replicator interface {
+	ReplicateFromURL(ctx context.Context, sourceURL, digest string)
+}

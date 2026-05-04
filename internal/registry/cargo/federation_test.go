@@ -2,16 +2,20 @@ package cargo
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/blobstore"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/database"
+	"git.erwanleboucher.dev/eleboucher/apoci/internal/peering"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/registry/pkgfed/pkgfedtest"
+	"git.erwanleboucher.dev/eleboucher/apoci/internal/validate"
 )
 
 func newTestServerWithPublisher(t *testing.T, p *pkgfedtest.StubPublisher) *httptest.Server {
@@ -30,7 +34,7 @@ func newTestServerWithPublisher(t *testing.T, p *pkgfedtest.StubPublisher) *http
 		Blobs:     blobs,
 		Endpoint:  srv.URL,
 		Token:     testToken,
-		Owner:     "https://alice.example.com/ap/actor",
+		Owner:     testOwnerURL,
 		Publisher: p,
 		Logger:    nopLog(),
 	})
@@ -89,6 +93,77 @@ func TestYankAndUnyankEmitActivities(t *testing.T) {
 	assert.True(t, yank0.CargoYanked)
 	assert.False(t, yank1.CargoYanked)
 }
+
+func TestEagerReplicationStoresBytesLocally(t *testing.T) {
+	prev := validate.AllowPrivateIPs.Load()
+	validate.AllowPrivateIPs.Store(true)
+	t.Cleanup(func() { validate.AllowPrivateIPs.Store(prev) })
+
+	pub := &pkgfedtest.StubPublisher{}
+	originSrv := newTestServerWithPublisher(t, pub)
+	originActor := originSrv.URL + "/ap/actor"
+
+	body := publishBody(t, "serde", "1.0.0", nil, []byte("real-crate-bytes"))
+	resp := doRequest(t, originSrv, http.MethodPut, "/cargo/api/v1/crates/new", body, true)
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	_ = resp.Body.Close()
+	originActs := pub.Activities()
+	require.Len(t, originActs, 1)
+
+	peerDB, err := database.OpenSQLite(t.TempDir(), 0, 0, nopLog())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = peerDB.Close() })
+	peerBlobs, err := blobstore.New(t.TempDir(), nopLog())
+	require.NoError(t, err)
+	require.NoError(t, peerDB.UpsertActor(t.Context(), &database.Actor{
+		ActorURL:          originActor,
+		Endpoint:          originSrv.URL,
+		ReplicationPolicy: "lazy",
+		IsHealthy:         true,
+	}))
+
+	fetcher := peering.NewFetcher(10*time.Second, 10<<20, 10<<20, nopLog())
+	replicator := peering.NewBlobReplicator(peerDB, peerBlobs, fetcher, silentNotifier{}, nopLog())
+
+	peer := New(Config{
+		DB:         peerDB,
+		Blobs:      peerBlobs,
+		Endpoint:   "https://peer.example.com",
+		Owner:      "https://peer.example.com/ap/actor",
+		Replicator: replicator,
+		Logger:     nopLog(),
+	})
+
+	raw, err := json.Marshal(originActs[0].Object)
+	require.NoError(t, err)
+	var asMap map[string]any
+	require.NoError(t, json.Unmarshal(raw, &asMap))
+	require.NoError(t, peer.FederationAdapter().Ingest(t.Context(), "Create", "CargoVersion", asMap, originActor))
+	replicator.Wait()
+
+	pkg, err := peerDB.GetPackage(t.Context(), packageType, "serde")
+	require.NoError(t, err)
+	require.NotNil(t, pkg)
+	v, err := peerDB.GetPackageVersion(t.Context(), pkg.ID, "1.0.0")
+	require.NoError(t, err)
+	files, err := peerDB.ListPackageFiles(t.Context(), v.ID)
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+
+	exists, err := peerBlobs.Exists(t.Context(), files[0].BlobDigest)
+	require.NoError(t, err)
+	assert.True(t, exists, "peer should have replicated the crate bytes locally")
+
+	rc, _, err := peerBlobs.Open(t.Context(), files[0].BlobDigest)
+	require.NoError(t, err)
+	got, _ := io.ReadAll(rc)
+	_ = rc.Close()
+	assert.Equal(t, []byte("real-crate-bytes"), got)
+}
+
+type silentNotifier struct{}
+
+func (silentNotifier) Send(_, _ string) {}
 
 func TestPeerRedirectsToOriginOnBlobMiss(t *testing.T) {
 	pub := &pkgfedtest.StubPublisher{}

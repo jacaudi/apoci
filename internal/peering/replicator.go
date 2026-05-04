@@ -31,6 +31,7 @@ type ReplicatorRepository interface {
 
 type BlobStreamFetcher interface {
 	FetchBlobStream(ctx context.Context, peerEndpoint, repo, digest string) (*BlobStream, error)
+	FetchStream(ctx context.Context, sourceURL string) (*BlobStream, error)
 }
 
 type BlobReplicator struct {
@@ -83,6 +84,70 @@ func (r *BlobReplicator) ReplicateBlob(ctx context.Context, peerEndpoint, digest
 		defer cancel()
 		r.replicateBlob(bgCtx, peerEndpoint, digest)
 	})
+}
+
+// ReplicateFromURL eagerly fetches a content-addressed blob from an arbitrary
+// URL (used by package backends whose download routes don't follow the OCI
+// /v2/repo/blobs/digest layout). On success the blob is stored locally and
+// the blobs row is marked stored_locally=true. Errors are logged, not
+// returned: replication is best-effort, and the redirect-to-peer fallback
+// still works if this fails.
+func (r *BlobReplicator) ReplicateFromURL(ctx context.Context, sourceURL, digest string) {
+	if exists, err := r.blobs.Exists(ctx, digest); err != nil {
+		r.logger.Warn("failed to check blob existence before replication", "digest", digest, "error", err)
+		return
+	} else if exists {
+		return
+	}
+
+	metrics.BlobReplicationsStarted.Inc()
+	metrics.BlobReplicationsInFlight.Inc()
+
+	r.wg.Go(func() {
+		defer metrics.BlobReplicationsInFlight.Dec()
+		defer r.recoverPanic(digest)
+
+		r.sem <- struct{}{}
+		defer func() { <-r.sem }()
+
+		bgCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
+		defer cancel()
+		r.replicateFromURL(bgCtx, sourceURL, digest)
+	})
+}
+
+func (r *BlobReplicator) replicateFromURL(ctx context.Context, sourceURL, digest string) {
+	fetchStart := time.Now()
+	stream, err := r.fetcher.FetchStream(ctx, sourceURL)
+	if err != nil {
+		metrics.BlobReplicationsFailed.Add(1)
+		r.logger.Warn("eager replication failed", "digest", digest, "url", sourceURL, "error", err)
+		r.notifier.Send(notify.EventReplicationFailure, fmt.Sprintf("Failed to replicate blob %s from %s: %v", digest, sourceURL, err))
+		return
+	}
+	defer func() {
+		if err := stream.Body.Close(); err != nil {
+			r.logger.Warn("failed to close blob stream", "digest", digest, "error", err)
+		}
+	}()
+
+	storedDigest, size, err := r.blobs.Put(ctx, stream.Body, digest)
+	if err != nil {
+		metrics.BlobReplicationsFailed.Add(1)
+		r.logger.Warn("failed to store replicated blob", "digest", digest, "error", err)
+		r.notifier.Send(notify.EventReplicationFailure, fmt.Sprintf("Failed to store replicated blob %s: %v", digest, err))
+		return
+	}
+
+	mt := "application/octet-stream"
+	if err := r.db.PutBlob(ctx, storedDigest, size, &mt, true); err != nil {
+		r.logger.Warn("failed to update blob metadata after replication", "digest", digest, "error", err)
+		return
+	}
+
+	metrics.BlobFetchDuration.Observe(time.Since(fetchStart).Seconds())
+	metrics.BlobReplicationsSucceeded.Add(1)
+	r.logger.Info("eagerly replicated blob", "digest", digest, "url", sourceURL, "size", size)
 }
 
 // recoverPanic recovers from panics in replication goroutines and logs them.

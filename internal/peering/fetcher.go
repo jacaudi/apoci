@@ -55,6 +55,32 @@ func peerURL(endpoint, path string) string {
 	return strings.TrimRight(endpoint, "/") + path
 }
 
+// FetchStream is the URL-agnostic counterpart to FetchBlobStream. Backends
+// whose download URLs aren't OCI-shaped (npm, cargo, pypi) build the URL
+// themselves and pass it here.
+func (f *Fetcher) FetchStream(ctx context.Context, sourceURL string) (*BlobStream, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, sourceURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("creating request: %w", err)
+	}
+	req.Header.Set("User-Agent", version.UserAgent)
+
+	resp, err := f.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("fetching %s: %w", sourceURL, err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("source %s returned %d", sourceURL, resp.StatusCode)
+	}
+	return &BlobStream{
+		Body: &streamLimitedReader{
+			Reader: io.LimitReader(resp.Body, f.maxBlobSize+1),
+			closer: resp.Body,
+		},
+	}, nil
+}
+
 // FetchBlobStream initiates a blob fetch from a peer and returns a streaming reader.
 // The data is not buffered in memory — the caller should pipe it directly to
 // persistent storage (e.g., blobstore.Put) which handles digest verification.

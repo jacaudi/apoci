@@ -12,6 +12,7 @@ import (
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/activitypub"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/blobstore"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/database"
+	"git.erwanleboucher.dev/eleboucher/apoci/internal/registry/pkgfed"
 )
 
 const (
@@ -20,24 +21,26 @@ const (
 )
 
 type Backend struct {
-	db        *database.DB
-	blobs     blobstore.BlobStore
-	logger    *slog.Logger
-	endpoint  string
-	token     string
-	owner     string
-	publisher activitypub.PackagePublisher
-	handler   http.Handler
+	db         *database.DB
+	blobs      blobstore.BlobStore
+	logger     *slog.Logger
+	endpoint   string
+	token      string
+	owner      string
+	publisher  activitypub.PackagePublisher
+	replicator pkgfed.Replicator
+	handler    http.Handler
 }
 
 type Config struct {
-	DB        *database.DB
-	Blobs     blobstore.BlobStore
-	Endpoint  string
-	Token     string
-	Owner     string
-	Publisher activitypub.PackagePublisher
-	Logger    *slog.Logger
+	DB         *database.DB
+	Blobs      blobstore.BlobStore
+	Endpoint   string
+	Token      string
+	Owner      string
+	Publisher  activitypub.PackagePublisher
+	Replicator pkgfed.Replicator
+	Logger     *slog.Logger
 }
 
 func New(cfg Config) *Backend {
@@ -45,13 +48,14 @@ func New(cfg Config) *Backend {
 		cfg.Logger = slog.Default()
 	}
 	b := &Backend{
-		db:        cfg.DB,
-		blobs:     cfg.Blobs,
-		logger:    cfg.Logger,
-		endpoint:  strings.TrimRight(cfg.Endpoint, "/"),
-		token:     cfg.Token,
-		owner:     cfg.Owner,
-		publisher: cfg.Publisher,
+		db:         cfg.DB,
+		blobs:      cfg.Blobs,
+		logger:     cfg.Logger,
+		endpoint:   strings.TrimRight(cfg.Endpoint, "/"),
+		token:      cfg.Token,
+		owner:      cfg.Owner,
+		publisher:  cfg.Publisher,
+		replicator: cfg.Replicator,
 	}
 	b.handler = b.routes()
 	return b

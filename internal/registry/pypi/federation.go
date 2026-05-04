@@ -103,6 +103,11 @@ func (a *federationAdapter) ingestFile(ctx context.Context, obj map[string]any, 
 		if err := pkgfed.RecordPeerBlob(ctx, a.backend.db, actorURL, blobSHA); err != nil {
 			return fmt.Errorf("pypi file: put peer blob: %w", err)
 		}
+		if a.backend.replicator != nil {
+			if peer := activitypub.EndpointFromActorURL(actorURL); peer != "" {
+				a.backend.replicator.ReplicateFromURL(ctx, peerFileURL(peer, name, version, filename), blobSHA)
+			}
+		}
 	}
 	file := &database.PackageFile{
 		VersionID:   v.ID,
@@ -154,7 +159,10 @@ func (b *Backend) redirectToPeer(ctx context.Context, w http.ResponseWriter, r *
 	if err != nil || len(peers) == 0 {
 		return false
 	}
-	target := peers[0].PeerEndpoint + routePrefix + "/files/" + url.PathEscape(name) + "/" + url.PathEscape(version) + "/" + url.PathEscape(filename)
-	http.Redirect(w, r, target, http.StatusFound)
+	http.Redirect(w, r, peerFileURL(peers[0].PeerEndpoint, name, version, filename), http.StatusFound) //nolint:gosec // peer endpoint sourced from authenticated federation activity
 	return true
+}
+
+func peerFileURL(peerEndpoint, name, version, filename string) string {
+	return peerEndpoint + routePrefix + "/files/" + url.PathEscape(name) + "/" + url.PathEscape(version) + "/" + url.PathEscape(filename)
 }

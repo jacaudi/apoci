@@ -109,6 +109,11 @@ func (a *federationAdapter) ingestVersion(ctx context.Context, obj map[string]an
 		if err := pkgfed.RecordPeerBlob(ctx, a.backend.db, actorURL, blobSHA); err != nil {
 			return fmt.Errorf("cargo version: put peer blob: %w", err)
 		}
+		if a.backend.replicator != nil {
+			if peer := activitypub.EndpointFromActorURL(actorURL); peer != "" {
+				a.backend.replicator.ReplicateFromURL(ctx, peerCrateURL(peer, name, version), blobSHA)
+			}
+		}
 		file := &database.PackageFile{
 			VersionID:   v.ID,
 			Filename:    crateFilename(name, version),
@@ -201,7 +206,10 @@ func (b *Backend) redirectToPeer(ctx context.Context, w http.ResponseWriter, r *
 	if err != nil || len(peers) == 0 {
 		return false
 	}
-	target := peers[0].PeerEndpoint + routePrefix + "/api/v1/crates/" + url.PathEscape(name) + "/" + url.PathEscape(version) + "/download"
-	http.Redirect(w, r, target, http.StatusFound)
+	http.Redirect(w, r, peerCrateURL(peers[0].PeerEndpoint, name, version), http.StatusFound) //nolint:gosec // peer endpoint sourced from authenticated federation activity
 	return true
+}
+
+func peerCrateURL(peerEndpoint, name, version string) string {
+	return peerEndpoint + routePrefix + "/api/v1/crates/" + url.PathEscape(name) + "/" + url.PathEscape(version) + "/download"
 }

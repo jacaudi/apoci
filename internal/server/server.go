@@ -153,21 +153,24 @@ func New(cfg *config.Config, db *database.DB, blobs blobstore.BlobStore, identit
 		{"npm", cfg.Backends.NPM, func(pub activitypub.PackagePublisher) (pkgreg.Backend, activitypub.FederationAdapter) {
 			b := npm.New(npm.Config{
 				DB: db, Blobs: blobs, Endpoint: cfg.Endpoint, Owner: identity.ActorURL,
-				Token: cfg.Backends.NPM.TokenOr(cfg.RegistryToken), Publisher: pub, Logger: logger,
+				Token: cfg.Backends.NPM.TokenOr(cfg.RegistryToken), Publisher: pub,
+				Replicator: blobReplicator, Logger: logger,
 			})
 			return b, b.FederationAdapter()
 		}},
 		{"cargo", cfg.Backends.Cargo, func(pub activitypub.PackagePublisher) (pkgreg.Backend, activitypub.FederationAdapter) {
 			b := cargo.New(cargo.Config{
 				DB: db, Blobs: blobs, Endpoint: cfg.Endpoint, Owner: identity.ActorURL,
-				Token: cfg.Backends.Cargo.TokenOr(cfg.RegistryToken), Publisher: pub, Logger: logger,
+				Token: cfg.Backends.Cargo.TokenOr(cfg.RegistryToken), Publisher: pub,
+				Replicator: blobReplicator, Logger: logger,
 			})
 			return b, b.FederationAdapter()
 		}},
 		{"pypi", cfg.Backends.PyPI, func(pub activitypub.PackagePublisher) (pkgreg.Backend, activitypub.FederationAdapter) {
 			b := pypi.New(pypi.Config{
 				DB: db, Blobs: blobs, Endpoint: cfg.Endpoint, Owner: identity.ActorURL,
-				Token: cfg.Backends.PyPI.TokenOr(cfg.RegistryToken), Publisher: pub, Logger: logger,
+				Token: cfg.Backends.PyPI.TokenOr(cfg.RegistryToken), Publisher: pub,
+				Replicator: blobReplicator, Logger: logger,
 			})
 			return b, b.FederationAdapter()
 		}},

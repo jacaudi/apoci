@@ -60,13 +60,12 @@ Activities for a given package are not strictly ordered across peers. If `Update
 
 ## File bytes
 
-The new backends federate metadata only. Peers don't replicate the underlying tarballs / .crate files / wheels into their local blob store. Instead:
+All four backends use the same two-tier model:
 
-1. On ingest, the adapter calls `PutPeerBlob(senderActor, digest, senderEndpoint)` so the peer remembers where the bytes live.
-2. On a download request, if the local `blobs.Open` returns `ErrBlobNotFound`, the handler calls `FindPeersWithBlob(digest)` and 302-redirects to the first healthy peer that has it (using the per-backend URL pattern).
-3. If no healthy peer is recorded for that digest, the handler 404s.
+1. On ingest, the adapter records the peer in `peer_blobs` (so we know where bytes can be fetched) and asynchronously calls `BlobReplicator.ReplicateFromURL` to pull the file into the local blobstore. Replication is best-effort with a 5-minute per-blob timeout, capped concurrency, and panic recovery.
+2. On a download request, the handler tries the local blobstore first. On `ErrBlobNotFound` (replication hasn't completed or failed), it 302-redirects to a peer in `peer_blobs`. If no healthy peer has it, the request 404s.
 
-OCI's `peering.BlobReplicator` does eager pull-through replication for blobs. Adding the same for npm/cargo/pypi is a follow-up — for now, peers act as metadata mirrors with redirect-on-fetch.
+The redirect path is the safety net: even if eager replication is slow or breaks, clients still resolve to the bytes as long as one peer is up. Once replication completes, subsequent requests serve locally.
 
 ## Per-backend configuration
 

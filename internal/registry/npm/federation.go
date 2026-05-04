@@ -124,6 +124,11 @@ func (a *federationAdapter) ingestVersion(ctx context.Context, obj map[string]an
 			if err := pkgfed.RecordPeerBlob(ctx, a.backend.db, actorURL, blobDigest); err != nil {
 				return fmt.Errorf("npm version: put peer blob: %w", err)
 			}
+			if a.backend.replicator != nil {
+				if peer := activitypub.EndpointFromActorURL(actorURL); peer != "" {
+					a.backend.replicator.ReplicateFromURL(ctx, peerTarballURL(peer, name, filename), blobDigest)
+				}
+			}
 		}
 		file := &database.PackageFile{
 			VersionID:   v.ID,
@@ -236,14 +241,18 @@ func (b *Backend) publishTag(ctx context.Context, activityType, name, tag, versi
 	}
 }
 
-// packageName is intentionally not url.PathEscape'd: scoped names ("@scope/foo")
-// rely on the embedded slash being a path separator on the upstream peer.
 func (b *Backend) redirectToPeer(ctx context.Context, w http.ResponseWriter, r *http.Request, digest, packageName, filename string) bool {
 	peers, err := b.db.FindPeersWithBlob(ctx, digest)
 	if err != nil || len(peers) == 0 {
 		return false
 	}
-	target := peers[0].PeerEndpoint + routePrefix + "/" + packageName + "/-/" + url.PathEscape(filename)
-	http.Redirect(w, r, target, http.StatusFound)
+	http.Redirect(w, r, peerTarballURL(peers[0].PeerEndpoint, packageName, filename), http.StatusFound) //nolint:gosec // peer endpoint sourced from authenticated federation activity
 	return true
+}
+
+// peerTarballURL builds a tarball URL on a peer. packageName is intentionally
+// not url.PathEscape'd: scoped names ("@scope/foo") rely on the embedded slash
+// being a path separator on the upstream.
+func peerTarballURL(peerEndpoint, packageName, filename string) string {
+	return peerEndpoint + routePrefix + "/" + packageName + "/-/" + url.PathEscape(filename)
 }
