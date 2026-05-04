@@ -31,15 +31,15 @@ func testServerWithUI(t *testing.T, uiEnabled bool) *Server {
 	blobs, err := blobstore.New(dir, logger)
 	require.NoError(t, err)
 
-	identity, err := activitypub.LoadOrCreateIdentity("https://test.example.com", "test.example.com", "", "", logger)
+	identity, err := activitypub.LoadOrCreateIdentity("https://test.example.com", testDomain, "", "", logger)
 	require.NoError(t, err)
 
 	gcEnabled := true
 	cfg := &config.Config{
 		Name:          "test-node",
 		Endpoint:      "https://test.example.com",
-		Domain:        "test.example.com",
-		AccountDomain: "test.example.com",
+		Domain:        testDomain,
+		AccountDomain: testDomain,
 		Listen:        ":0",
 		RegistryToken: "test-token",
 		ImmutableTags: `^v[0-9]`,

@@ -13,21 +13,21 @@ func TestParseUpstreamRepo(t *testing.T) {
 		{
 			name:         "docker hub library image",
 			repo:         "docker.io/library/nginx",
-			wantRegistry: "docker.io",
+			wantRegistry: testRegistryDocker,
 			wantPath:     "library/nginx",
 			wantOK:       true,
 		},
 		{
 			name:         "docker hub user image",
 			repo:         "docker.io/myuser/myimage",
-			wantRegistry: "docker.io",
+			wantRegistry: testRegistryDocker,
 			wantPath:     "myuser/myimage",
 			wantOK:       true,
 		},
 		{
 			name:         "ghcr.io image",
 			repo:         "ghcr.io/owner/repo",
-			wantRegistry: "ghcr.io",
+			wantRegistry: testRegistryGHCR,
 			wantPath:     "owner/repo",
 			wantOK:       true,
 		},
@@ -96,7 +96,7 @@ func TestParseUpstreamRepo(t *testing.T) {
 		},
 		{
 			name:         "registry only no path",
-			repo:         "docker.io",
+			repo:         testRegistryDocker,
 			wantRegistry: "",
 			wantPath:     "",
 			wantOK:       false,

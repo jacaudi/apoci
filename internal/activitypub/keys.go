@@ -25,7 +25,7 @@ func (id *Identity) PublicKeyPEM() (string, error) {
 		return "", fmt.Errorf("marshaling public key: %w", err)
 	}
 	pubPEM := pem.EncodeToMemory(&pem.Block{
-		Type:  "PUBLIC KEY",
+		Type:  PEMTypePublicKey,
 		Bytes: pubASN1,
 	})
 	return string(pubPEM), nil

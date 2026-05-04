@@ -31,9 +31,9 @@ func NewAdapterRegistry() *AdapterRegistry {
 
 // Reserved by the legacy OCI dispatch in inbox_content.go.
 var reservedAPTypes = map[string]struct{}{
-	"OCIManifest": {},
-	"OCITag":      {},
-	"OCIBlob":     {},
+	TypeOCIManifest: {},
+	TypeOCITag:      {},
+	TypeOCIBlob:     {},
 }
 
 func (r *AdapterRegistry) Register(a FederationAdapter) error {

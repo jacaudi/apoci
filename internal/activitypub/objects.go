@@ -11,6 +11,38 @@ const (
 	ContextActivityStreams = "https://www.w3.org/ns/activitystreams"
 	ContextSecurity        = "https://w3id.org/security/v1"
 	ContextOCI             = "https://opencontainers.org/ns/distribution"
+
+	KeyContext = "@context"
+	KeyType    = "type"
+	KeyObject  = "object"
+	KeyActor   = "actor"
+	KeyID      = "id"
+
+	TypeOCIManifest = "OCIManifest"
+	TypeOCITag      = "OCITag"
+	TypeOCIBlob     = "OCIBlob"
+	TypeApplication = "Application"
+	TypePerson      = "Person"
+
+	TypeOrderedCollection     = "OrderedCollection"
+	TypeOrderedCollectionPage = "OrderedCollectionPage"
+
+	KeyOCIRepository = "ociRepository"
+	KeyOCIDigest     = "ociDigest"
+	KeyOCITag        = "ociTag"
+	KeyOCIMediaType  = "ociMediaType"
+	KeyOCISize       = "ociSize"
+	KeyOCIContent    = "ociContent"
+	KeyOCIEndpoint   = "ociEndpoint"
+
+	MediaTypeActivityJSON = "application/activity+json"
+	PEMTypePublicKey      = "PUBLIC KEY"
+	WebFingerRelSelf      = "self"
+
+	keyTotalItems   = "totalItems"
+	keyFirst        = "first"
+	keyPartOf       = "partOf"
+	keyOrderedItems = "orderedItems"
 )
 
 type OCIManifest struct {

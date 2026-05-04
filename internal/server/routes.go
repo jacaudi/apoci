@@ -129,9 +129,11 @@ func (s *Server) isPrivateRead(ctx context.Context, path string) bool {
 	return false // not a configured upstream
 }
 
+const keyStatus = "status"
+
 func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	_ = json.NewEncoder(w).Encode(map[string]string{keyStatus: "ok"})
 }
 
 func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
@@ -139,11 +141,11 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 		s.logger.Warn("readyz check failed", "error", err)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
-		_ = json.NewEncoder(w).Encode(map[string]string{"status": "not ready"})
+		_ = json.NewEncoder(w).Encode(map[string]string{keyStatus: "not ready"})
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{"status": "ready"})
+	_ = json.NewEncoder(w).Encode(map[string]string{keyStatus: "ready"})
 }
 
 func (s *Server) handleRegistryAuth(w http.ResponseWriter, r *http.Request) {

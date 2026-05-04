@@ -18,7 +18,7 @@ func TestListManifestsBySubject(t *testing.T) {
 	base := &Manifest{
 		RepositoryID: repo.ID,
 		Digest:       "sha256:basemanifest",
-		MediaType:    "application/vnd.oci.image.manifest.v1+json",
+		MediaType:    testManifestMediaType,
 		SizeBytes:    100,
 		Content:      []byte(`{"schemaVersion":2}`),
 	}
@@ -30,7 +30,7 @@ func TestListManifestsBySubject(t *testing.T) {
 	referrer := &Manifest{
 		RepositoryID:  repo.ID,
 		Digest:        "sha256:referrer1",
-		MediaType:     "application/vnd.oci.image.manifest.v1+json",
+		MediaType:     testManifestMediaType,
 		SizeBytes:     200,
 		Content:       []byte(`{"schemaVersion":2,"subject":{}}`),
 		SubjectDigest: &subjectDigest,

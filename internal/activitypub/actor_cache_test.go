@@ -26,7 +26,7 @@ func newTestActorServer(t *testing.T) (*httptest.Server, *atomic.Int64) {
 
 		actor := Actor{
 			Context:           []any{ContextActivityStreams},
-			Type:              "Person",
+			Type:              TypePerson,
 			ID:                "http://" + r.Host + "/ap/actor",
 			PreferredUsername: "testnode",
 			Inbox:             "http://" + r.Host + "/ap/inbox",

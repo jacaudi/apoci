@@ -26,7 +26,7 @@ func testWorkerSetup(t *testing.T) (*InboxWorker, *InboxHandler, *database.DB) {
 	handler := NewInboxHandler(identity, db, InboxConfig{
 		MaxManifestSize: config.DefaultMaxManifestSize,
 		MaxBlobSize:     config.DefaultMaxBlobSize,
-		AutoAccept:      "none",
+		AutoAccept:      AutoAcceptNone,
 	}, discardLogger())
 	t.Cleanup(handler.Stop)
 

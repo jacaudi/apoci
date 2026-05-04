@@ -19,6 +19,12 @@ import (
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/version"
 )
 
+const (
+	authNone  = "none"
+	authBasic = "basic"
+	authToken = "token"
+)
+
 // challengeCache holds a cached auth challenge discovery result.
 // mu protects all fields. done is only set to true on success, so
 // a failed discovery will be retried on the next call.
@@ -95,7 +101,7 @@ func (f *Fetcher) IsRepoPrivate(registryName, repo string) bool {
 	if reg.config.Private {
 		return true
 	}
-	if reg.config.Auth == "basic" && reg.config.Username != "" {
+	if reg.config.Auth == authBasic && reg.config.Username != "" {
 		return true
 	}
 	if reg.config.Username == "" {
@@ -296,12 +302,12 @@ func (f *Fetcher) fetchBlobStreamWithRetry(ctx context.Context, registryName, re
 // credentials are configured.
 func (f *Fetcher) addAuth(ctx context.Context, req *http.Request, reg *registry, repo string, useCredentials bool) error {
 	switch reg.config.Auth {
-	case "none":
+	case authNone:
 		return nil
 	case "basic":
 		req.SetBasicAuth(reg.config.Username, reg.config.Password)
 		return nil
-	case "token":
+	case authToken:
 		token, err := f.getToken(ctx, reg, repo, useCredentials)
 		if err != nil {
 			return err

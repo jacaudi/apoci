@@ -7,6 +7,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const testNpmType = "npm"
+
 type fakeBackend struct {
 	typeName string
 	prefix   string
@@ -19,25 +21,25 @@ func (f *fakeBackend) Handler() http.Handler { return http.NotFoundHandler() }
 func TestManagerRegister(t *testing.T) {
 	m := NewManager()
 
-	require.NoError(t, m.Register(&fakeBackend{typeName: "npm", prefix: "/npm"}))
+	require.NoError(t, m.Register(&fakeBackend{typeName: testNpmType, prefix: "/npm"}))
 	require.NoError(t, m.Register(&fakeBackend{typeName: "maven", prefix: "/maven"}))
 
 	require.Len(t, m.Backends(), 2)
-	require.Equal(t, "npm", m.Lookup("npm").Type())
+	require.Equal(t, testNpmType, m.Lookup(testNpmType).Type())
 	require.Equal(t, "maven", m.Lookup("maven").Type())
 	require.Nil(t, m.Lookup("nuget"))
 }
 
 func TestManagerRejectsDuplicateType(t *testing.T) {
 	m := NewManager()
-	require.NoError(t, m.Register(&fakeBackend{typeName: "npm", prefix: "/npm"}))
-	err := m.Register(&fakeBackend{typeName: "npm", prefix: "/npm-alt"})
+	require.NoError(t, m.Register(&fakeBackend{typeName: testNpmType, prefix: "/npm"}))
+	err := m.Register(&fakeBackend{typeName: testNpmType, prefix: "/npm-alt"})
 	require.Error(t, err)
 }
 
 func TestManagerRejectsDuplicatePrefix(t *testing.T) {
 	m := NewManager()
-	require.NoError(t, m.Register(&fakeBackend{typeName: "npm", prefix: "/pkg"}))
+	require.NoError(t, m.Register(&fakeBackend{typeName: testNpmType, prefix: "/pkg"}))
 	err := m.Register(&fakeBackend{typeName: "maven", prefix: "/pkg"})
 	require.Error(t, err)
 }

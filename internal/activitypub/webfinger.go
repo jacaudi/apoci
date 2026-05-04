@@ -129,7 +129,7 @@ func fetchWebFinger(ctx context.Context, domain, resource string) (string, error
 	}
 
 	for _, link := range wf.Links {
-		if link.Rel == "self" && link.Type == "application/activity+json" && link.Href != "" {
+		if link.Rel == WebFingerRelSelf && link.Type == MediaTypeActivityJSON && link.Href != "" {
 			return link.Href, nil
 		}
 	}
@@ -194,7 +194,7 @@ func (h *WebFingerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Links: []WebFingerLink{
 			{
 				Rel:  "self",
-				Type: "application/activity+json",
+				Type: MediaTypeActivityJSON,
 				Href: h.identity.ActorURL,
 			},
 		},

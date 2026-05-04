@@ -18,6 +18,12 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const (
+	AutoAcceptNone   = "none"
+	AutoAcceptMutual = "mutual"
+	AutoAcceptAll    = "all"
+)
+
 type Config struct {
 	Endpoint      string `yaml:"endpoint"      env:"APOCI_ENDPOINT"`
 	Name          string `yaml:"name"          env:"APOCI_NAME"`
@@ -294,7 +300,7 @@ func applyServerDefaults(cfg *Config) error {
 		cfg.Metrics.Listen = ":9090"
 	}
 	if cfg.Federation.AutoAccept == "" {
-		cfg.Federation.AutoAccept = "none"
+		cfg.Federation.AutoAccept = AutoAcceptNone
 	}
 	if cfg.AccountDomain == "" {
 		cfg.AccountDomain = cfg.Domain
@@ -527,7 +533,7 @@ func validateLogging(cfg *Config) error {
 }
 
 func validateFederation(cfg *Config) error {
-	validAutoAccept := map[string]bool{"none": true, "mutual": true, "all": true}
+	validAutoAccept := map[string]bool{AutoAcceptNone: true, AutoAcceptMutual: true, AutoAcceptAll: true}
 	if !validAutoAccept[cfg.Federation.AutoAccept] {
 		return fmt.Errorf("federation.autoAccept must be 'none', 'mutual', or 'all'")
 	}

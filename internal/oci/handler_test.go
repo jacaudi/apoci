@@ -21,7 +21,10 @@ import (
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/peering"
 )
 
-const testManifestMediaType = "application/vnd.oci.image.manifest.v1+json"
+const (
+	testManifestMediaType = "application/vnd.oci.image.manifest.v1+json"
+	testHostDomain        = "mortebrume.eu"
+)
 
 func testRegistry(t *testing.T) (*Registry, *httptest.Server) {
 	t.Helper()
@@ -372,14 +375,14 @@ func TestLooksLikeNamespaceTypo(t *testing.T) {
 		want      bool
 	}{
 		{"empty namespace", "foo/bar", "", false},
-		{"empty repo", "", "mortebrume.eu", false},
+		{"empty repo", "", testHostDomain, false},
 		{"single-label namespace never matches", "alice/x", "alice", false},
-		{"first segment is dns prefix label", "mortebrume/homelab", "mortebrume.eu", true},
-		{"first segment is bare label only", "mortebrume", "mortebrume.eu", true},
-		{"non-matching first segment", "myteam/x", "mortebrume.eu", false},
-		{"first segment already domain-scoped", "mortebrume.eu/x", "mortebrume.eu", false},
-		{"foreign domain-scoped path", "other.dev/x", "mortebrume.eu", false},
-		{"middle label does not match first label", "eu/x", "mortebrume.eu", false},
+		{"first segment is dns prefix label", "mortebrume/homelab", testHostDomain, true},
+		{"first segment is bare label only", "mortebrume", testHostDomain, true},
+		{"non-matching first segment", "myteam/x", testHostDomain, false},
+		{"first segment already domain-scoped", "mortebrume.eu/x", testHostDomain, false},
+		{"foreign domain-scoped path", "other.dev/x", testHostDomain, false},
+		{"middle label does not match first label", "eu/x", testHostDomain, false},
 		{"first label of multi-level namespace", "registry/x", "registry.example.com", true},
 	}
 	for _, tc := range cases {
@@ -397,7 +400,7 @@ func TestNamespaceTypoRejected(t *testing.T) {
 	blobs, err := blobstore.New(dir, nopLog())
 	require.NoError(t, err)
 
-	reg, err := NewRegistry(db, blobs, "https://registry.mortebrume.eu", "mortebrume.eu", "", config.DefaultMaxManifestSize, config.DefaultMaxBlobSize, nopLog())
+	reg, err := NewRegistry(db, blobs, "https://registry.mortebrume.eu", testHostDomain, "", config.DefaultMaxManifestSize, config.DefaultMaxBlobSize, nopLog())
 	require.NoError(t, err)
 	ctx := context.Background()
 

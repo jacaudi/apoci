@@ -122,7 +122,7 @@ func TestAdminListFollowsEmpty(t *testing.T) {
 	srv := httptest.NewServer(s.routes())
 	defer srv.Close()
 
-	req, _ := http.NewRequest("GET", srv.URL+"/api/admin/follows", nil)
+	req, _ := http.NewRequest("GET", srv.URL+testFollowsAPI, nil)
 	req.Header.Set("Authorization", "Bearer test-token")
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
@@ -147,7 +147,7 @@ func TestAdminListFollowsWithData(t *testing.T) {
 	srv := httptest.NewServer(s.routes())
 	defer srv.Close()
 
-	req, _ := http.NewRequest("GET", srv.URL+"/api/admin/follows", nil)
+	req, _ := http.NewRequest("GET", srv.URL+testFollowsAPI, nil)
 	req.Header.Set("Authorization", "Bearer test-token")
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
@@ -178,7 +178,7 @@ func TestAdminListFollowsInternalError(t *testing.T) {
 
 	_ = s.db.Close() // force DB error
 
-	req, _ := http.NewRequest("GET", srv.URL+"/api/admin/follows", nil)
+	req, _ := http.NewRequest("GET", srv.URL+testFollowsAPI, nil)
 	req.Header.Set("Authorization", "Bearer test-token")
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)
@@ -242,7 +242,7 @@ func TestAdminAddFollowMissingTarget(t *testing.T) {
 	defer srv.Close()
 
 	for _, body := range []string{`{}`, `{"target":""}`, `not-json`} {
-		req, _ := http.NewRequest("POST", srv.URL+"/api/admin/follows", strings.NewReader(body))
+		req, _ := http.NewRequest("POST", srv.URL+testFollowsAPI, strings.NewReader(body))
 		req.Header.Set("Authorization", "Bearer test-token")
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := http.DefaultClient.Do(req)
@@ -264,7 +264,7 @@ func TestAdminAddFollowResolveError(t *testing.T) {
 	srv := httptest.NewServer(s.routes())
 	defer srv.Close()
 
-	req, _ := http.NewRequest("POST", srv.URL+"/api/admin/follows", strings.NewReader(`{"target":"bad-target"}`))
+	req, _ := http.NewRequest("POST", srv.URL+testFollowsAPI, strings.NewReader(`{"target":"bad-target"}`))
 	req.Header.Set("Authorization", "Bearer test-token")
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
@@ -288,7 +288,7 @@ func TestAdminAddFollowFetchActorError(t *testing.T) {
 	defer srv.Close()
 
 	body := `{"target":"` + actorURL + `"}`
-	req, _ := http.NewRequest("POST", srv.URL+"/api/admin/follows", strings.NewReader(body))
+	req, _ := http.NewRequest("POST", srv.URL+testFollowsAPI, strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer test-token")
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
@@ -316,7 +316,7 @@ func TestAdminAddFollowDeliveryError(t *testing.T) {
 	defer srv.Close()
 
 	body := `{"target":"` + actorURL + `"}`
-	req, _ := http.NewRequest("POST", srv.URL+"/api/admin/follows", strings.NewReader(body))
+	req, _ := http.NewRequest("POST", srv.URL+testFollowsAPI, strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer test-token")
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
@@ -347,7 +347,7 @@ func TestAdminAddFollowSuccess(t *testing.T) {
 	defer srv.Close()
 
 	body := `{"target":"` + actorURL + `"}`
-	req, _ := http.NewRequest("POST", srv.URL+"/api/admin/follows", strings.NewReader(body))
+	req, _ := http.NewRequest("POST", srv.URL+testFollowsAPI, strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer test-token")
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
@@ -648,7 +648,7 @@ func TestAdminRemoveFollowMissingTarget(t *testing.T) {
 	srv := httptest.NewServer(s.routes())
 	defer srv.Close()
 
-	req, _ := http.NewRequest("DELETE", srv.URL+"/api/admin/follows", strings.NewReader(`{}`))
+	req, _ := http.NewRequest("DELETE", srv.URL+testFollowsAPI, strings.NewReader(`{}`))
 	req.Header.Set("Authorization", "Bearer test-token")
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
@@ -667,7 +667,7 @@ func TestAdminRemoveFollowNotFound(t *testing.T) {
 	defer srv.Close()
 
 	body := `{"target":"` + actorURL + `"}`
-	req, _ := http.NewRequest("DELETE", srv.URL+"/api/admin/follows", strings.NewReader(body))
+	req, _ := http.NewRequest("DELETE", srv.URL+testFollowsAPI, strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer test-token")
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
@@ -690,7 +690,7 @@ func TestAdminRemoveFollowSuccess(t *testing.T) {
 	defer srv.Close()
 
 	body := `{"target":"` + actorURL + `"}`
-	req, _ := http.NewRequest("DELETE", srv.URL+"/api/admin/follows", strings.NewReader(body))
+	req, _ := http.NewRequest("DELETE", srv.URL+testFollowsAPI, strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer test-token")
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
@@ -721,7 +721,7 @@ func TestAdminRemoveFollowOnlyOutgoing(t *testing.T) {
 	defer srv.Close()
 
 	body := `{"target":"` + actorURL + `"}`
-	req, _ := http.NewRequest("DELETE", srv.URL+"/api/admin/follows", strings.NewReader(body))
+	req, _ := http.NewRequest("DELETE", srv.URL+testFollowsAPI, strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer test-token")
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
@@ -749,7 +749,7 @@ func TestAdminRemoveFollowBothTables(t *testing.T) {
 	defer srv.Close()
 
 	body := `{"target":"` + actorURL + `"}`
-	req, _ := http.NewRequest("DELETE", srv.URL+"/api/admin/follows", strings.NewReader(body))
+	req, _ := http.NewRequest("DELETE", srv.URL+testFollowsAPI, strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer test-token")
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
@@ -785,7 +785,7 @@ func TestAdminRemoveFollowForceRemovesDespiteUnreachablePeer(t *testing.T) {
 	defer srv.Close()
 
 	body := `{"target":"` + actorURL + `","force":true}`
-	req, _ := http.NewRequest("DELETE", srv.URL+"/api/admin/follows", strings.NewReader(body))
+	req, _ := http.NewRequest("DELETE", srv.URL+testFollowsAPI, strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer test-token")
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
@@ -821,7 +821,7 @@ func TestAdminRemoveFollowWithoutForceFailsOnUnreachablePeer(t *testing.T) {
 	defer srv.Close()
 
 	body := `{"target":"` + actorURL + `"}`
-	req, _ := http.NewRequest("DELETE", srv.URL+"/api/admin/follows", strings.NewReader(body))
+	req, _ := http.NewRequest("DELETE", srv.URL+testFollowsAPI, strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer test-token")
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
@@ -850,7 +850,7 @@ func TestAdminAddFollowCreatesOutgoingNotInbound(t *testing.T) {
 	defer srv.Close()
 
 	body := `{"target":"` + actorURL + `"}`
-	req, _ := http.NewRequest("POST", srv.URL+"/api/admin/follows", strings.NewReader(body))
+	req, _ := http.NewRequest("POST", srv.URL+testFollowsAPI, strings.NewReader(body))
 	req.Header.Set("Authorization", "Bearer test-token")
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
@@ -885,12 +885,12 @@ func TestAdminAllEndpointsRequireAuth(t *testing.T) {
 	}
 	endpoints := []endpoint{
 		{http.MethodGet, "/api/admin/identity", ""},
-		{http.MethodGet, "/api/admin/follows", ""},
+		{http.MethodGet, testFollowsAPI, ""},
 		{http.MethodGet, "/api/admin/follows/pending", ""},
-		{http.MethodPost, "/api/admin/follows", `{"target":"https://x.example.com/ap/actor"}`},
-		{http.MethodPost, "/api/admin/follows/accept", `{"target":"https://x.example.com/ap/actor"}`},
-		{http.MethodPost, "/api/admin/follows/reject", `{"target":"https://x.example.com/ap/actor"}`},
-		{http.MethodDelete, "/api/admin/follows", `{"target":"https://x.example.com/ap/actor"}`},
+		{http.MethodPost, testFollowsAPI, testFollowBody},
+		{http.MethodPost, "/api/admin/follows/accept", testFollowBody},
+		{http.MethodPost, "/api/admin/follows/reject", testFollowBody},
+		{http.MethodDelete, testFollowsAPI, testFollowBody},
 	}
 
 	for _, ep := range endpoints {
@@ -913,7 +913,7 @@ func TestAdminAllEndpointsRejectWrongToken(t *testing.T) {
 	srv := httptest.NewServer(s.routes())
 	defer srv.Close()
 
-	req, _ := http.NewRequest("GET", srv.URL+"/api/admin/follows", nil)
+	req, _ := http.NewRequest("GET", srv.URL+testFollowsAPI, nil)
 	req.Header.Set("Authorization", "Bearer wrong-token")
 	resp, err := http.DefaultClient.Do(req)
 	require.NoError(t, err)

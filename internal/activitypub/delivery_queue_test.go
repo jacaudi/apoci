@@ -74,8 +74,8 @@ func TestDeliveryQueueProcessesPendingDeliveries(t *testing.T) {
 	defer srv.Close()
 
 	activity := map[string]string{
-		"type":   "Create",
-		"object": "https://test.example.com/image:latest",
+		KeyType:   ActivityCreate,
+		KeyObject: "https://test.example.com/image:latest",
 	}
 	activityJSON, err := json.Marshal(activity)
 	require.NoError(t, err, "marshaling activity")
@@ -113,7 +113,7 @@ func TestDeliveryQueueRetriesOnFailure(t *testing.T) {
 	defer srv.Close()
 
 	ctx := context.Background()
-	activityJSON := []byte(`{"type":"Create"}`)
+	activityJSON := []byte(`{KeyType:ActivityCreate}`)
 
 	require.NoError(t, db.EnqueueDelivery(ctx, "activity-fail", srv.URL+"/inbox", activityJSON), "enqueuing delivery")
 
@@ -205,7 +205,7 @@ func TestDeliveryCircuitBreaker(t *testing.T) {
 	defer srv.Close()
 
 	ctx := context.Background()
-	activityJSON := []byte(`{"type":"Create"}`)
+	activityJSON := []byte(`{KeyType:ActivityCreate}`)
 
 	q := NewDeliveryQueue(db, identity, discardLogger())
 

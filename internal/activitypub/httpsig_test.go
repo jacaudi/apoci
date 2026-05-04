@@ -138,7 +138,7 @@ func TestSignAndVerifyRSABackwardCompat(t *testing.T) {
 
 	pubASN1, err := x509.MarshalPKIXPublicKey(&rsaKey.PublicKey)
 	require.NoError(t, err)
-	pubPEM := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: pubASN1}))
+	pubPEM := string(pem.EncodeToMemory(&pem.Block{Type: PEMTypePublicKey, Bytes: pubASN1}))
 
 	err = VerifyRequest(req, pubPEM, body, nil)
 	require.NoError(t, err, "RSA-signed request should still verify")
@@ -156,7 +156,7 @@ func TestCrossAlgorithmVerifyFails(t *testing.T) {
 
 	// Try to verify ECDSA-signed request with RSA key — should fail.
 	rsaPubASN1, _ := x509.MarshalPKIXPublicKey(&rsaKey.PublicKey)
-	rsaPubPEM := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: rsaPubASN1}))
+	rsaPubPEM := string(pem.EncodeToMemory(&pem.Block{Type: PEMTypePublicKey, Bytes: rsaPubASN1}))
 
 	err := VerifyRequest(req, rsaPubPEM, body, nil)
 	require.Error(t, err, "ECDSA-signed request verified with RSA key should fail")

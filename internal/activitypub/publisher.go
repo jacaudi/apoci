@@ -55,7 +55,7 @@ func (p *APPublisher) PublishManifest(ctx context.Context, repo, tag, digest, me
 
 	object := OCIManifest{
 		Context:      ociContext(),
-		Type:         "OCIManifest",
+		Type:         TypeOCIManifest,
 		ID:           objectID,
 		AttributedTo: p.identity.ActorURL,
 		Published:    NowRFC3339(),
@@ -70,7 +70,7 @@ func (p *APPublisher) PublishManifest(ctx context.Context, repo, tag, digest, me
 		object.SubjectDigest = *subjectDigest
 	}
 
-	return p.createAndDeliver(ctx, "Create", object)
+	return p.createAndDeliver(ctx, ActivityCreate, object)
 }
 
 func (p *APPublisher) PublishTag(ctx context.Context, repo, tag, digest string) error {
@@ -78,7 +78,7 @@ func (p *APPublisher) PublishTag(ctx context.Context, repo, tag, digest string) 
 
 	object := OCITag{
 		Context:      ociContext(),
-		Type:         "OCITag",
+		Type:         TypeOCITag,
 		ID:           objectID,
 		AttributedTo: p.identity.ActorURL,
 		Published:    NowRFC3339(),
@@ -87,7 +87,7 @@ func (p *APPublisher) PublishTag(ctx context.Context, repo, tag, digest string) 
 		Digest:       digest,
 	}
 
-	return p.createAndDeliver(ctx, "Update", object)
+	return p.createAndDeliver(ctx, ActivityUpdate, object)
 }
 
 func (p *APPublisher) Publish(ctx context.Context, activityType string, object any) error {
@@ -99,7 +99,7 @@ func (p *APPublisher) PublishBlobRef(ctx context.Context, digest string, size in
 
 	object := OCIBlob{
 		Context:      ociContext(),
-		Type:         "OCIBlob",
+		Type:         TypeOCIBlob,
 		ID:           objectID,
 		AttributedTo: p.identity.ActorURL,
 		Published:    NowRFC3339(),
@@ -108,7 +108,7 @@ func (p *APPublisher) PublishBlobRef(ctx context.Context, digest string, size in
 		Endpoint:     p.endpoint,
 	}
 
-	return p.createAndDeliver(ctx, "Announce", object)
+	return p.createAndDeliver(ctx, ActivityAnnounce, object)
 }
 
 // Stop releases background resources (actor cache eviction).
@@ -127,13 +127,13 @@ func (p *APPublisher) createAndDeliver(ctx context.Context, activityType string,
 	p.logger.Debug("publisher: createAndDeliver", "activityType", activityType, "activityID", activityID)
 
 	activity := map[string]any{
-		"@context": ContextActivityStreams,
-		"id":       activityID,
-		"type":     activityType,
-		"actor":    p.identity.ActorURL,
+		KeyContext: ContextActivityStreams,
+		KeyID:      activityID,
+		KeyType:    activityType,
+		KeyActor:   p.identity.ActorURL,
 		"to":       []string{PublicCollection},
 		"cc":       []string{followersURL},
-		"object":   object,
+		KeyObject:  object,
 	}
 
 	activityJSON, err := json.Marshal(activity)

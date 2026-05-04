@@ -31,14 +31,14 @@ func SendAccept(ctx context.Context, identity *Identity, followerActorURL string
 
 	activityID := identity.ActorURL + "#accept-" + uuid.New().String()
 	accept := map[string]any{
-		"@context": "https://www.w3.org/ns/activitystreams",
-		"id":       activityID,
-		"type":     "Accept",
-		"actor":    identity.ActorURL,
-		"object": map[string]any{
-			"type":   "Follow",
-			"actor":  followerActorURL,
-			"object": identity.ActorURL,
+		KeyContext: ContextActivityStreams,
+		KeyID:      activityID,
+		KeyType:    ActivityAccept,
+		KeyActor:   identity.ActorURL,
+		KeyObject: map[string]any{
+			KeyType:   ActivityFollow,
+			KeyActor:  followerActorURL,
+			KeyObject: identity.ActorURL,
 		},
 	}
 
@@ -65,14 +65,14 @@ func SendReject(ctx context.Context, identity *Identity, followerActorURL string
 
 	activityID := identity.ActorURL + "#reject-" + uuid.New().String()
 	reject := map[string]any{
-		"@context": "https://www.w3.org/ns/activitystreams",
-		"id":       activityID,
-		"type":     "Reject",
-		"actor":    identity.ActorURL,
-		"object": map[string]any{
-			"type":   "Follow",
-			"actor":  followerActorURL,
-			"object": identity.ActorURL,
+		KeyContext: ContextActivityStreams,
+		KeyID:      activityID,
+		KeyType:    ActivityReject,
+		KeyActor:   identity.ActorURL,
+		KeyObject: map[string]any{
+			KeyType:   ActivityFollow,
+			KeyActor:  followerActorURL,
+			KeyObject: identity.ActorURL,
 		},
 	}
 
@@ -98,11 +98,11 @@ func SendFollow(ctx context.Context, identity *Identity, targetActorURL string, 
 
 	activityID := identity.ActorURL + "#follow-" + url.QueryEscape(actor.ID)
 	follow := map[string]any{
-		"@context": "https://www.w3.org/ns/activitystreams",
-		"id":       activityID,
-		"type":     "Follow",
-		"actor":    identity.ActorURL,
-		"object":   actor.ID,
+		KeyContext: ContextActivityStreams,
+		KeyID:      activityID,
+		KeyType:    ActivityFollow,
+		KeyActor:   identity.ActorURL,
+		KeyObject:  actor.ID,
 	}
 
 	followJSON, err := json.Marshal(follow)
@@ -127,14 +127,14 @@ func SendUndo(ctx context.Context, identity *Identity, peerActorURL string, enqu
 
 	activityID := identity.ActorURL + "#undo-" + uuid.New().String()
 	undo := map[string]any{
-		"@context": "https://www.w3.org/ns/activitystreams",
-		"id":       activityID,
-		"type":     "Undo",
-		"actor":    identity.ActorURL,
-		"object": map[string]any{
-			"type":   "Follow",
-			"actor":  identity.ActorURL,
-			"object": actor.ID,
+		KeyContext: ContextActivityStreams,
+		KeyID:      activityID,
+		KeyType:    ActivityUndo,
+		KeyActor:   identity.ActorURL,
+		KeyObject: map[string]any{
+			KeyType:   ActivityFollow,
+			KeyActor:  identity.ActorURL,
+			KeyObject: actor.ID,
 		},
 	}
 

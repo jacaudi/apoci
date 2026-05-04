@@ -19,7 +19,10 @@ import (
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/database"
 )
 
-const testToken = "test-token"
+const (
+	testToken    = "test-token"
+	testOwnerURL = "https://alice.example.com/ap/actor"
+)
 
 func nopLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
@@ -39,7 +42,7 @@ func newTestServer(t *testing.T) *httptest.Server {
 		Blobs:    blobs,
 		Endpoint: srv.URL,
 		Token:    testToken,
-		Owner:    "https://alice.example.com/ap/actor",
+		Owner:    testOwnerURL,
 		Logger:   nopLog(),
 	})
 	srv.Config.Handler = b.Handler()
@@ -269,7 +272,7 @@ func TestUnconfiguredOwnerRejected(t *testing.T) {
 
 	srv := httptest.NewServer(nil)
 	t.Cleanup(srv.Close)
-	b := New(Config{DB: db, Blobs: blobs, Endpoint: srv.URL, Token: testToken, Owner: "https://alice.example.com/ap/actor", Logger: nopLog()})
+	b := New(Config{DB: db, Blobs: blobs, Endpoint: srv.URL, Token: testToken, Owner: testOwnerURL, Logger: nopLog()})
 	srv.Config.Handler = b.Handler()
 
 	body := publishBody(t, "taken", "1.0.0", nil, []byte("data"))

@@ -19,7 +19,13 @@ import (
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/database"
 )
 
-const testToken = "test-token"
+const (
+	testToken    = "test-token"
+	testOwnerURL = "https://alice.example.com/ap/actor"
+	testVersion  = "1.0.0"
+	testPkgDemo  = "demo"
+	testFileTgz  = "demo-1.0.0.tar.gz"
+)
 
 func nopLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
@@ -39,7 +45,7 @@ func newTestServer(t *testing.T) *httptest.Server {
 		Blobs:    blobs,
 		Endpoint: srv.URL,
 		Token:    testToken,
-		Owner:    "https://alice.example.com/ap/actor",
+		Owner:    testOwnerURL,
 		Logger:   nopLog(),
 	})
 	srv.Config.Handler = b.Handler()
@@ -117,7 +123,7 @@ func TestUploadNormalizesName(t *testing.T) {
 
 	resp := uploadRequest(t, srv, uploadOpts{
 		name:     "My_Project.Name",
-		version:  "1.0.0",
+		version:  testVersion,
 		filename: "my_project_name-1.0.0-py3-none-any.whl",
 		content:  []byte("data"),
 	}, true)
@@ -142,7 +148,7 @@ func TestSimpleIndex(t *testing.T) {
 	for i, v := range []string{"1.0.0", "1.0.1"} {
 		_ = i
 		resp := uploadRequest(t, srv, uploadOpts{
-			name:           "demo",
+			name:           testPkgDemo,
 			version:        v,
 			filename:       "demo-" + v + "-py3-none-any.whl",
 			content:        []byte("payload-" + v),
@@ -173,8 +179,8 @@ func TestSimpleIndex(t *testing.T) {
 func TestUploadUnauthorized(t *testing.T) {
 	srv := newTestServer(t)
 	resp := uploadRequest(t, srv, uploadOpts{
-		name: "demo", version: "1.0.0",
-		filename: "demo-1.0.0.tar.gz", content: []byte("x"),
+		name: testPkgDemo, version: testVersion,
+		filename: testFileTgz, content: []byte("x"),
 	}, false)
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusUnauthorized, resp.StatusCode)
@@ -183,8 +189,8 @@ func TestUploadUnauthorized(t *testing.T) {
 func TestUploadBadDigest(t *testing.T) {
 	srv := newTestServer(t)
 	resp := uploadRequest(t, srv, uploadOpts{
-		name: "demo", version: "1.0.0",
-		filename:       "demo-1.0.0.tar.gz",
+		name: testPkgDemo, version: testVersion,
+		filename:       testFileTgz,
 		content:        []byte("hello"),
 		withDigest:     true,
 		overrideDigest: strings.Repeat("0", 64),
@@ -196,8 +202,8 @@ func TestUploadBadDigest(t *testing.T) {
 func TestUploadDuplicateFile(t *testing.T) {
 	srv := newTestServer(t)
 	o := uploadOpts{
-		name: "demo", version: "1.0.0",
-		filename: "demo-1.0.0.tar.gz", content: []byte("payload"),
+		name: testPkgDemo, version: testVersion,
+		filename: testFileTgz, content: []byte("payload"),
 	}
 	resp := uploadRequest(t, srv, o, true)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
@@ -212,14 +218,14 @@ func TestUploadMultipleFilesSameVersion(t *testing.T) {
 	srv := newTestServer(t)
 
 	resp := uploadRequest(t, srv, uploadOpts{
-		name: "demo", version: "1.0.0",
-		filename: "demo-1.0.0.tar.gz", content: []byte("sdist"),
+		name: testPkgDemo, version: testVersion,
+		filename: testFileTgz, content: []byte("sdist"),
 	}, true)
 	require.Equal(t, http.StatusOK, resp.StatusCode)
 	_ = resp.Body.Close()
 
 	resp2 := uploadRequest(t, srv, uploadOpts{
-		name: "demo", version: "1.0.0",
+		name: testPkgDemo, version: testVersion,
 		filename: "demo-1.0.0-py3-none-any.whl", content: []byte("wheel"),
 	}, true)
 	require.Equal(t, http.StatusOK, resp2.StatusCode)
@@ -295,11 +301,11 @@ func TestUnconfiguredOwnerRejected(t *testing.T) {
 
 	srv := httptest.NewServer(nil)
 	t.Cleanup(srv.Close)
-	b := New(Config{DB: db, Blobs: blobs, Endpoint: srv.URL, Token: testToken, Owner: "https://alice.example.com/ap/actor", Logger: nopLog()})
+	b := New(Config{DB: db, Blobs: blobs, Endpoint: srv.URL, Token: testToken, Owner: testOwnerURL, Logger: nopLog()})
 	srv.Config.Handler = b.Handler()
 
 	resp := uploadRequest(t, srv, uploadOpts{
-		name: "taken", version: "1.0.0",
+		name: "taken", version: testVersion,
 		filename: "taken-1.0.0.tar.gz", content: []byte("x"),
 	}, true)
 	defer func() { _ = resp.Body.Close() }()

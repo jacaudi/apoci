@@ -111,7 +111,7 @@ func TestLookupWebFingerCachesResults(t *testing.T) {
 		resp := WebFingerResponse{
 			Subject: r.URL.Query().Get("resource"),
 			Links: []WebFingerLink{
-				{Rel: "self", Type: "application/activity+json", Href: "https://cache-test.invalid/ap/actor"},
+				{Rel: WebFingerRelSelf, Type: MediaTypeActivityJSON, Href: "https://cache-test.invalid/ap/actor"},
 			},
 		}
 		w.Header().Set("Content-Type", "application/jrd+json")

@@ -21,7 +21,12 @@ import (
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/database"
 )
 
-const testToken = "test-token"
+const (
+	testToken     = "test-token"
+	testOwnerURL  = "https://alice.example.com/ap/actor"
+	testVersion   = "1.0.0"
+	testPkgLodash = "lodash"
+)
 
 func nopLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
@@ -41,7 +46,7 @@ func newTestServer(t *testing.T) *httptest.Server {
 		Blobs:    blobs,
 		Endpoint: srv.URL,
 		Token:    testToken,
-		Owner:    "https://alice.example.com/ap/actor",
+		Owner:    testOwnerURL,
 		Logger:   nopLog(),
 	})
 	srv.Config.Handler = b.Handler()
@@ -75,7 +80,7 @@ func publishBody(t *testing.T, name, version string, tarball []byte, distTag str
 					Version:      version,
 					Description:  "test pkg",
 					Dist:         gtnpm.PackageDistribution{Integrity: integrity},
-					Dependencies: map[string]string{"left-pad": "1.0.0"},
+					Dependencies: map[string]string{"left-pad": testVersion},
 				},
 			},
 		},
@@ -115,7 +120,7 @@ func TestPublishAndRead(t *testing.T) {
 	srv := newTestServer(t)
 
 	tarball := []byte("fake-tarball-bytes")
-	body := publishBody(t, "lodash", "1.0.0", tarball, "latest")
+	body := publishBody(t, testPkgLodash, testVersion, tarball, "latest")
 
 	resp := doRequest(t, srv, http.MethodPut, "/npm/lodash", body, true)
 	defer func() { _ = resp.Body.Close() }()
@@ -127,12 +132,12 @@ func TestPublishAndRead(t *testing.T) {
 
 	var pm gtnpm.PackageMetadata
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&pm))
-	assert.Equal(t, "lodash", pm.Name)
-	assert.Equal(t, "1.0.0", pm.DistTags["latest"])
-	require.Contains(t, pm.Versions, "1.0.0")
-	v := pm.Versions["1.0.0"]
+	assert.Equal(t, testPkgLodash, pm.Name)
+	assert.Equal(t, testVersion, pm.DistTags["latest"])
+	require.Contains(t, pm.Versions, testVersion)
+	v := pm.Versions[testVersion]
 	assert.Equal(t, "test pkg", v.Description)
-	assert.Equal(t, "1.0.0", v.Dependencies["left-pad"])
+	assert.Equal(t, testVersion, v.Dependencies["left-pad"])
 	assert.NotEmpty(t, v.Dist.Integrity)
 	assert.NotEmpty(t, v.Dist.Shasum)
 	assert.Contains(t, v.Dist.Tarball, "/npm/lodash/-/lodash-1.0.0.tgz")
@@ -171,7 +176,7 @@ func TestPublishScopedPackage(t *testing.T) {
 
 func TestPublishUnauthorized(t *testing.T) {
 	srv := newTestServer(t)
-	body := publishBody(t, "lodash", "1.0.0", []byte("x"), "latest")
+	body := publishBody(t, testPkgLodash, testVersion, []byte("x"), "latest")
 
 	resp := doRequest(t, srv, http.MethodPut, "/npm/lodash", body, false)
 	defer func() { _ = resp.Body.Close() }()
@@ -187,10 +192,10 @@ func TestPublishBadIntegrity(t *testing.T) {
 		Attachments map[string]*gtnpm.PackageAttachment `json:"_attachments"`
 	}{
 		PackageMetadata: gtnpm.PackageMetadata{
-			ID: "lodash", Name: "lodash",
+			ID: testPkgLodash, Name: testPkgLodash,
 			Versions: map[string]*gtnpm.PackageMetadataVersion{
-				"1.0.0": {
-					Name: "lodash", Version: "1.0.0",
+				testVersion: {
+					Name: testPkgLodash, Version: testVersion,
 					Dist: gtnpm.PackageDistribution{Integrity: "sha512-deadbeef=="},
 				},
 			},
@@ -207,7 +212,7 @@ func TestPublishBadIntegrity(t *testing.T) {
 
 func TestPublishNameMismatch(t *testing.T) {
 	srv := newTestServer(t)
-	body := publishBody(t, "lodash", "1.0.0", []byte("x"), "")
+	body := publishBody(t, testPkgLodash, testVersion, []byte("x"), "")
 	resp := doRequest(t, srv, http.MethodPut, "/npm/elsewhere", body, true)
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
@@ -223,7 +228,7 @@ func TestPackumentNotFound(t *testing.T) {
 func TestDistTagsLifecycle(t *testing.T) {
 	srv := newTestServer(t)
 
-	for _, v := range []string{"1.0.0", "2.0.0", "3.0.0-beta"} {
+	for _, v := range []string{testVersion, "2.0.0", "3.0.0-beta"} {
 		body := publishBody(t, "react", v, []byte("react-"+v), "")
 		resp := doRequest(t, srv, http.MethodPut, "/npm/react", body, true)
 		require.Equal(t, http.StatusCreated, resp.StatusCode, "publish %s", v)
@@ -263,7 +268,7 @@ func TestDistTagsLifecycle(t *testing.T) {
 func TestDistTagPutMissingVersion(t *testing.T) {
 	srv := newTestServer(t)
 
-	body := publishBody(t, "lodash", "1.0.0", []byte("data"), "")
+	body := publishBody(t, testPkgLodash, testVersion, []byte("data"), "")
 	resp := doRequest(t, srv, http.MethodPut, "/npm/lodash", body, true)
 	require.Equal(t, http.StatusCreated, resp.StatusCode)
 	_ = resp.Body.Close()
@@ -278,13 +283,13 @@ func TestRePublishConflicts(t *testing.T) {
 	srv := newTestServer(t)
 
 	tarball1 := []byte("v1-tarball")
-	body1 := publishBody(t, "lodash", "1.0.0", tarball1, "latest")
+	body1 := publishBody(t, testPkgLodash, testVersion, tarball1, "latest")
 	resp := doRequest(t, srv, http.MethodPut, "/npm/lodash", body1, true)
 	require.Equal(t, http.StatusCreated, resp.StatusCode)
 	_ = resp.Body.Close()
 
 	tarball2 := []byte("v1-tarball-rebuilt")
-	body2 := publishBody(t, "lodash", "1.0.0", tarball2, "latest")
+	body2 := publishBody(t, testPkgLodash, testVersion, tarball2, "latest")
 	resp = doRequest(t, srv, http.MethodPut, "/npm/lodash", body2, true)
 	defer func() { _ = resp.Body.Close() }()
 	require.Equal(t, http.StatusConflict, resp.StatusCode)
@@ -307,10 +312,10 @@ func TestUnconfiguredOwnerRejected(t *testing.T) {
 
 	srv := httptest.NewServer(nil)
 	t.Cleanup(srv.Close)
-	b := New(Config{DB: db, Blobs: blobs, Endpoint: srv.URL, Token: testToken, Owner: "https://alice.example.com/ap/actor", Logger: nopLog()})
+	b := New(Config{DB: db, Blobs: blobs, Endpoint: srv.URL, Token: testToken, Owner: testOwnerURL, Logger: nopLog()})
 	srv.Config.Handler = b.Handler()
 
-	body := publishBody(t, "taken", "1.0.0", []byte("data"), "")
+	body := publishBody(t, "taken", testVersion, []byte("data"), "")
 	resp := doRequest(t, srv, http.MethodPut, "/npm/taken", body, true)
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusForbidden, resp.StatusCode)
@@ -320,7 +325,7 @@ func TestTarballHEAD(t *testing.T) {
 	srv := newTestServer(t)
 
 	tarball := []byte("head-payload")
-	body := publishBody(t, "lodash", "1.0.0", tarball, "latest")
+	body := publishBody(t, testPkgLodash, testVersion, tarball, "latest")
 	resp := doRequest(t, srv, http.MethodPut, "/npm/lodash", body, true)
 	require.Equal(t, http.StatusCreated, resp.StatusCode)
 	_ = resp.Body.Close()
@@ -336,11 +341,11 @@ func TestTarballHEAD(t *testing.T) {
 
 func TestPublishBodyParsesUpstream(t *testing.T) {
 	tarball := []byte("payload-bytes")
-	body := publishBody(t, "lodash", "1.0.0", tarball, "")
+	body := publishBody(t, testPkgLodash, testVersion, tarball, "")
 
 	pkg, err := gtnpm.ParsePackage(bytes.NewReader(body))
 	require.NoError(t, err)
-	require.Equal(t, "lodash", pkg.Name)
-	require.Equal(t, "1.0.0", pkg.Version)
+	require.Equal(t, testPkgLodash, pkg.Name)
+	require.Equal(t, testVersion, pkg.Version)
 	require.Equal(t, tarball, pkg.Data)
 }

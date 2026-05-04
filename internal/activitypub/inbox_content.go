@@ -26,7 +26,7 @@ func (h *InboxHandler) processCreate(ctx context.Context, activity *RawActivity)
 	}
 
 	objType, _ := objectMap["type"].(string)
-	if objType == "OCIManifest" {
+	if objType == TypeOCIManifest {
 		return h.ingestManifest(ctx, objectMap, activity.Actor)
 	}
 	if a := h.lookupAdapter(objType); a != nil {
@@ -48,9 +48,9 @@ func (h *InboxHandler) processUpdate(ctx context.Context, activity *RawActivity)
 
 	objType, _ := objectMap["type"].(string)
 	switch objType {
-	case "OCITag":
+	case TypeOCITag:
 		return h.ingestTag(ctx, objectMap, activity.Actor)
-	case "Actor", "Person", "Service", "Application":
+	case "Actor", TypePerson, "Service", TypeApplication:
 		if h.actorCache != nil {
 			h.actorCache.Invalidate(activity.Actor)
 		}
@@ -74,7 +74,7 @@ func (h *InboxHandler) processAnnounce(ctx context.Context, activity *RawActivit
 	}
 
 	objType, _ := objectMap["type"].(string)
-	if objType == "OCIBlob" {
+	if objType == TypeOCIBlob {
 		return h.ingestBlobRef(ctx, objectMap, activity.Actor)
 	}
 	if a := h.lookupAdapter(objType); a != nil {
@@ -97,9 +97,9 @@ func (h *InboxHandler) processDelete(ctx context.Context, activity *RawActivity)
 
 	objType, _ := objectMap["type"].(string)
 	switch objType {
-	case "OCIManifest":
+	case TypeOCIManifest:
 		return h.deleteManifest(ctx, objectMap, activity.Actor)
-	case "OCITag":
+	case TypeOCITag:
 		return h.deleteTag(ctx, objectMap, activity.Actor)
 	}
 	if a := h.lookupAdapter(objType); a != nil {

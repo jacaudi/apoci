@@ -35,7 +35,8 @@ type storedVersion struct {
 func (b *Backend) handleUpload(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	if err := r.ParseMultipartForm(maxUploadBytes); err != nil {
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadBytes)
+	if err := r.ParseMultipartForm(maxUploadBytes); err != nil { //nolint:gosec // body bounded by MaxBytesReader above
 		writePlainError(w, http.StatusBadRequest, "parse multipart: "+err.Error())
 		return
 	}

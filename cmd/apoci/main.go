@@ -36,6 +36,11 @@ var (
 
 var verbose bool
 
+const (
+	colActor    = "ACTOR"
+	colEndpoint = "ENDPOINT"
+)
+
 func main() {
 	rootCmd := &cobra.Command{
 		Use:     "apoci",
@@ -309,7 +314,7 @@ func printFollows(follows []database.Actor) {
 		}
 		rows[i] = []string{followDisplayName(f.ActorURL, f.Alias), f.Endpoint, since}
 	}
-	printTable([]string{"ACTOR", "ENDPOINT", "SINCE"}, rows)
+	printTable([]string{colActor, colEndpoint, "SINCE"}, rows)
 }
 
 func runFollowList(ctx context.Context, configPath string) error {
@@ -336,7 +341,7 @@ func printFollowRequests(requests []database.FollowRequest) {
 	for i, r := range requests {
 		rows[i] = []string{followDisplayName(r.ActorURL, r.Alias), r.Endpoint, r.RequestedAt.Format("2006-01-02 15:04")}
 	}
-	printTable([]string{"ACTOR", "ENDPOINT", "REQUESTED"}, rows)
+	printTable([]string{colActor, colEndpoint, "REQUESTED"}, rows)
 }
 
 func runFollowPending(ctx context.Context, configPath string) error {
@@ -432,7 +437,7 @@ func printOutgoingFollows(follows []database.Actor) {
 		}
 		rows[i] = []string{f.ActorURL, status, f.CreatedAt.Format("2006-01-02 15:04"), acceptedAt}
 	}
-	printTable([]string{"ACTOR", "STATUS", "CREATED", "ACCEPTED"}, rows)
+	printTable([]string{colActor, "STATUS", "CREATED", "ACCEPTED"}, rows)
 }
 
 func actorCmd(configPath *string) *cobra.Command {
@@ -522,7 +527,7 @@ func printActors(actors []database.Actor) {
 
 		rows[i] = []string{followDisplayName(a.ActorURL, a.Alias), a.Endpoint, healthy, follows, lastSeen}
 	}
-	printTable([]string{"ACTOR", "ENDPOINT", "HEALTHY", "RELATIONSHIP", "LAST SEEN"}, rows)
+	printTable([]string{colActor, colEndpoint, "HEALTHY", "RELATIONSHIP", "LAST SEEN"}, rows)
 }
 
 func identityCmd(configPath *string) *cobra.Command {

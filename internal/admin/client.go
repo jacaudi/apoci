@@ -57,24 +57,26 @@ func (c *Client) ListOutgoingFollows(ctx context.Context, status string) (json.R
 	return out, c.get(ctx, path, &out)
 }
 
+const keyTarget = "target"
+
 func (c *Client) AddFollow(ctx context.Context, target string) (map[string]string, error) {
 	var out map[string]string
-	return out, c.post(ctx, "/follows", map[string]string{"target": target}, &out)
+	return out, c.post(ctx, "/follows", map[string]string{keyTarget: target}, &out)
 }
 
 func (c *Client) AcceptFollow(ctx context.Context, target string) (map[string]string, error) {
 	var out map[string]string
-	return out, c.post(ctx, "/follows/accept", map[string]string{"target": target}, &out)
+	return out, c.post(ctx, "/follows/accept", map[string]string{keyTarget: target}, &out)
 }
 
 func (c *Client) RejectFollow(ctx context.Context, target string) (map[string]string, error) {
 	var out map[string]string
-	return out, c.post(ctx, "/follows/reject", map[string]string{"target": target}, &out)
+	return out, c.post(ctx, "/follows/reject", map[string]string{keyTarget: target}, &out)
 }
 
 func (c *Client) RemoveFollow(ctx context.Context, target string, force bool) (map[string]string, error) {
 	var out map[string]string
-	body := map[string]any{"target": target}
+	body := map[string]any{keyTarget: target}
 	if force {
 		body["force"] = true
 	}

@@ -7,6 +7,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const (
+	testRegistryDocker = "docker.io"
+	testRegistryGHCR   = "ghcr.io"
+)
+
 func TestCircuitBreaker_InitialState(t *testing.T) {
 	cb := newCircuitBreaker()
 	require.False(t, cb.isOpen("registry.example.com"))
@@ -15,7 +20,7 @@ func TestCircuitBreaker_InitialState(t *testing.T) {
 
 func TestCircuitBreaker_OpensAfterThreshold(t *testing.T) {
 	cb := newCircuitBreaker()
-	registry := "docker.io"
+	registry := testRegistryDocker
 
 	for range circuitThreshold - 1 {
 		opened := cb.recordFailure(registry)
@@ -31,7 +36,7 @@ func TestCircuitBreaker_OpensAfterThreshold(t *testing.T) {
 
 func TestCircuitBreaker_SuccessResets(t *testing.T) {
 	cb := newCircuitBreaker()
-	registry := "ghcr.io"
+	registry := testRegistryGHCR
 
 	for range circuitThreshold - 1 {
 		cb.recordFailure(registry)
@@ -82,7 +87,7 @@ func TestCircuitBreaker_MultipleRegistries(t *testing.T) {
 
 func TestCircuitBreaker_RepeatedFailuresAfterOpen(t *testing.T) {
 	cb := newCircuitBreaker()
-	registry := "docker.io"
+	registry := testRegistryDocker
 
 	for range circuitThreshold {
 		cb.recordFailure(registry)

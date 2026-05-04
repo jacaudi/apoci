@@ -13,6 +13,12 @@ import (
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/database"
 )
 
+const (
+	testPeerAlias = "peer.example.com"
+	testPeerName  = "Peer Node"
+	testNewKey    = "new-key"
+)
+
 type mockFed struct {
 	resolveFollowTargetFn func(ctx context.Context, input string) (string, error)
 	fetchActorFn          func(ctx context.Context, actorURL string) (*activitypub.Actor, error)
@@ -451,7 +457,7 @@ func TestRemoveFollowForceMatchesByDomain(t *testing.T) {
 		Endpoint: "https://peer.example.com",
 	}))
 
-	_, err := svc.RemoveFollow(ctx, "peer.example.com", true)
+	_, err := svc.RemoveFollow(ctx, testPeerAlias, true)
 	require.NoError(t, err)
 
 	a, err := db.GetActor(ctx, peerActorURL)
@@ -663,7 +669,7 @@ func TestAcceptFollowWebFingerMismatchFallsBack(t *testing.T) {
 
 func TestAcceptFollowWebFingerFailureFallsBack(t *testing.T) {
 	const storedActorURL = "https://peer.example.com/ap/actor"
-	alias := "peer.example.com"
+	alias := testPeerAlias
 
 	fed := &mockFed{
 		resolveFollowTargetFn: func(_ context.Context, _ string) (string, error) {
@@ -675,7 +681,7 @@ func TestAcceptFollowWebFingerFailureFallsBack(t *testing.T) {
 
 	require.NoError(t, db.AddFollowRequest(ctx, storedActorURL, "pubkey", "https://peer.example.com", &alias))
 
-	result, err := svc.AcceptFollow(ctx, "peer.example.com", "")
+	result, err := svc.AcceptFollow(ctx, testPeerAlias, "")
 	require.NoError(t, err)
 	require.Equal(t, storedActorURL, result.ActorURL)
 }
@@ -778,9 +784,9 @@ func TestRefreshActorsUpdatesFollows(t *testing.T) {
 		fetchActorFn: func(_ context.Context, _ string) (*activitypub.Actor, error) {
 			return &activitypub.Actor{
 				ID:           peerActorURL,
-				Name:         "Peer Node",
+				Name:         testPeerName,
 				OCINamespace: "example.com", // split domain: account domain differs from registry domain
-				PublicKey:    activitypub.ActorPublicKey{PublicKeyPEM: "new-key"},
+				PublicKey:    activitypub.ActorPublicKey{PublicKeyPEM: testNewKey},
 			}, nil
 		},
 	}
@@ -792,7 +798,7 @@ func TestRefreshActorsUpdatesFollows(t *testing.T) {
 	f, err := db.GetFollow(ctx, peerActorURL)
 	require.NoError(t, err)
 	require.NotNil(t, f.PublicKeyPEM)
-	require.Equal(t, "new-key", *f.PublicKeyPEM)
+	require.Equal(t, testNewKey, *f.PublicKeyPEM)
 	require.NotNil(t, f.Alias)
 	require.Equal(t, "example.com", *f.Alias)
 }
@@ -804,9 +810,9 @@ func TestRefreshActorsUpdatesFollowRequests(t *testing.T) {
 		fetchActorFn: func(_ context.Context, _ string) (*activitypub.Actor, error) {
 			return &activitypub.Actor{
 				ID:           peerActorURL,
-				Name:         "Peer Node",
+				Name:         testPeerName,
 				OCINamespace: "example.com",
-				PublicKey:    activitypub.ActorPublicKey{PublicKeyPEM: "new-key"},
+				PublicKey:    activitypub.ActorPublicKey{PublicKeyPEM: testNewKey},
 			}, nil
 		},
 	}
@@ -817,7 +823,7 @@ func TestRefreshActorsUpdatesFollowRequests(t *testing.T) {
 
 	fr, err := db.GetFollowRequest(ctx, peerActorURL)
 	require.NoError(t, err)
-	require.Equal(t, "new-key", fr.PublicKeyPEM)
+	require.Equal(t, testNewKey, fr.PublicKeyPEM)
 	require.NotNil(t, fr.Alias)
 	require.Equal(t, "example.com", *fr.Alias)
 }
@@ -849,8 +855,8 @@ func TestRefreshActorsRefreshesOutgoingOnlyPeer(t *testing.T) {
 		fetchActorFn: func(_ context.Context, _ string) (*activitypub.Actor, error) {
 			return &activitypub.Actor{
 				ID:           peerActorURL,
-				Name:         "Peer Node",
-				OCINamespace: "peer.example.com",
+				Name:         testPeerName,
+				OCINamespace: testPeerAlias,
 				PublicKey:    activitypub.ActorPublicKey{PublicKeyPEM: "rotated-key"},
 			}, nil
 		},
@@ -866,7 +872,7 @@ func TestRefreshActorsRefreshesOutgoingOnlyPeer(t *testing.T) {
 	require.NotNil(t, a.PublicKeyPEM)
 	require.Equal(t, "rotated-key", *a.PublicKeyPEM)
 	require.NotNil(t, a.Alias)
-	require.Equal(t, "peer.example.com", *a.Alias)
+	require.Equal(t, testPeerAlias, *a.Alias)
 	require.True(t, a.WeFollowThem, "outgoing follow flag must be preserved")
 }
 
@@ -879,8 +885,8 @@ func TestRefreshActorsSkipsOutgoingAlreadyRefreshedAsInbound(t *testing.T) {
 			fetches++
 			return &activitypub.Actor{
 				ID:           peerActorURL,
-				OCINamespace: "peer.example.com",
-				PublicKey:    activitypub.ActorPublicKey{PublicKeyPEM: "new-key"},
+				OCINamespace: testPeerAlias,
+				PublicKey:    activitypub.ActorPublicKey{PublicKeyPEM: testNewKey},
 			}, nil
 		},
 	}
@@ -901,7 +907,7 @@ func TestRefreshActorsFallsBackToHostname(t *testing.T) {
 		fetchActorFn: func(_ context.Context, _ string) (*activitypub.Actor, error) {
 			return &activitypub.Actor{
 				ID:        peerActorURL,
-				PublicKey: activitypub.ActorPublicKey{PublicKeyPEM: "new-key"},
+				PublicKey: activitypub.ActorPublicKey{PublicKeyPEM: testNewKey},
 				// No OCINamespace set, so alias falls back to actor URL hostname
 			}, nil
 		},
@@ -914,7 +920,7 @@ func TestRefreshActorsFallsBackToHostname(t *testing.T) {
 	f, err := db.GetFollow(ctx, peerActorURL)
 	require.NoError(t, err)
 	require.NotNil(t, f.PublicKeyPEM)
-	require.Equal(t, "new-key", *f.PublicKeyPEM)
+	require.Equal(t, testNewKey, *f.PublicKeyPEM)
 	require.NotNil(t, f.Alias)
-	require.Equal(t, "peer.example.com", *f.Alias) // falls back to actor URL hostname
+	require.Equal(t, testPeerAlias, *f.Alias) // falls back to actor URL hostname
 }

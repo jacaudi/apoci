@@ -57,10 +57,10 @@ func (h *ActorHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	base := h.endpoint
 	actor := Actor{
 		Context: []any{
-			"https://www.w3.org/ns/activitystreams",
-			"https://w3id.org/security/v1",
+			ContextActivityStreams,
+			ContextSecurity,
 		},
-		Type:              "Application",
+		Type:              TypeApplication,
 		ID:                h.identity.ActorURL,
 		Name:              h.nodeName,
 		PreferredUsername: "registry",

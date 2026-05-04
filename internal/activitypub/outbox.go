@@ -56,14 +56,14 @@ func (h *OutboxHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		collection := map[string]any{
-			"@context":   ContextActivityStreams,
-			"type":       "OrderedCollection",
-			"id":         baseURL,
-			"totalItems": total,
-			"first":      baseURL + "?page=1",
+			KeyContext:    ContextActivityStreams,
+			KeyType:       TypeOrderedCollection,
+			KeyID:         baseURL,
+			keyTotalItems: total,
+			keyFirst:      baseURL + "?page=1",
 		}
 
-		w.Header().Set("Content-Type", "application/activity+json")
+		w.Header().Set("Content-Type", MediaTypeActivityJSON)
 		_ = json.NewEncoder(w).Encode(collection)
 		return
 	}
@@ -90,11 +90,11 @@ func (h *OutboxHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	page := map[string]any{
-		"@context":     ContextActivityStreams,
-		"type":         "OrderedCollectionPage",
-		"id":           fmt.Sprintf("%s?page=%s&before=%d", baseURL, pageParam, beforeID),
-		"partOf":       baseURL,
-		"orderedItems": items,
+		KeyContext:      ContextActivityStreams,
+		KeyType:         TypeOrderedCollectionPage,
+		KeyID:           fmt.Sprintf("%s?page=%s&before=%d", baseURL, pageParam, beforeID),
+		keyPartOf:       baseURL,
+		keyOrderedItems: items,
 	}
 
 	if hasMore {
@@ -102,7 +102,7 @@ func (h *OutboxHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		page["next"] = fmt.Sprintf("%s?page=1&before=%d", baseURL, lastActivity.ID)
 	}
 
-	w.Header().Set("Content-Type", "application/activity+json")
+	w.Header().Set("Content-Type", MediaTypeActivityJSON)
 	_ = json.NewEncoder(w).Encode(page)
 }
 
@@ -132,14 +132,14 @@ func (h *FollowersHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		collection := map[string]any{
-			"@context":   ContextActivityStreams,
-			"type":       "OrderedCollection",
-			"id":         baseURL,
-			"totalItems": total,
-			"first":      baseURL + "?page=1",
+			KeyContext:    ContextActivityStreams,
+			KeyType:       TypeOrderedCollection,
+			KeyID:         baseURL,
+			keyTotalItems: total,
+			keyFirst:      baseURL + "?page=1",
 		}
 
-		w.Header().Set("Content-Type", "application/activity+json")
+		w.Header().Set("Content-Type", MediaTypeActivityJSON)
 		_ = json.NewEncoder(w).Encode(collection)
 		return
 	}
@@ -165,18 +165,18 @@ func (h *FollowersHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	page := map[string]any{
-		"@context":     ContextActivityStreams,
-		"type":         "OrderedCollectionPage",
-		"id":           fmt.Sprintf("%s?page=1&offset=%d", baseURL, offset),
-		"partOf":       baseURL,
-		"orderedItems": items,
+		KeyContext:      ContextActivityStreams,
+		KeyType:         TypeOrderedCollectionPage,
+		KeyID:           fmt.Sprintf("%s?page=1&offset=%d", baseURL, offset),
+		keyPartOf:       baseURL,
+		keyOrderedItems: items,
 	}
 
 	if hasMore {
 		page["next"] = fmt.Sprintf("%s?page=1&offset=%d", baseURL, offset+defaultPageSize)
 	}
 
-	w.Header().Set("Content-Type", "application/activity+json")
+	w.Header().Set("Content-Type", MediaTypeActivityJSON)
 	_ = json.NewEncoder(w).Encode(page)
 }
 
@@ -207,13 +207,13 @@ func (h *FollowingHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		collection := map[string]any{
-			"@context":   ContextActivityStreams,
-			"type":       "OrderedCollection",
-			"id":         baseURL,
-			"totalItems": total,
-			"first":      fmt.Sprintf("%s?offset=0", baseURL),
+			KeyContext:    ContextActivityStreams,
+			KeyType:       TypeOrderedCollection,
+			KeyID:         baseURL,
+			keyTotalItems: total,
+			keyFirst:      fmt.Sprintf("%s?offset=0", baseURL),
 		}
-		w.Header().Set("Content-Type", "application/activity+json")
+		w.Header().Set("Content-Type", MediaTypeActivityJSON)
 		_ = json.NewEncoder(w).Encode(collection)
 		return
 	}
@@ -242,17 +242,17 @@ func (h *FollowingHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	page := map[string]any{
-		"@context":     ContextActivityStreams,
-		"type":         "OrderedCollectionPage",
-		"id":           fmt.Sprintf("%s?offset=%d", baseURL, offset),
-		"partOf":       baseURL,
-		"totalItems":   total,
-		"orderedItems": items,
+		KeyContext:      ContextActivityStreams,
+		KeyType:         TypeOrderedCollectionPage,
+		KeyID:           fmt.Sprintf("%s?offset=%d", baseURL, offset),
+		keyPartOf:       baseURL,
+		keyTotalItems:   total,
+		keyOrderedItems: items,
 	}
 	if next := offset + defaultPageSize; next < total {
 		page["next"] = fmt.Sprintf("%s?offset=%d", baseURL, next)
 	}
 
-	w.Header().Set("Content-Type", "application/activity+json")
+	w.Header().Set("Content-Type", MediaTypeActivityJSON)
 	_ = json.NewEncoder(w).Encode(page)
 }

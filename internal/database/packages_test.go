@@ -314,10 +314,10 @@ func TestListPackageVersionsBySubject(t *testing.T) {
 	pkg, err := db.GetOrCreatePackage(ctx, "oci", "foo.com/signed", testAliceActor)
 	require.NoError(t, err)
 
-	base := &PackageVersion{PackageID: pkg.ID, Version: "sha256:base", Metadata: []byte(`{}`)}
+	base := &PackageVersion{PackageID: pkg.ID, Version: testBaseDigest, Metadata: []byte(`{}`)}
 	require.NoError(t, db.PutPackageVersion(ctx, base))
 
-	subject := "sha256:base"
+	subject := testBaseDigest
 	artifactType := "application/vnd.dev.cosign.simplesigning.v1+json"
 	signer := &PackageVersion{
 		PackageID:     pkg.ID,
@@ -403,12 +403,12 @@ func TestLegacyManifestTranslation(t *testing.T) {
 	repo, err := db.GetOrCreateRepository(ctx, "foo.com/img", testAliceActor)
 	require.NoError(t, err)
 
-	subject := "sha256:base"
+	subject := testBaseDigest
 	artifactType := "application/vnd.cncf.notary.signature"
 	m := &Manifest{
 		RepositoryID:  repo.ID,
 		Digest:        "sha256:abc",
-		MediaType:     "application/vnd.oci.image.manifest.v1+json",
+		MediaType:     testManifestMediaType,
 		SizeBytes:     321,
 		Content:       []byte(`{"schemaVersion":2}`),
 		SubjectDigest: &subject,
@@ -420,7 +420,7 @@ func TestLegacyManifestTranslation(t *testing.T) {
 	got, err := db.GetManifestByDigest(ctx, repo.ID, "sha256:abc")
 	require.NoError(t, err)
 	require.Equal(t, m.ID, got.ID)
-	require.Equal(t, "application/vnd.oci.image.manifest.v1+json", got.MediaType)
+	require.Equal(t, testManifestMediaType, got.MediaType)
 	require.Equal(t, int64(321), got.SizeBytes)
 	require.Equal(t, []byte(`{"schemaVersion":2}`), got.Content)
 
@@ -464,7 +464,7 @@ func TestLegacyManifestLayers(t *testing.T) {
 	m := &Manifest{
 		RepositoryID: repo.ID,
 		Digest:       "sha256:m",
-		MediaType:    "application/vnd.oci.image.manifest.v1+json",
+		MediaType:    testManifestMediaType,
 		SizeBytes:    100,
 		Content:      []byte(`{}`),
 	}
@@ -499,7 +499,7 @@ func TestLegacyTagImmutableTranslation(t *testing.T) {
 	require.NoError(t, db.PutManifest(ctx, &Manifest{
 		RepositoryID: repo.ID,
 		Digest:       "sha256:zzz",
-		MediaType:    "application/vnd.oci.image.manifest.v1+json",
+		MediaType:    testManifestMediaType,
 		SizeBytes:    1,
 		Content:      []byte(`{}`),
 	}))

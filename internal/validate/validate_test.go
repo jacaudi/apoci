@@ -7,6 +7,12 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+const (
+	caseTooLong = "too long"
+	caseEmpty   = "empty"
+	testABCD    = "abcd"
+)
+
 func TestDigest(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -17,9 +23,9 @@ func TestDigest(t *testing.T) {
 		{"missing prefix", "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", true},
 		{"wrong algo", "sha512:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", true},
 		{"too short", "sha256:abcd", true},
-		{"too long", "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855aa", true},
+		{caseTooLong, "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855aa", true},
 		{"uppercase", "sha256:E3B0C44298FC1C149AFBF4C8996FB92427AE41E4649B934CA495991B7852B855", true},
-		{"empty", "", true},
+		{caseEmpty, "", true},
 		{"path traversal", "sha256:../../../etc/passwd" + strings.Repeat("a", 40), true},
 	}
 
@@ -48,14 +54,14 @@ func TestRepoName(t *testing.T) {
 		{"with underscore", "my_app", false},
 		{"multi-level", "org/team/app", false},
 		{"max components", "a/b/c/d/e/f/g/h", false},
-		{"empty", "", true},
+		{caseEmpty, "", true},
 		{"too many components", "a/b/c/d/e/f/g/h/i", true},
 		{"uppercase", "MyApp", true},
 		{"empty component", "org//app", true},
 		{"leading slash", "/app", true},
 		{"trailing slash", "app/", true},
 		{"special chars", "my@app", true},
-		{"too long", strings.Repeat("a", 257), true},
+		{caseTooLong, strings.Repeat("a", 257), true},
 	}
 
 	for _, tt := range tests {
@@ -79,7 +85,7 @@ func TestPeerEndpoint(t *testing.T) {
 		{"https", "https://registry.example.com", false},
 		{"http", "http://registry.example.com", false},
 		{"with port", "https://registry.example.com:5000", false},
-		{"empty", "", true},
+		{caseEmpty, "", true},
 		{"ftp scheme", "ftp://example.com", true},
 		{"no scheme", "example.com", true},
 		{"localhost", "http://localhost:5000", true},
@@ -111,7 +117,7 @@ func TestManifestContent(t *testing.T) {
 		wantErr bool
 	}{
 		{"valid", []byte(`{"schemaVersion":2}`), false},
-		{"empty", []byte{}, true},
+		{caseEmpty, []byte{}, true},
 		{"nil", nil, true},
 		{"too large", make([]byte, 10*1024*1024+1), true},
 		{"at limit", make([]byte, 10*1024*1024), false},
@@ -138,13 +144,13 @@ func TestSanitizeText(t *testing.T) {
 	}{
 		{"plain", "hello world", 20, "hello world"},
 		{"truncate", "abcdef", 3, "abc"},
-		{"strip null", "ab\x00cd", 10, "abcd"},
-		{"strip control", "ab\x01\x1fcd", 10, "abcd"},
+		{"strip null", "ab\x00cd", 10, testABCD},
+		{"strip control", "ab\x01\x1fcd", 10, testABCD},
 		{"keep tab", "a\tb", 10, "a\tb"},
 		{"keep newline", "a\nb", 10, "a\nb"},
 		{"keep cr", "a\rb", 10, "a\rb"},
-		{"strip del", "ab\x7fcd", 10, "abcd"},
-		{"empty", "", 10, ""},
+		{"strip del", "ab\x7fcd", 10, testABCD},
+		{caseEmpty, "", 10, ""},
 		{"unicode ok", "héllo", 10, "héllo"},
 		// Permitted control chars must not bypass the length guard.
 		{"tab at boundary", "aa\tb", 2, "aa"},
@@ -172,7 +178,7 @@ func TestTag(t *testing.T) {
 		{"empty allowed", "", false},
 		{"starts with dash", "-invalid", true},
 		{"starts with dot", ".invalid", true},
-		{"too long", strings.Repeat("a", 129), true},
+		{caseTooLong, strings.Repeat("a", 129), true},
 		{"max length", strings.Repeat("a", 128), false},
 		{"special chars", "tag@latest", true},
 		{"space", "my tag", true},

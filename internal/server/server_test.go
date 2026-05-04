@@ -18,7 +18,13 @@ import (
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/database"
 )
 
-const testRegistryToken = "test-token"
+const (
+	testRegistryToken = "test-token"
+	testDomain        = "test.example.com"
+	testGHCRRepo      = "ghcr.io/user/repo"
+	testFollowsAPI    = "/api/admin/follows"
+	testFollowBody    = `{"target":"https://x.example.com/ap/actor"}`
+)
 
 func nopLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
 
@@ -33,14 +39,14 @@ func testServer(t *testing.T) *Server {
 	blobs, err := blobstore.New(dir, nopLog())
 	require.NoError(t, err)
 
-	identity, err := activitypub.LoadOrCreateIdentity("https://test.example.com", "test.example.com", "", "", nopLog())
+	identity, err := activitypub.LoadOrCreateIdentity("https://test.example.com", testDomain, "", "", nopLog())
 	require.NoError(t, err)
 
 	cfg := &config.Config{
 		Name:          "test-node",
 		Endpoint:      "https://test.example.com",
-		Domain:        "test.example.com",
-		AccountDomain: "test.example.com",
+		Domain:        testDomain,
+		AccountDomain: testDomain,
 		Listen:        ":0",
 		RegistryToken: testRegistryToken,
 		ImmutableTags: `^v[0-9]`,
@@ -256,10 +262,10 @@ func TestOCIRepoFromPath(t *testing.T) {
 		wantRepo string
 		wantOK   bool
 	}{
-		{"/v2/ghcr.io/user/repo/manifests/latest", "ghcr.io/user/repo", true},
-		{"/v2/ghcr.io/user/repo/blobs/sha256:abc", "ghcr.io/user/repo", true},
-		{"/v2/ghcr.io/user/repo/tags/list", "ghcr.io/user/repo", true},
-		{"/v2/ghcr.io/user/repo/blobs/uploads/", "ghcr.io/user/repo", true},
+		{"/v2/ghcr.io/user/repo/manifests/latest", testGHCRRepo, true},
+		{"/v2/ghcr.io/user/repo/blobs/sha256:abc", testGHCRRepo, true},
+		{"/v2/ghcr.io/user/repo/tags/list", testGHCRRepo, true},
+		{"/v2/ghcr.io/user/repo/blobs/uploads/", testGHCRRepo, true},
 		// Repo name contains an OCI verb as a path component — last separator wins.
 		{"/v2/ghcr.io/org/blobs/repo/manifests/latest", "ghcr.io/org/blobs/repo", true},
 		{"/v2/ghcr.io/org/manifests/repo/manifests/v1", "ghcr.io/org/manifests/repo", true},
@@ -439,7 +445,7 @@ func TestAdminIdentityWithToken(t *testing.T) {
 	var info map[string]string
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&info))
 	require.Equal(t, "test-node", info["name"])
-	require.Equal(t, "test.example.com", info["domain"])
+	require.Equal(t, testDomain, info["domain"])
 }
 
 func TestAdminFollowsListEmpty(t *testing.T) {

@@ -20,6 +20,10 @@ const (
 	testManifestJSON = `{"schemaVersion":2}`
 	pathV2           = "/v2/"
 	pathV2Token      = "/v2/token"
+	testRegistryName = "test.registry"
+	testTokenURL     = "https://example.com/token" //nolint:gosec // test fixture URL, not a credential
+	testServiceName  = "svc"
+	keyExpiresIn     = "expires_in"
 )
 
 func testLogger() *slog.Logger {
@@ -31,15 +35,15 @@ func TestFetcher_HasRegistry(t *testing.T) {
 		Enabled:      true,
 		FetchTimeout: 30 * time.Second,
 		Registries: []config.Upstream{
-			{Name: "docker.io", Endpoint: "https://registry-1.docker.io", Auth: "none"},
-			{Name: "ghcr.io", Endpoint: "https://ghcr.io", Auth: "none"},
+			{Name: testRegistryDocker, Endpoint: "https://registry-1.docker.io", Auth: authNone},
+			{Name: testRegistryGHCR, Endpoint: "https://ghcr.io", Auth: authNone},
 		},
 	}
 
 	f := NewFetcher(cfg, 100*1024*1024, 10*1024*1024, testLogger())
 
-	require.True(t, f.HasRegistry("docker.io"))
-	require.True(t, f.HasRegistry("ghcr.io"))
+	require.True(t, f.HasRegistry(testRegistryDocker))
+	require.True(t, f.HasRegistry(testRegistryGHCR))
 	require.False(t, f.HasRegistry("quay.io"))
 	require.False(t, f.HasRegistry("unknown"))
 }
@@ -61,13 +65,13 @@ func TestFetcher_FetchManifest_NoAuth(t *testing.T) {
 		Enabled:      true,
 		FetchTimeout: 30 * time.Second,
 		Registries: []config.Upstream{
-			{Name: "test.registry", Endpoint: srv.URL, Auth: "none"},
+			{Name: testRegistryName, Endpoint: srv.URL, Auth: authNone},
 		},
 	}
 
 	f := NewFetcher(cfg, 100*1024*1024, 10*1024*1024, testLogger())
 
-	data, mediaType, err := f.FetchManifest(context.Background(), "test.registry", "library/alpine", "latest")
+	data, mediaType, err := f.FetchManifest(context.Background(), testRegistryName, "library/alpine", "latest")
 	require.NoError(t, err)
 	require.Equal(t, manifest, string(data))
 	require.Equal(t, "application/vnd.oci.image.manifest.v1+json", mediaType)
@@ -93,7 +97,7 @@ func TestFetcher_FetchManifest_BasicAuth(t *testing.T) {
 		Enabled:      true,
 		FetchTimeout: 30 * time.Second,
 		Registries: []config.Upstream{
-			{Name: "private.registry", Endpoint: srv.URL, Auth: "basic", Username: "testuser", Password: "testpass"},
+			{Name: "private.registry", Endpoint: srv.URL, Auth: authBasic, Username: "testuser", Password: "testpass"},
 		},
 	}
 
@@ -119,11 +123,11 @@ func TestFetcher_FetchManifest_TokenAuth(t *testing.T) {
 
 		// Token endpoint
 		if r.URL.Path == pathV2Token {
-			require.Equal(t, "test.registry", r.URL.Query().Get("service"))
+			require.Equal(t, testRegistryName, r.URL.Query().Get("service"))
 			tokenIssued = true
 			resp := map[string]any{
-				"token":      "test-bearer-token",
-				"expires_in": 300,
+				authToken:    "test-bearer-token",
+				keyExpiresIn: 300,
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(resp)
@@ -147,7 +151,7 @@ func TestFetcher_FetchManifest_TokenAuth(t *testing.T) {
 		Enabled:      true,
 		FetchTimeout: 30 * time.Second,
 		Registries: []config.Upstream{
-			{Name: "token.registry", Endpoint: srv.URL, Auth: "token"},
+			{Name: "token.registry", Endpoint: srv.URL, Auth: authToken},
 		},
 	}
 
@@ -169,13 +173,13 @@ func TestFetcher_FetchManifest_NotFound(t *testing.T) {
 		Enabled:      true,
 		FetchTimeout: 30 * time.Second,
 		Registries: []config.Upstream{
-			{Name: "test.registry", Endpoint: srv.URL, Auth: "none"},
+			{Name: testRegistryName, Endpoint: srv.URL, Auth: authNone},
 		},
 	}
 
 	f := NewFetcher(cfg, 100*1024*1024, 10*1024*1024, testLogger())
 
-	_, _, err := f.FetchManifest(context.Background(), "test.registry", "nonexistent/repo", "v1")
+	_, _, err := f.FetchManifest(context.Background(), testRegistryName, "nonexistent/repo", "v1")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "not found")
 }
@@ -192,7 +196,7 @@ func TestFetcher_FetchManifest_CircuitBreaker(t *testing.T) {
 		Enabled:      true,
 		FetchTimeout: 30 * time.Second,
 		Registries: []config.Upstream{
-			{Name: "flaky.registry", Endpoint: srv.URL, Auth: "none"},
+			{Name: "flaky.registry", Endpoint: srv.URL, Auth: authNone},
 		},
 	}
 
@@ -229,13 +233,13 @@ func TestFetcher_FetchBlobStream(t *testing.T) {
 		Enabled:      true,
 		FetchTimeout: 30 * time.Second,
 		Registries: []config.Upstream{
-			{Name: "test.registry", Endpoint: srv.URL, Auth: "none"},
+			{Name: testRegistryName, Endpoint: srv.URL, Auth: authNone},
 		},
 	}
 
 	f := NewFetcher(cfg, 100*1024*1024, 10*1024*1024, testLogger())
 
-	stream, err := f.FetchBlobStream(context.Background(), "test.registry", "library/alpine", "sha256:abc123")
+	stream, err := f.FetchBlobStream(context.Background(), testRegistryName, "library/alpine", "sha256:abc123")
 	require.NoError(t, err)
 	require.NotNil(t, stream)
 
@@ -275,8 +279,8 @@ func TestFetcher_TokenCaching(t *testing.T) {
 		if r.URL.Path == pathV2Token {
 			tokenRequests++
 			resp := map[string]any{
-				"token":      "cached-token",
-				"expires_in": 300,
+				authToken:    "cached-token",
+				keyExpiresIn: 300,
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(resp)
@@ -299,7 +303,7 @@ func TestFetcher_TokenCaching(t *testing.T) {
 		Enabled:      true,
 		FetchTimeout: 30 * time.Second,
 		Registries: []config.Upstream{
-			{Name: "token.registry", Endpoint: srv.URL, Auth: "token"},
+			{Name: "token.registry", Endpoint: srv.URL, Auth: authToken},
 		},
 	}
 
@@ -331,21 +335,21 @@ func TestParseWWWAuthenticate(t *testing.T) {
 		},
 		{
 			name:        "ghcr",
-			header:      `Bearer realm="https://ghcr.io/token",service="ghcr.io"`,
+			header:      `Bearer realm="https://ghcr.io/token",service=ghcr.io`,
 			wantRealm:   "https://ghcr.io/token",
-			wantService: "ghcr.io",
+			wantService: testRegistryGHCR,
 		},
 		{
 			name:        "realm only",
 			header:      `Bearer realm="https://example.com/token"`,
-			wantRealm:   "https://example.com/token",
+			wantRealm:   testTokenURL,
 			wantService: "",
 		},
 		{
 			name:        "extra unknown params ignored",
 			header:      `Bearer realm="https://example.com/token",service="svc",scope="repository:foo:pull"`,
-			wantRealm:   "https://example.com/token",
-			wantService: "svc",
+			wantRealm:   testTokenURL,
+			wantService: testServiceName,
 		},
 		{
 			name:        "not bearer scheme",
@@ -369,25 +373,25 @@ func TestParseWWWAuthenticate(t *testing.T) {
 			name:        "value with comma inside quotes",
 			header:      `Bearer realm="https://example.com/token?a=1,b=2",service="svc"`,
 			wantRealm:   "https://example.com/token?a=1,b=2",
-			wantService: "svc",
+			wantService: testServiceName,
 		},
 		{
 			name:        "extra whitespace",
 			header:      `Bearer  realm="https://example.com/token" , service="svc"`,
-			wantRealm:   "https://example.com/token",
-			wantService: "svc",
+			wantRealm:   testTokenURL,
+			wantService: testServiceName,
 		},
 		{
 			name:        "unquoted values",
 			header:      `Bearer realm=https://example.com/token,service=svc`,
-			wantRealm:   "https://example.com/token",
-			wantService: "svc",
+			wantRealm:   testTokenURL,
+			wantService: testServiceName,
 		},
 		{
 			name:        "mixed quoted and unquoted",
 			header:      `Bearer realm="https://example.com/token",service=svc`,
-			wantRealm:   "https://example.com/token",
-			wantService: "svc",
+			wantRealm:   testTokenURL,
+			wantService: testServiceName,
 		},
 		{
 			name:        "no equals sign",
@@ -434,7 +438,7 @@ func TestFetcher_DiscoverChallenge_RetryAfterFailure(t *testing.T) {
 			return
 		}
 		if r.URL.Path == pathV2Token {
-			resp := map[string]any{"token": "retry-token", "expires_in": 300}
+			resp := map[string]any{"token": "retry-token", keyExpiresIn: 300}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(resp)
 			return
@@ -452,7 +456,7 @@ func TestFetcher_DiscoverChallenge_RetryAfterFailure(t *testing.T) {
 		Enabled:      true,
 		FetchTimeout: 30 * time.Second,
 		Registries: []config.Upstream{
-			{Name: "retry.registry", Endpoint: srv.URL, Auth: "token"},
+			{Name: "retry.registry", Endpoint: srv.URL, Auth: authToken},
 		},
 	}
 	f := NewFetcher(cfg, 100*1024*1024, 10*1024*1024, testLogger())
@@ -492,7 +496,7 @@ func TestFetcher_CircuitBreaker_TripsOnAuthDiscoveryFailure(t *testing.T) {
 		Enabled:      true,
 		FetchTimeout: 5 * time.Second,
 		Registries: []config.Upstream{
-			{Name: "broken.registry", Endpoint: srv.URL, Auth: "token"},
+			{Name: "broken.registry", Endpoint: srv.URL, Auth: authToken},
 		},
 	}
 	f := NewFetcher(cfg, 100*1024*1024, 10*1024*1024, testLogger())
@@ -518,7 +522,7 @@ func TestFetcher_DiscoverChallenge_FallbackOnNoChallengeHeader(t *testing.T) {
 	manifest := testManifestJSON
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == pathV2Token {
-			resp := map[string]any{"token": "fallback-token", "expires_in": 300}
+			resp := map[string]any{"token": "fallback-token", keyExpiresIn: 300}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(resp)
 			return
@@ -537,7 +541,7 @@ func TestFetcher_DiscoverChallenge_FallbackOnNoChallengeHeader(t *testing.T) {
 		Enabled:      true,
 		FetchTimeout: 30 * time.Second,
 		Registries: []config.Upstream{
-			{Name: "no.challenge.registry", Endpoint: srv.URL, Auth: "token"},
+			{Name: "no.challenge.registry", Endpoint: srv.URL, Auth: authToken},
 		},
 	}
 	f := NewFetcher(cfg, 100*1024*1024, 10*1024*1024, testLogger())

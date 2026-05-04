@@ -10,8 +10,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const testMediaType = "application/octet-stream"
-const testPeerName = "peer"
+const (
+	testMediaType         = "application/octet-stream"
+	testPeerName          = "peer"
+	testManifestMediaType = "application/vnd.oci.image.manifest.v1+json"
+	replPolicyLazy        = "lazy"
+	testBaseDigest        = "sha256:base"
+)
 
 func testDB(t *testing.T) *DB {
 	t.Helper()
@@ -80,7 +85,7 @@ func TestMigrateV6FromV5Data(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, manifest)
 	require.Equal(t, manifestID, manifest.ID)
-	require.Equal(t, "application/vnd.oci.image.manifest.v1+json", manifest.MediaType)
+	require.Equal(t, testManifestMediaType, manifest.MediaType)
 	require.Equal(t, []byte(`{"schemaVersion":2}`), manifest.Content)
 
 	files, err := db.ListPackageFiles(ctx, manifestID)
@@ -233,7 +238,7 @@ func TestManifestCRUD(t *testing.T) {
 	m := &Manifest{
 		RepositoryID: repo.ID,
 		Digest:       "sha256:abc123",
-		MediaType:    "application/vnd.oci.image.manifest.v1+json",
+		MediaType:    testManifestMediaType,
 		SizeBytes:    256,
 		Content:      []byte(`{"schemaVersion":2}`),
 	}
@@ -268,7 +273,7 @@ func TestTagCRUD(t *testing.T) {
 	m := &Manifest{
 		RepositoryID: repo.ID,
 		Digest:       "sha256:manifest1",
-		MediaType:    "application/vnd.oci.image.manifest.v1+json",
+		MediaType:    testManifestMediaType,
 		SizeBytes:    100,
 		Content:      []byte(`{}`),
 	}
@@ -360,7 +365,7 @@ func TestActorCRUD(t *testing.T) {
 		ActorURL:          "https://bob.example.com/ap/actor",
 		Name:              &name,
 		Endpoint:          "https://registry.bob.example.com",
-		ReplicationPolicy: "lazy",
+		ReplicationPolicy: replPolicyLazy,
 		LastSeenAt:        &now,
 		IsHealthy:         true,
 	}
@@ -395,7 +400,7 @@ func TestPeerBlobLookup(t *testing.T) {
 		ActorURL:          testAliceActor,
 		Name:              &name,
 		Endpoint:          "https://alice.example.com",
-		ReplicationPolicy: "lazy",
+		ReplicationPolicy: replPolicyLazy,
 		LastSeenAt:        &now,
 		IsHealthy:         true,
 	}))
@@ -421,7 +426,7 @@ func TestManifestLayers(t *testing.T) {
 	m := &Manifest{
 		RepositoryID: repo.ID,
 		Digest:       "sha256:manifest-with-layers",
-		MediaType:    "application/vnd.oci.image.manifest.v1+json",
+		MediaType:    testManifestMediaType,
 		SizeBytes:    200,
 		Content:      []byte(`{}`),
 	}
@@ -578,7 +583,7 @@ func TestBlobExistsInRepo(t *testing.T) {
 	m := &Manifest{
 		RepositoryID: repo.ID,
 		Digest:       "sha256:manifest-scoped",
-		MediaType:    "application/vnd.oci.image.manifest.v1+json",
+		MediaType:    testManifestMediaType,
 		SizeBytes:    50,
 		Content:      []byte(`{}`),
 	}
@@ -646,7 +651,7 @@ func TestCleanupStalePeerBlobsPassesTimeDirect(t *testing.T) {
 		ActorURL:          "https://peer.example.com/ap/actor",
 		Name:              &name,
 		Endpoint:          "https://peer.example.com",
-		ReplicationPolicy: "lazy",
+		ReplicationPolicy: replPolicyLazy,
 		LastSeenAt:        &now,
 		IsHealthy:         true,
 	}))
@@ -671,14 +676,14 @@ func TestCountPeers(t *testing.T) {
 		ActorURL:          "https://peer1.example.com/ap/actor",
 		Endpoint:          "https://peer1.example.com",
 		IsHealthy:         true,
-		ReplicationPolicy: "lazy",
+		ReplicationPolicy: replPolicyLazy,
 		LastSeenAt:        &now,
 	}))
 	require.NoError(t, db.UpsertActor(ctx, &Actor{
 		ActorURL:          "https://peer2.example.com/ap/actor",
 		Endpoint:          "https://peer2.example.com",
 		IsHealthy:         true,
-		ReplicationPolicy: "lazy",
+		ReplicationPolicy: replPolicyLazy,
 		LastSeenAt:        &now,
 	}))
 

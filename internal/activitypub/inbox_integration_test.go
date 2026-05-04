@@ -19,13 +19,21 @@ import (
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/database"
 )
 
+const (
+	aliceDomain           = "alice.test"
+	bobActorURL           = "https://bob.test/ap/actor"
+	testDigest            = "sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abcd"
+	exampleHost           = "example.com"
+	testManifestMediaType = "application/vnd.oci.image.manifest.v1+json"
+)
+
 // signedInboxPost creates and signs a POST request to /ap/inbox.
 func signedInboxPost(t *testing.T, sender *Identity, activity any) *http.Request {
 	t.Helper()
 	body, err := json.Marshal(activity)
 	require.NoError(t, err)
 	req := httptest.NewRequest("POST", "/ap/inbox", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/activity+json")
+	req.Header.Set("Content-Type", MediaTypeActivityJSON)
 	require.NoError(t, SignRequest(req, sender.KeyID(), sender.PrivateKey, body))
 	return req
 }
@@ -35,7 +43,7 @@ func signedInboxPostWithDate(t *testing.T, sender *Identity, activity any, date 
 	body, err := json.Marshal(activity)
 	require.NoError(t, err)
 	req := httptest.NewRequest("POST", "/ap/inbox", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/activity+json")
+	req.Header.Set("Content-Type", MediaTypeActivityJSON)
 	req.Header.Set("Date", date.UTC().Format(http.TimeFormat))
 	require.NoError(t, SignRequest(req, sender.KeyID(), sender.PrivateKey, body))
 	return req
@@ -52,7 +60,7 @@ func setupInboxTest(t *testing.T) (alice *Identity, bob *Identity, inbox *InboxH
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
 
-	alice, err = LoadOrCreateIdentity("https://alice.test", "alice.test", "", "", discardLogger())
+	alice, err = LoadOrCreateIdentity("https://alice.test", aliceDomain, "", "", discardLogger())
 	require.NoError(t, err)
 
 	bob, err = LoadOrCreateIdentity("https://bob.test", "bob.test", "", "", discardLogger())
@@ -61,14 +69,14 @@ func setupInboxTest(t *testing.T) (alice *Identity, bob *Identity, inbox *InboxH
 	inbox = NewInboxHandler(bob, db, InboxConfig{
 		MaxManifestSize: config.DefaultMaxManifestSize,
 		MaxBlobSize:     config.DefaultMaxBlobSize,
-		AutoAccept:      "none",
+		AutoAccept:      AutoAcceptNone,
 	}, discardLogger())
 	t.Cleanup(inbox.Stop)
 
 	alicePEM, _ := alice.PublicKeyPEM()
 	aliceActor := Actor{
-		Context: []any{"https://www.w3.org/ns/activitystreams", "https://w3id.org/security/v1"},
-		Type:    "Person",
+		Context: []any{ContextActivityStreams, ContextSecurity},
+		Type:    TypePerson,
 		ID:      alice.ActorURL,
 		Inbox:   "https://alice.test/ap/inbox",
 		Outbox:  "https://alice.test/ap/outbox",
@@ -80,13 +88,13 @@ func setupInboxTest(t *testing.T) (alice *Identity, bob *Identity, inbox *InboxH
 	}
 
 	actorSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/activity+json")
+		w.Header().Set("Content-Type", MediaTypeActivityJSON)
 		_ = json.NewEncoder(w).Encode(aliceActor)
 	}))
 	t.Cleanup(actorSrv.Close)
 
 	alice.ActorURL = actorSrv.URL + "/ap/actor"
-	alice.Domain = "alice.test"
+	alice.Domain = aliceDomain
 	aliceActor.ID = alice.ActorURL
 	aliceActor.PublicKey.ID = alice.ActorURL + "#main-key"
 	aliceActor.PublicKey.Owner = alice.ActorURL
@@ -108,11 +116,11 @@ func TestInboxFollowAcceptFlow(t *testing.T) {
 
 	// Alice sends a Follow to Bob
 	follow := map[string]any{
-		"@context": "https://www.w3.org/ns/activitystreams",
-		"id":       alice.ActorURL + "#follow-1",
-		"type":     "Follow",
-		"actor":    alice.ActorURL,
-		"object":   bob.ActorURL,
+		KeyContext: ContextActivityStreams,
+		KeyID:      alice.ActorURL + "#follow-1",
+		KeyType:    ActivityFollow,
+		KeyActor:   alice.ActorURL,
+		KeyObject:  bob.ActorURL,
 	}
 
 	req := signedInboxPost(t, alice, follow)
@@ -132,11 +140,11 @@ func TestInboxRejectsActorMismatch(t *testing.T) {
 
 	// Activity claims to be from someone else
 	activity := map[string]any{
-		"@context": "https://www.w3.org/ns/activitystreams",
-		"id":       "https://evil.com/fake",
-		"type":     "Follow",
-		"actor":    "https://evil.com/ap/actor",
-		"object":   "https://bob.test/ap/actor",
+		KeyContext: ContextActivityStreams,
+		KeyID:      "https://evil.com/fake",
+		KeyType:    ActivityFollow,
+		KeyActor:   "https://evil.com/ap/actor",
+		KeyObject:  bobActorURL,
 	}
 
 	req := signedInboxPost(t, alice, activity)
@@ -154,14 +162,14 @@ func TestInboxAcceptMarksOutgoingFollowAccepted(t *testing.T) {
 	require.NoError(t, db.AddOutgoingFollow(ctx, alice.ActorURL))
 
 	accept := map[string]any{
-		"@context": "https://www.w3.org/ns/activitystreams",
-		"id":       alice.ActorURL + "#accept-1",
-		"type":     "Accept",
-		"actor":    alice.ActorURL,
-		"object": map[string]any{
-			"type":   "Follow",
-			"actor":  "https://bob.test/ap/actor",
-			"object": alice.ActorURL,
+		KeyContext: ContextActivityStreams,
+		KeyID:      alice.ActorURL + "#accept-1",
+		KeyType:    ActivityAccept,
+		KeyActor:   alice.ActorURL,
+		KeyObject: map[string]any{
+			KeyType:   ActivityFollow,
+			KeyActor:  bobActorURL,
+			KeyObject: alice.ActorURL,
 		},
 	}
 
@@ -192,12 +200,12 @@ func TestInboxRejectCleansUp(t *testing.T) {
 	require.NoError(t, db.AddFollowRequest(ctx, alice.ActorURL, alicePEM, "https://alice.test", nil))
 
 	reject := map[string]any{
-		"@context": "https://www.w3.org/ns/activitystreams",
-		"id":       alice.ActorURL + "#reject-1",
-		"type":     "Reject",
-		"actor":    alice.ActorURL,
-		"object": map[string]any{
-			"type": "Follow",
+		KeyContext: ContextActivityStreams,
+		KeyID:      alice.ActorURL + "#reject-1",
+		KeyType:    ActivityReject,
+		KeyActor:   alice.ActorURL,
+		KeyObject: map[string]any{
+			KeyType: ActivityFollow,
 		},
 	}
 
@@ -219,12 +227,12 @@ func TestInboxUndoRemovesFollow(t *testing.T) {
 	require.NoError(t, db.AddFollow(ctx, alice.ActorURL, alicePEM, "https://alice.test", nil))
 
 	undo := map[string]any{
-		"@context": "https://www.w3.org/ns/activitystreams",
-		"id":       alice.ActorURL + "#undo-1",
-		"type":     "Undo",
-		"actor":    alice.ActorURL,
-		"object": map[string]any{
-			"type": "Follow",
+		KeyContext: ContextActivityStreams,
+		KeyID:      alice.ActorURL + "#undo-1",
+		KeyType:    ActivityUndo,
+		KeyActor:   alice.ActorURL,
+		KeyObject: map[string]any{
+			KeyType: ActivityFollow,
 		},
 	}
 
@@ -247,16 +255,16 @@ func TestInboxCreateManifest(t *testing.T) {
 
 	repo := aliceRepoName(alice, "app")
 	create := map[string]any{
-		"@context": "https://www.w3.org/ns/activitystreams",
-		"id":       alice.ActorURL + "#create-1",
-		"type":     "Create",
-		"actor":    alice.ActorURL,
-		"object": map[string]any{
-			"type":          "OCIManifest",
-			"ociRepository": repo,
-			"ociDigest":     "sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abcd",
-			"ociMediaType":  "application/vnd.oci.image.manifest.v1+json",
-			"ociSize":       float64(256),
+		KeyContext: ContextActivityStreams,
+		KeyID:      alice.ActorURL + "#create-1",
+		KeyType:    ActivityCreate,
+		KeyActor:   alice.ActorURL,
+		KeyObject: map[string]any{
+			KeyType:          TypeOCIManifest,
+			KeyOCIRepository: repo,
+			KeyOCIDigest:     testDigest,
+			KeyOCIMediaType:  testManifestMediaType,
+			KeyOCISize:       float64(256),
 		},
 	}
 
@@ -276,16 +284,16 @@ func TestInboxCreateManifestRejectsNonFollower(t *testing.T) {
 	alice, _, inbox, db := setupInboxTest(t)
 
 	create := map[string]any{
-		"@context": "https://www.w3.org/ns/activitystreams",
-		"id":       alice.ActorURL + "#create-1",
-		"type":     "Create",
-		"actor":    alice.ActorURL,
-		"object": map[string]any{
-			"type":          "OCIManifest",
-			"ociRepository": "test/app",
-			"ociDigest":     "sha256:abc123",
-			"ociMediaType":  "application/vnd.oci.image.manifest.v1+json",
-			"ociSize":       float64(256),
+		KeyContext: ContextActivityStreams,
+		KeyID:      alice.ActorURL + "#create-1",
+		KeyType:    ActivityCreate,
+		KeyActor:   alice.ActorURL,
+		KeyObject: map[string]any{
+			KeyType:          TypeOCIManifest,
+			KeyOCIRepository: "test/app",
+			KeyOCIDigest:     "sha256:abc123",
+			KeyOCIMediaType:  testManifestMediaType,
+			KeyOCISize:       float64(256),
 		},
 	}
 
@@ -309,28 +317,28 @@ func TestInboxUpdateTag(t *testing.T) {
 	require.NoError(t, db.AddFollow(ctx, alice.ActorURL, alicePEM, "https://alice.test", nil))
 
 	repoName := aliceRepoName(alice, "app")
-	digest := "sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abcd"
+	digest := testDigest
 	_, err := db.GetOrCreateRepository(ctx, repoName, alice.ActorURL)
 	require.NoError(t, err)
 	repoObj, _ := db.GetRepository(ctx, repoName)
 	require.NoError(t, db.PutManifest(ctx, &database.Manifest{
 		RepositoryID: repoObj.ID,
 		Digest:       digest,
-		MediaType:    "application/vnd.oci.image.manifest.v1+json",
+		MediaType:    testManifestMediaType,
 		SizeBytes:    100,
 		Content:      []byte(`{"schemaVersion":2}`),
 	}))
 
 	update := map[string]any{
-		"@context": "https://www.w3.org/ns/activitystreams",
-		"id":       alice.ActorURL + "#update-1",
-		"type":     "Update",
-		"actor":    alice.ActorURL,
-		"object": map[string]any{
-			"type":          "OCITag",
-			"ociRepository": repoName,
-			"ociTag":        "latest",
-			"ociDigest":     digest,
+		KeyContext: ContextActivityStreams,
+		KeyID:      alice.ActorURL + "#update-1",
+		KeyType:    ActivityUpdate,
+		KeyActor:   alice.ActorURL,
+		KeyObject: map[string]any{
+			KeyType:          TypeOCITag,
+			KeyOCIRepository: repoName,
+			KeyOCITag:        "latest",
+			KeyOCIDigest:     digest,
 		},
 	}
 
@@ -362,15 +370,15 @@ func TestInboxAnnounceBlobRef(t *testing.T) {
 	}))
 
 	announce := map[string]any{
-		"@context": "https://www.w3.org/ns/activitystreams",
-		"id":       alice.ActorURL + "#announce-1",
-		"type":     "Announce",
-		"actor":    alice.ActorURL,
-		"object": map[string]any{
-			"type":        "OCIBlob",
-			"ociDigest":   "sha256:b1b2b3b4b5b6b7b8b9b0b1b2b3b4b5b6b7b8b9b0b1b2b3b4b5b6b7b8b9b0b1b2",
-			"ociSize":     float64(4096),
-			"ociEndpoint": aliceEndpoint,
+		KeyContext: ContextActivityStreams,
+		KeyID:      alice.ActorURL + "#announce-1",
+		KeyType:    ActivityAnnounce,
+		KeyActor:   alice.ActorURL,
+		KeyObject: map[string]any{
+			KeyType:        TypeOCIBlob,
+			KeyOCIDigest:   "sha256:b1b2b3b4b5b6b7b8b9b0b1b2b3b4b5b6b7b8b9b0b1b2b3b4b5b6b7b8b9b0b1b2",
+			KeyOCISize:     float64(4096),
+			KeyOCIEndpoint: aliceEndpoint,
 		},
 	}
 
@@ -392,11 +400,11 @@ func TestInboxDeleteIsAccepted(t *testing.T) {
 	require.NoError(t, db.AddFollow(context.Background(), alice.ActorURL, alicePEM, "https://alice.test", nil))
 
 	del := map[string]any{
-		"@context": "https://www.w3.org/ns/activitystreams",
-		"id":       alice.ActorURL + "#delete-1",
-		"type":     "Delete",
-		"actor":    alice.ActorURL,
-		"object":   fmt.Sprintf("%s/objects/manifest/sha256:abc", alice.ActorURL),
+		KeyContext: ContextActivityStreams,
+		KeyID:      alice.ActorURL + "#delete-1",
+		KeyType:    ActivityDelete,
+		KeyActor:   alice.ActorURL,
+		KeyObject:  fmt.Sprintf("%s/objects/manifest/sha256:abc", alice.ActorURL),
 	}
 
 	req := signedInboxPost(t, alice, del)
@@ -419,16 +427,16 @@ func TestInboxOwnershipEnforcement(t *testing.T) {
 	require.NoError(t, err)
 
 	create := map[string]any{
-		"@context": "https://www.w3.org/ns/activitystreams",
-		"id":       alice.ActorURL + "#create-steal",
-		"type":     "Create",
-		"actor":    alice.ActorURL,
-		"object": map[string]any{
-			"type":          "OCIManifest",
-			"ociRepository": repoName,
-			"ociDigest":     "sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abcd",
-			"ociMediaType":  "application/vnd.oci.image.manifest.v1+json",
-			"ociSize":       float64(256),
+		KeyContext: ContextActivityStreams,
+		KeyID:      alice.ActorURL + "#create-steal",
+		KeyType:    ActivityCreate,
+		KeyActor:   alice.ActorURL,
+		KeyObject: map[string]any{
+			KeyType:          TypeOCIManifest,
+			KeyOCIRepository: repoName,
+			KeyOCIDigest:     testDigest,
+			KeyOCIMediaType:  testManifestMediaType,
+			KeyOCISize:       float64(256),
 		},
 	}
 
@@ -459,17 +467,17 @@ func TestInboxCreateManifestWithContent_DigestMatch(t *testing.T) {
 	repoName := aliceRepoName(alice, "app")
 
 	create := map[string]any{
-		"@context": "https://www.w3.org/ns/activitystreams",
-		"id":       alice.ActorURL + "#create-content",
-		"type":     "Create",
-		"actor":    alice.ActorURL,
-		"object": map[string]any{
-			"type":          "OCIManifest",
-			"ociRepository": repoName,
-			"ociDigest":     digest,
-			"ociMediaType":  "application/vnd.oci.image.manifest.v1+json",
-			"ociSize":       float64(len(content)),
-			"ociContent":    encoded,
+		KeyContext: ContextActivityStreams,
+		KeyID:      alice.ActorURL + "#create-content",
+		KeyType:    ActivityCreate,
+		KeyActor:   alice.ActorURL,
+		KeyObject: map[string]any{
+			KeyType:          TypeOCIManifest,
+			KeyOCIRepository: repoName,
+			KeyOCIDigest:     digest,
+			KeyOCIMediaType:  testManifestMediaType,
+			KeyOCISize:       float64(len(content)),
+			KeyOCIContent:    encoded,
 		},
 	}
 
@@ -501,17 +509,17 @@ func TestInboxCreateManifestWithContent_DigestMismatch(t *testing.T) {
 	tamperedEncoded := base64.StdEncoding.EncodeToString(malwareContent)
 
 	create := map[string]any{
-		"@context": "https://www.w3.org/ns/activitystreams",
-		"id":       alice.ActorURL + "#create-tampered",
-		"type":     "Create",
-		"actor":    alice.ActorURL,
-		"object": map[string]any{
-			"type":          "OCIManifest",
-			"ociRepository": aliceRepoName(alice, "app"),
-			"ociDigest":     digest,
-			"ociMediaType":  "application/vnd.oci.image.manifest.v1+json",
-			"ociSize":       float64(len(legitimateContent)),
-			"ociContent":    tamperedEncoded,
+		KeyContext: ContextActivityStreams,
+		KeyID:      alice.ActorURL + "#create-tampered",
+		KeyType:    ActivityCreate,
+		KeyActor:   alice.ActorURL,
+		KeyObject: map[string]any{
+			KeyType:          TypeOCIManifest,
+			KeyOCIRepository: aliceRepoName(alice, "app"),
+			KeyOCIDigest:     digest,
+			KeyOCIMediaType:  testManifestMediaType,
+			KeyOCISize:       float64(len(legitimateContent)),
+			KeyOCIContent:    tamperedEncoded,
 		},
 	}
 
@@ -530,16 +538,16 @@ func TestInboxCreateManifestWrongDomain(t *testing.T) {
 	require.NoError(t, db.AddFollow(ctx, alice.ActorURL, alicePEM, "https://alice.test", nil))
 
 	create := map[string]any{
-		"@context": "https://www.w3.org/ns/activitystreams",
-		"id":       alice.ActorURL + "#create-squatter",
-		"type":     "Create",
-		"actor":    alice.ActorURL,
-		"object": map[string]any{
-			"type":          "OCIManifest",
-			"ociRepository": "someotherdomain.example/app",
-			"ociDigest":     "sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abcd",
-			"ociMediaType":  "application/vnd.oci.image.manifest.v1+json",
-			"ociSize":       float64(256),
+		KeyContext: ContextActivityStreams,
+		KeyID:      alice.ActorURL + "#create-squatter",
+		KeyType:    ActivityCreate,
+		KeyActor:   alice.ActorURL,
+		KeyObject: map[string]any{
+			KeyType:          TypeOCIManifest,
+			KeyOCIRepository: "someotherdomain.example/app",
+			KeyOCIDigest:     testDigest,
+			KeyOCIMediaType:  testManifestMediaType,
+			KeyOCISize:       float64(256),
 		},
 	}
 
@@ -556,14 +564,14 @@ func TestInboxAcceptWithoutPendingOutgoingFollow(t *testing.T) {
 
 	// No outgoing follow stored — alice sends Accept(Follow) out of the blue.
 	accept := map[string]any{
-		"@context": "https://www.w3.org/ns/activitystreams",
-		"id":       alice.ActorURL + "#accept-spurious",
-		"type":     "Accept",
-		"actor":    alice.ActorURL,
-		"object": map[string]any{
-			"type":   "Follow",
-			"actor":  "https://bob.test/ap/actor",
-			"object": alice.ActorURL,
+		KeyContext: ContextActivityStreams,
+		KeyID:      alice.ActorURL + "#accept-spurious",
+		KeyType:    ActivityAccept,
+		KeyActor:   alice.ActorURL,
+		KeyObject: map[string]any{
+			KeyType:   ActivityFollow,
+			KeyActor:  bobActorURL,
+			KeyObject: alice.ActorURL,
 		},
 	}
 
@@ -587,14 +595,14 @@ func TestInboxAcceptWithAlreadyAcceptedOutgoingFollow(t *testing.T) {
 	require.NoError(t, db.AcceptOutgoingFollow(ctx, alice.ActorURL))
 
 	accept := map[string]any{
-		"@context": "https://www.w3.org/ns/activitystreams",
-		"id":       alice.ActorURL + "#accept-dup",
-		"type":     "Accept",
-		"actor":    alice.ActorURL,
-		"object": map[string]any{
-			"type":   "Follow",
-			"actor":  "https://bob.test/ap/actor",
-			"object": alice.ActorURL,
+		KeyContext: ContextActivityStreams,
+		KeyID:      alice.ActorURL + "#accept-dup",
+		KeyType:    ActivityAccept,
+		KeyActor:   alice.ActorURL,
+		KeyObject: map[string]any{
+			KeyType:   ActivityFollow,
+			KeyActor:  bobActorURL,
+			KeyObject: alice.ActorURL,
 		},
 	}
 
@@ -618,11 +626,11 @@ func TestInboxAcceptWithStringObject(t *testing.T) {
 	require.NoError(t, db.AddOutgoingFollow(ctx, alice.ActorURL))
 
 	accept := map[string]any{
-		"@context": "https://www.w3.org/ns/activitystreams",
-		"id":       alice.ActorURL + "#accept-str",
-		"type":     "Accept",
-		"actor":    alice.ActorURL,
-		"object":   alice.ActorURL + "#follow-1", // string form
+		KeyContext: ContextActivityStreams,
+		KeyID:      alice.ActorURL + "#accept-str",
+		KeyType:    ActivityAccept,
+		KeyActor:   alice.ActorURL,
+		KeyObject:  alice.ActorURL + "#follow-1", // string form
 	}
 
 	req := signedInboxPost(t, alice, accept)
@@ -644,12 +652,12 @@ func TestInboxRejectMarksOutgoingFollowRejected(t *testing.T) {
 	require.NoError(t, db.AddOutgoingFollow(ctx, alice.ActorURL))
 
 	reject := map[string]any{
-		"@context": "https://www.w3.org/ns/activitystreams",
-		"id":       alice.ActorURL + "#reject-out",
-		"type":     "Reject",
-		"actor":    alice.ActorURL,
-		"object": map[string]any{
-			"type": "Follow",
+		KeyContext: ContextActivityStreams,
+		KeyID:      alice.ActorURL + "#reject-out",
+		KeyType:    ActivityReject,
+		KeyActor:   alice.ActorURL,
+		KeyObject: map[string]any{
+			KeyType: ActivityFollow,
 		},
 	}
 
@@ -674,12 +682,12 @@ func TestInboxRejectCleansBothDirections(t *testing.T) {
 	require.NoError(t, db.AddFollowRequest(ctx, alice.ActorURL, alicePEM, "https://alice.test", nil))
 
 	reject := map[string]any{
-		"@context": "https://www.w3.org/ns/activitystreams",
-		"id":       alice.ActorURL + "#reject-both",
-		"type":     "Reject",
-		"actor":    alice.ActorURL,
-		"object": map[string]any{
-			"type": "Follow",
+		KeyContext: ContextActivityStreams,
+		KeyID:      alice.ActorURL + "#reject-both",
+		KeyType:    ActivityReject,
+		KeyActor:   alice.ActorURL,
+		KeyObject: map[string]any{
+			KeyType: ActivityFollow,
 		},
 	}
 
@@ -703,12 +711,12 @@ func TestInboxUndoForNonExistentFollow(t *testing.T) {
 	alice, _, inbox, _ := setupInboxTest(t)
 
 	undo := map[string]any{
-		"@context": "https://www.w3.org/ns/activitystreams",
-		"id":       alice.ActorURL + "#undo-ghost",
-		"type":     "Undo",
-		"actor":    alice.ActorURL,
-		"object": map[string]any{
-			"type": "Follow",
+		KeyContext: ContextActivityStreams,
+		KeyID:      alice.ActorURL + "#undo-ghost",
+		KeyType:    ActivityUndo,
+		KeyActor:   alice.ActorURL,
+		KeyObject: map[string]any{
+			KeyType: ActivityFollow,
 		},
 	}
 
@@ -729,12 +737,12 @@ func TestInboxDuplicateActivityDedup(t *testing.T) {
 
 	activityID := alice.ActorURL + "#undo-dedup"
 	undo := map[string]any{
-		"@context": "https://www.w3.org/ns/activitystreams",
-		"id":       activityID,
-		"type":     "Undo",
-		"actor":    alice.ActorURL,
-		"object": map[string]any{
-			"type": "Follow",
+		KeyContext: ContextActivityStreams,
+		KeyID:      activityID,
+		KeyType:    ActivityUndo,
+		KeyActor:   alice.ActorURL,
+		KeyObject: map[string]any{
+			KeyType: ActivityFollow,
 		},
 	}
 
@@ -760,11 +768,11 @@ func TestInboxFollowReprocessedAfterRemoval(t *testing.T) {
 
 	activityID := alice.ActorURL + "#follow-" + bob.ActorURL
 	follow := map[string]any{
-		"@context": "https://www.w3.org/ns/activitystreams",
-		"id":       activityID,
-		"type":     "Follow",
-		"actor":    alice.ActorURL,
-		"object":   bob.ActorURL,
+		KeyContext: ContextActivityStreams,
+		KeyID:      activityID,
+		KeyType:    ActivityFollow,
+		KeyActor:   alice.ActorURL,
+		KeyObject:  bob.ActorURL,
 	}
 
 	req := signedInboxPost(t, alice, follow)
@@ -793,11 +801,11 @@ func TestInboxFollowSelfRejected(t *testing.T) {
 	alice, _, inbox, _ := setupInboxTest(t)
 
 	follow := map[string]any{
-		"@context": "https://www.w3.org/ns/activitystreams",
-		"id":       alice.ActorURL + "#follow-self",
-		"type":     "Follow",
-		"actor":    alice.ActorURL,
-		"object":   alice.ActorURL, // not bob's actor URL
+		KeyContext: ContextActivityStreams,
+		KeyID:      alice.ActorURL + "#follow-self",
+		KeyType:    ActivityFollow,
+		KeyActor:   alice.ActorURL,
+		KeyObject:  alice.ActorURL, // not bob's actor URL
 	}
 
 	req := signedInboxPost(t, alice, follow)
@@ -813,17 +821,17 @@ func TestInboxBlockedActorSilentDrop(t *testing.T) {
 	blockedInbox := NewInboxHandler(bob, db, InboxConfig{
 		MaxManifestSize: config.DefaultMaxManifestSize,
 		MaxBlobSize:     config.DefaultMaxBlobSize,
-		AutoAccept:      "none",
+		AutoAccept:      AutoAcceptNone,
 		BlockedActors:   []string{alice.ActorURL},
 	}, discardLogger())
 	t.Cleanup(blockedInbox.Stop)
 
 	follow := map[string]any{
-		"@context": "https://www.w3.org/ns/activitystreams",
-		"id":       alice.ActorURL + "#follow-blocked",
-		"type":     "Follow",
-		"actor":    alice.ActorURL,
-		"object":   bob.ActorURL,
+		KeyContext: ContextActivityStreams,
+		KeyID:      alice.ActorURL + "#follow-blocked",
+		KeyType:    ActivityFollow,
+		KeyActor:   alice.ActorURL,
+		KeyObject:  bob.ActorURL,
 	}
 
 	req := signedInboxPost(t, alice, follow)
@@ -846,17 +854,17 @@ func TestInboxBlockedDomainSilentDrop(t *testing.T) {
 	blockedInbox := NewInboxHandler(bob, db, InboxConfig{
 		MaxManifestSize: config.DefaultMaxManifestSize,
 		MaxBlobSize:     config.DefaultMaxBlobSize,
-		AutoAccept:      "none",
+		AutoAccept:      AutoAcceptNone,
 		BlockedDomains:  []string{"127.0.0.1"},
 	}, discardLogger())
 	t.Cleanup(blockedInbox.Stop)
 
 	follow := map[string]any{
-		"@context": "https://www.w3.org/ns/activitystreams",
-		"id":       alice.ActorURL + "#follow-blocked-dom",
-		"type":     "Follow",
-		"actor":    alice.ActorURL,
-		"object":   bob.ActorURL,
+		KeyContext: ContextActivityStreams,
+		KeyID:      alice.ActorURL + "#follow-blocked-dom",
+		KeyType:    ActivityFollow,
+		KeyActor:   alice.ActorURL,
+		KeyObject:  bob.ActorURL,
 	}
 
 	req := signedInboxPost(t, alice, follow)
@@ -885,11 +893,11 @@ func TestMutualAutoAcceptFollowFlow(t *testing.T) {
 	ctx := context.Background()
 
 	follow := map[string]any{
-		"@context": "https://www.w3.org/ns/activitystreams",
-		"id":       alice.ActorURL + "#follow-mutual",
-		"type":     "Follow",
-		"actor":    alice.ActorURL,
-		"object":   bob.ActorURL,
+		KeyContext: ContextActivityStreams,
+		KeyID:      alice.ActorURL + "#follow-mutual",
+		KeyType:    ActivityFollow,
+		KeyActor:   alice.ActorURL,
+		KeyObject:  bob.ActorURL,
 	}
 
 	// Provide enqueue so SendAccept has a delivery path.
@@ -930,8 +938,8 @@ func TestMutualAutoAcceptDoesNotTriggerWithoutOutgoingFollow(t *testing.T) {
 
 	strangerPEM, _ := stranger.PublicKeyPEM()
 	strangerActor := Actor{
-		Context: []any{"https://www.w3.org/ns/activitystreams", "https://w3id.org/security/v1"},
-		Type:    "Person",
+		Context: []any{ContextActivityStreams, ContextSecurity},
+		Type:    TypePerson,
 		ID:      stranger.ActorURL,
 		Inbox:   "https://stranger.test/ap/inbox",
 		PublicKey: ActorPublicKey{
@@ -942,7 +950,7 @@ func TestMutualAutoAcceptDoesNotTriggerWithoutOutgoingFollow(t *testing.T) {
 	}
 
 	actorSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/activity+json")
+		w.Header().Set("Content-Type", MediaTypeActivityJSON)
 		_ = json.NewEncoder(w).Encode(strangerActor)
 	}))
 	defer actorSrv.Close()
@@ -953,11 +961,11 @@ func TestMutualAutoAcceptDoesNotTriggerWithoutOutgoingFollow(t *testing.T) {
 	strangerActor.PublicKey.Owner = stranger.ActorURL
 
 	follow := map[string]any{
-		"@context": "https://www.w3.org/ns/activitystreams",
-		"id":       stranger.ActorURL + "#follow-stranger",
-		"type":     "Follow",
-		"actor":    stranger.ActorURL,
-		"object":   bob.ActorURL,
+		KeyContext: ContextActivityStreams,
+		KeyID:      stranger.ActorURL + "#follow-stranger",
+		KeyType:    ActivityFollow,
+		KeyActor:   stranger.ActorURL,
+		KeyObject:  bob.ActorURL,
 	}
 
 	req := signedInboxPost(t, stranger, follow)
@@ -992,14 +1000,14 @@ func TestMutualAcceptAutoAcceptsPendingInboundFollow(t *testing.T) {
 	})
 
 	accept := map[string]any{
-		"@context": "https://www.w3.org/ns/activitystreams",
-		"id":       alice.ActorURL + "#accept-mutual",
-		"type":     "Accept",
-		"actor":    alice.ActorURL,
-		"object": map[string]any{
-			"type":   "Follow",
-			"actor":  "https://bob.test/ap/actor",
-			"object": alice.ActorURL,
+		KeyContext: ContextActivityStreams,
+		KeyID:      alice.ActorURL + "#accept-mutual",
+		KeyType:    ActivityAccept,
+		KeyActor:   alice.ActorURL,
+		KeyObject: map[string]any{
+			KeyType:   ActivityFollow,
+			KeyActor:  bobActorURL,
+			KeyObject: alice.ActorURL,
 		},
 	}
 
@@ -1033,11 +1041,11 @@ func TestInboxAutoAcceptAll(t *testing.T) {
 	})
 
 	follow := map[string]any{
-		"@context": "https://www.w3.org/ns/activitystreams",
-		"id":       alice.ActorURL + "#follow-autoall",
-		"type":     "Follow",
-		"actor":    alice.ActorURL,
-		"object":   bob.ActorURL,
+		KeyContext: ContextActivityStreams,
+		KeyID:      alice.ActorURL + "#follow-autoall",
+		KeyType:    ActivityFollow,
+		KeyActor:   alice.ActorURL,
+		KeyObject:  bob.ActorURL,
 	}
 
 	req := signedInboxPost(t, alice, follow)
@@ -1055,12 +1063,12 @@ func TestInboxUpdateRejectsNonFollower(t *testing.T) {
 	alice, _, inbox, _ := setupInboxTest(t)
 
 	update := map[string]any{
-		"@context": "https://www.w3.org/ns/activitystreams",
-		"id":       alice.ActorURL + "#update-nofollow",
-		"type":     "Update",
-		"actor":    alice.ActorURL,
-		"object": map[string]any{
-			"type": "OCITag",
+		KeyContext: ContextActivityStreams,
+		KeyID:      alice.ActorURL + "#update-nofollow",
+		KeyType:    ActivityUpdate,
+		KeyActor:   alice.ActorURL,
+		KeyObject: map[string]any{
+			KeyType: TypeOCITag,
 		},
 	}
 
@@ -1075,12 +1083,12 @@ func TestInboxAnnounceRejectsNonFollower(t *testing.T) {
 	alice, _, inbox, _ := setupInboxTest(t)
 
 	announce := map[string]any{
-		"@context": "https://www.w3.org/ns/activitystreams",
-		"id":       alice.ActorURL + "#announce-nofollow",
-		"type":     "Announce",
-		"actor":    alice.ActorURL,
-		"object": map[string]any{
-			"type": "OCIBlob",
+		KeyContext: ContextActivityStreams,
+		KeyID:      alice.ActorURL + "#announce-nofollow",
+		KeyType:    ActivityAnnounce,
+		KeyActor:   alice.ActorURL,
+		KeyObject: map[string]any{
+			KeyType: TypeOCIBlob,
 		},
 	}
 
@@ -1095,12 +1103,12 @@ func TestInboxDeleteRejectsNonFollower(t *testing.T) {
 	alice, _, inbox, _ := setupInboxTest(t)
 
 	del := map[string]any{
-		"@context": "https://www.w3.org/ns/activitystreams",
-		"id":       alice.ActorURL + "#delete-nofollow",
-		"type":     "Delete",
-		"actor":    alice.ActorURL,
-		"object": map[string]any{
-			"type": "OCIManifest",
+		KeyContext: ContextActivityStreams,
+		KeyID:      alice.ActorURL + "#delete-nofollow",
+		KeyType:    ActivityDelete,
+		KeyActor:   alice.ActorURL,
+		KeyObject: map[string]any{
+			KeyType: TypeOCIManifest,
 		},
 	}
 
@@ -1123,15 +1131,15 @@ func TestInboxUpdateTagUnknownManifest(t *testing.T) {
 	require.NoError(t, err)
 
 	update := map[string]any{
-		"@context": "https://www.w3.org/ns/activitystreams",
-		"id":       alice.ActorURL + "#update-ghost",
-		"type":     "Update",
-		"actor":    alice.ActorURL,
-		"object": map[string]any{
-			"type":          "OCITag",
-			"ociRepository": repoName,
-			"ociTag":        "latest",
-			"ociDigest":     "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		KeyContext: ContextActivityStreams,
+		KeyID:      alice.ActorURL + "#update-ghost",
+		KeyType:    ActivityUpdate,
+		KeyActor:   alice.ActorURL,
+		KeyObject: map[string]any{
+			KeyType:          TypeOCITag,
+			KeyOCIRepository: repoName,
+			KeyOCITag:        "latest",
+			KeyOCIDigest:     "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		},
 	}
 
@@ -1148,7 +1156,7 @@ func TestInboxCreateManifestSplitDomainNamespace(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = db.Close() })
 
-	alice, err := LoadOrCreateIdentity("https://registry.alice.test", "registry.alice.test", "alice.test", "", discardLogger())
+	alice, err := LoadOrCreateIdentity("https://registry.alice.test", "registry.alice.test", aliceDomain, "", discardLogger())
 	require.NoError(t, err)
 
 	bob, err := LoadOrCreateIdentity("https://bob.test", "bob.test", "", "", discardLogger())
@@ -1157,13 +1165,13 @@ func TestInboxCreateManifestSplitDomainNamespace(t *testing.T) {
 	inbox := NewInboxHandler(bob, db, InboxConfig{
 		MaxManifestSize: config.DefaultMaxManifestSize,
 		MaxBlobSize:     config.DefaultMaxBlobSize,
-		AutoAccept:      "none",
+		AutoAccept:      AutoAcceptNone,
 	}, discardLogger())
 	t.Cleanup(inbox.Stop)
 
 	alicePEM, _ := alice.PublicKeyPEM()
 	aliceActor := Actor{
-		Context: []any{"https://www.w3.org/ns/activitystreams", "https://w3id.org/security/v1"},
+		Context: []any{ContextActivityStreams, ContextSecurity},
 		Type:    "Application",
 		ID:      alice.ActorURL,
 		Inbox:   "https://registry.alice.test/ap/inbox",
@@ -1172,11 +1180,11 @@ func TestInboxCreateManifestSplitDomainNamespace(t *testing.T) {
 			Owner:        alice.ActorURL,
 			PublicKeyPEM: alicePEM,
 		},
-		OCINamespace: "alice.test",
+		OCINamespace: aliceDomain,
 	}
 
 	actorSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/activity+json")
+		w.Header().Set("Content-Type", MediaTypeActivityJSON)
 		_ = json.NewEncoder(w).Encode(aliceActor)
 	}))
 	t.Cleanup(actorSrv.Close)
@@ -1191,20 +1199,20 @@ func TestInboxCreateManifestSplitDomainNamespace(t *testing.T) {
 
 	// Pre-populate the namespace cache to simulate a validated split-domain.
 	// httptest uses 127.0.0.1 which can't pass the parent-domain validation
-	// against "alice.test" — covered by TestValidNamespaceForHost instead.
-	inbox.SetNamespaceForActor(alice.ActorURL, "alice.test")
+	// against aliceDomain — covered by TestValidNamespaceForHost instead.
+	inbox.SetNamespaceForActor(alice.ActorURL, aliceDomain)
 
 	create := map[string]any{
-		"@context": "https://www.w3.org/ns/activitystreams",
-		"id":       alice.ActorURL + "#create-split-1",
-		"type":     "Create",
-		"actor":    alice.ActorURL,
-		"object": map[string]any{
-			"type":          "OCIManifest",
-			"ociRepository": "alice.test/myapp",
-			"ociDigest":     "sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abcd",
-			"ociMediaType":  "application/vnd.oci.image.manifest.v1+json",
-			"ociSize":       float64(256),
+		KeyContext: ContextActivityStreams,
+		KeyID:      alice.ActorURL + "#create-split-1",
+		KeyType:    ActivityCreate,
+		KeyActor:   alice.ActorURL,
+		KeyObject: map[string]any{
+			KeyType:          TypeOCIManifest,
+			KeyOCIRepository: "alice.test/myapp",
+			KeyOCIDigest:     testDigest,
+			KeyOCIMediaType:  testManifestMediaType,
+			KeyOCISize:       float64(256),
 		},
 	}
 
@@ -1235,13 +1243,13 @@ func TestInboxRejectsSpoofedNamespace(t *testing.T) {
 	inbox := NewInboxHandler(bob, db, InboxConfig{
 		MaxManifestSize: config.DefaultMaxManifestSize,
 		MaxBlobSize:     config.DefaultMaxBlobSize,
-		AutoAccept:      "none",
+		AutoAccept:      AutoAcceptNone,
 	}, discardLogger())
 	t.Cleanup(inbox.Stop)
 
 	evilPEM, _ := evil.PublicKeyPEM()
 	evilActor := Actor{
-		Context: []any{"https://www.w3.org/ns/activitystreams", "https://w3id.org/security/v1"},
+		Context: []any{ContextActivityStreams, ContextSecurity},
 		Type:    "Application",
 		ID:      evil.ActorURL,
 		Inbox:   "https://evil.test/ap/inbox",
@@ -1254,7 +1262,7 @@ func TestInboxRejectsSpoofedNamespace(t *testing.T) {
 	}
 
 	actorSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/activity+json")
+		w.Header().Set("Content-Type", MediaTypeActivityJSON)
 		_ = json.NewEncoder(w).Encode(evilActor)
 	}))
 	t.Cleanup(actorSrv.Close)
@@ -1269,16 +1277,16 @@ func TestInboxRejectsSpoofedNamespace(t *testing.T) {
 
 	// Evil tries to push a repo under the spoofed namespace.
 	create := map[string]any{
-		"@context": "https://www.w3.org/ns/activitystreams",
-		"id":       evil.ActorURL + "#create-spoof",
-		"type":     "Create",
-		"actor":    evil.ActorURL,
-		"object": map[string]any{
-			"type":          "OCIManifest",
-			"ociRepository": "victim.test/malicious",
-			"ociDigest":     "sha256:abc123def456abc123def456abc123def456abc123def456abc123def456abcd",
-			"ociMediaType":  "application/vnd.oci.image.manifest.v1+json",
-			"ociSize":       float64(256),
+		KeyContext: ContextActivityStreams,
+		KeyID:      evil.ActorURL + "#create-spoof",
+		KeyType:    ActivityCreate,
+		KeyActor:   evil.ActorURL,
+		KeyObject: map[string]any{
+			KeyType:          TypeOCIManifest,
+			KeyOCIRepository: "victim.test/malicious",
+			KeyOCIDigest:     testDigest,
+			KeyOCIMediaType:  testManifestMediaType,
+			KeyOCISize:       float64(256),
 		},
 	}
 
@@ -1294,12 +1302,12 @@ func TestValidNamespaceForHost(t *testing.T) {
 		ns, host string
 		want     bool
 	}{
-		{"example.com", "registry.example.com", true},
-		{"example.com", "example.com", true},
-		{"example.com", "evil.test", false},
-		{"example.com", "notexample.com", false},
+		{exampleHost, "registry.example.com", true},
+		{exampleHost, "example.com", true},
+		{exampleHost, "evil.test", false},
+		{exampleHost, "notexample.com", false},
 		{"a.b.c", "x.a.b.c", true},
-		{"alice.test", "127.0.0.1", false},
+		{aliceDomain, "127.0.0.1", false},
 	}
 	for _, tt := range tests {
 		got := validNamespaceForHost(tt.ns, tt.host)

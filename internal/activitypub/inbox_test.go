@@ -16,6 +16,8 @@ import (
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/database"
 )
 
+const exampleActorURL = "https://example.com/ap/actor"
+
 func testInboxSetup(t *testing.T) *InboxHandler {
 	t.Helper()
 	dir := t.TempDir()
@@ -30,7 +32,7 @@ func testInboxSetup(t *testing.T) *InboxHandler {
 	handler := NewInboxHandler(id, db, InboxConfig{
 		MaxManifestSize: config.DefaultMaxManifestSize,
 		MaxBlobSize:     config.DefaultMaxBlobSize,
-		AutoAccept:      "none",
+		AutoAccept:      AutoAcceptNone,
 	}, discardLogger())
 	t.Cleanup(handler.Stop)
 	return handler
@@ -41,7 +43,7 @@ func TestInboxRejectsUnsigned(t *testing.T) {
 
 	body := []byte(`{"type":"Follow","actor":"https://alice.example.com/ap/actor","object":"https://bob.example.com/ap/actor"}`)
 	req := httptest.NewRequest("POST", "/ap/inbox", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/activity+json")
+	req.Header.Set("Content-Type", MediaTypeActivityJSON)
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -78,7 +80,7 @@ func TestIsActivityPubContentType(t *testing.T) {
 		ct   string
 		want bool
 	}{
-		{"application/activity+json", true},
+		{MediaTypeActivityJSON, true},
 		{"application/ld+json", true},
 		{`application/ld+json; profile="https://www.w3.org/ns/activitystreams"`, true},
 		{"application/json", false},
@@ -96,8 +98,8 @@ func TestKeyIDToActorURL(t *testing.T) {
 		input    string
 		expected string
 	}{
-		{"https://example.com/ap/actor#main-key", "https://example.com/ap/actor"},
-		{"https://example.com/ap/actor", "https://example.com/ap/actor"},
+		{"https://example.com/ap/actor#main-key", exampleActorURL},
+		{exampleActorURL, exampleActorURL},
 	}
 
 	for _, tt := range tests {
@@ -111,7 +113,7 @@ func TestEndpointFromActorURL(t *testing.T) {
 		input    string
 		expected string
 	}{
-		{"https://example.com/ap/actor", "https://example.com"},
+		{exampleActorURL, "https://example.com"},
 		{"https://example.com/other", "https://example.com"},
 		{"https://node.example.org:8443/ap/actor", "https://node.example.org:8443"},
 		{"%%invalid", "%%invalid"},
