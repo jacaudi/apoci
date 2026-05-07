@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/activitypub"
+	"git.erwanleboucher.dev/eleboucher/apoci/internal/database"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/federation"
 )
 
@@ -885,6 +886,7 @@ func TestAdminAllEndpointsRequireAuth(t *testing.T) {
 	}
 	endpoints := []endpoint{
 		{http.MethodGet, "/api/admin/identity", ""},
+		{http.MethodGet, "/api/admin/images", ""},
 		{http.MethodGet, testFollowsAPI, ""},
 		{http.MethodGet, "/api/admin/follows/pending", ""},
 		{http.MethodPost, testFollowsAPI, testFollowBody},
@@ -1001,4 +1003,76 @@ func TestAdminListOutgoingFollowsFilterByStatus(t *testing.T) {
 	for _, f := range follows {
 		require.Equal(t, "pending", f["we_follow_status"])
 	}
+}
+
+func TestAdminListImagesEmpty(t *testing.T) {
+	s := testServerWithMock(t, &mockAPFederator{})
+	s.cfg.AdminToken = testToken
+	srv := httptest.NewServer(s.routes())
+	defer srv.Close()
+
+	req, _ := http.NewRequest("GET", srv.URL+"/api/admin/images", nil)
+	req.Header.Set("Authorization", "Bearer test-token")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+	var images []any
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&images))
+	require.Empty(t, images)
+}
+
+func TestAdminListImagesWithData(t *testing.T) {
+	s := testServerWithMock(t, &mockAPFederator{})
+	s.cfg.AdminToken = testToken
+	ctx := context.Background()
+
+	repo, err := s.db.GetOrCreateRepository(ctx, "docker.io/app/image", "https://alice.example.com/ap/actor")
+	require.NoError(t, err)
+	v := &database.PackageVersion{PackageID: repo.ID, Version: "sha256:abc", Metadata: []byte(`{}`)}
+	require.NoError(t, s.db.PutPackageVersion(ctx, v))
+	mt := "application/vnd.oci.image.layer.v1.tar+gzip"
+	require.NoError(t, s.db.PutBlob(ctx, "sha256:layer1", 2048, &mt, true))
+	require.NoError(t, s.db.PutBlobReferences(ctx, v.ID, map[string]string{"sha256:layer1": "sha256:layer1"}))
+	require.NoError(t, s.db.PutPackageTag(ctx, repo.ID, "latest", v.Version, false))
+
+	srv := httptest.NewServer(s.routes())
+	defer srv.Close()
+
+	req, _ := http.NewRequest("GET", srv.URL+"/api/admin/images", nil)
+	req.Header.Set("Authorization", "Bearer test-token")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var images []struct {
+		Name      string   `json:"name"`
+		Tags      []string `json:"tags"`
+		SizeBytes int64    `json:"size_bytes"`
+	}
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&images))
+	require.Len(t, images, 1)
+	require.Equal(t, "docker.io/app/image", images[0].Name)
+	require.Equal(t, int64(2048), images[0].SizeBytes)
+	require.Equal(t, []string{"latest"}, images[0].Tags)
+}
+
+func TestAdminListImagesInternalError(t *testing.T) {
+	s := testServerWithMock(t, &mockAPFederator{})
+	s.cfg.AdminToken = testToken
+	srv := httptest.NewServer(s.routes())
+	defer srv.Close()
+
+	_ = s.db.Close()
+
+	req, _ := http.NewRequest("GET", srv.URL+"/api/admin/images", nil)
+	req.Header.Set("Authorization", "Bearer test-token")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
 }

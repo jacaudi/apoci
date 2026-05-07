@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"charm.land/lipgloss/v2"
@@ -24,6 +25,8 @@ import (
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/federation"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/server"
 )
+
+const cmdList = "list"
 
 var version = "dev"
 
@@ -61,6 +64,7 @@ func main() {
 	rootCmd.AddCommand(followCmd(&configPath))
 	rootCmd.AddCommand(identityCmd(&configPath))
 	rootCmd.AddCommand(actorCmd(&configPath))
+	rootCmd.AddCommand(imagesCmd(&configPath))
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -161,7 +165,7 @@ func followCmd(configPath *string) *cobra.Command {
 	cmd.AddCommand(removeCmd)
 
 	cmd.AddCommand(&cobra.Command{
-		Use:   "list",
+		Use:   cmdList,
 		Short: "List followed peers",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if c := remoteClient(remote, token); c != nil {
@@ -452,7 +456,7 @@ func actorCmd(configPath *string) *cobra.Command {
 	cmd.PersistentFlags().StringVar(&token, "token", "", "registry token for remote auth")
 
 	cmd.AddCommand(&cobra.Command{
-		Use:   "list",
+		Use:   cmdList,
 		Short: "List all known actors",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if c := remoteClient(remote, token); c != nil {
@@ -528,6 +532,89 @@ func printActors(actors []database.Actor) {
 		rows[i] = []string{followDisplayName(a.ActorURL, a.Alias), a.Endpoint, healthy, follows, lastSeen}
 	}
 	printTable([]string{colActor, colEndpoint, "HEALTHY", "RELATIONSHIP", "LAST SEEN"}, rows)
+}
+
+func imagesCmd(configPath *string) *cobra.Command {
+	var remote, token string
+
+	cmd := &cobra.Command{
+		Use:   "images",
+		Short: "List locally hosted images",
+	}
+
+	cmd.PersistentFlags().StringVar(&remote, "remote", "", "remote instance URL")
+	cmd.PersistentFlags().StringVar(&token, "token", "", "registry token for remote auth")
+
+	cmd.AddCommand(&cobra.Command{
+		Use:   cmdList,
+		Short: "List all locally hosted images and their size",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if c := remoteClient(remote, token); c != nil {
+				images, err := c.ListImages(cmd.Context())
+				if err != nil {
+					return err
+				}
+				printImages(images)
+				return nil
+			}
+			return runImageList(cmd.Context(), *configPath)
+		},
+	})
+
+	return cmd
+}
+
+func runImageList(ctx context.Context, configPath string) error {
+	db, _, _, err := openAll(configPath, cliLogger())
+	if err != nil {
+		return err
+	}
+	defer func() { _ = db.Close() }()
+
+	repos, err := db.ListLocallyHostedRepos(ctx)
+	if err != nil {
+		return err
+	}
+	entries := make([]admin.ImageEntry, len(repos))
+	for i, r := range repos {
+		entries[i] = admin.ImageEntry{
+			Name:      r.Name,
+			Tags:      r.Tags,
+			SizeBytes: r.SizeBytes,
+			UpdatedAt: r.UpdatedAt,
+		}
+	}
+	printImages(entries)
+	return nil
+}
+
+func printImages(images []admin.ImageEntry) {
+	if len(images) == 0 {
+		_, _ = lipgloss.Println(dimStyle.Render("No locally hosted images."))
+		return
+	}
+	rows := make([][]string, len(images))
+	for i, img := range images {
+		tags := "—"
+		if len(img.Tags) > 0 {
+			tags = strings.Join(img.Tags, ", ")
+		}
+		rows[i] = []string{img.Name, formatBytes(img.SizeBytes), tags, img.UpdatedAt.Format("2006-01-02 15:04")}
+	}
+	printTable([]string{"NAME", "SIZE", "TAGS", "UPDATED"}, rows)
+}
+
+func formatBytes(b int64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%d B", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
 }
 
 func identityCmd(configPath *string) *cobra.Command {

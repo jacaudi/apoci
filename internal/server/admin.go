@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"git.erwanleboucher.dev/eleboucher/apoci/internal/admin"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/database"
 )
 
@@ -18,6 +19,7 @@ func (s *Server) adminRouter() http.Handler {
 	r.Use(bearerAuthMiddleware(s.cfg.AdminToken))
 
 	r.Get("/identity", s.adminGetIdentity)
+	r.Get("/images", s.adminListImages)
 	r.Get("/actors", s.adminListActors)
 	r.Get("/follows", s.adminListFollows)
 	r.Get("/follows/pending", s.adminListPending)
@@ -47,6 +49,27 @@ func (s *Server) adminGetIdentity(w http.ResponseWriter, r *http.Request) {
 		"endpoint":      s.cfg.Endpoint,
 		"publicKey":     pubPEM,
 	})
+}
+
+func (s *Server) adminListImages(w http.ResponseWriter, r *http.Request) {
+	s.logger.Debug("admin: GET /images")
+	repos, err := s.db.ListLocallyHostedRepos(r.Context())
+	if err != nil {
+		s.logger.Error("listing locally hosted repos", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	entries := make([]admin.ImageEntry, len(repos))
+	for i, repo := range repos {
+		entries[i] = admin.ImageEntry{
+			Name:      repo.Name,
+			Tags:      repo.Tags,
+			SizeBytes: repo.SizeBytes,
+			UpdatedAt: repo.UpdatedAt,
+		}
+	}
+	s.logger.Debug("admin: GET /images done", "count", len(entries))
+	writeJSON(w, entries)
 }
 
 func (s *Server) adminListActors(w http.ResponseWriter, r *http.Request) {

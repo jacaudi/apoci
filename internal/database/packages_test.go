@@ -94,14 +94,14 @@ func TestPackageVersionPutGet(t *testing.T) {
 
 	v := &PackageVersion{
 		PackageID: pkg.ID,
-		Version:   "1.0.0",
+		Version:   testVersion100,
 		Metadata:  []byte(`{"name":"left-pad","version":"1.0.0"}`),
 	}
 	require.NoError(t, db.PutPackageVersion(ctx, v))
 	require.NotZero(t, v.ID)
 	require.NotZero(t, v.CreatedAt)
 
-	got, err := db.GetPackageVersion(ctx, pkg.ID, "1.0.0")
+	got, err := db.GetPackageVersion(ctx, pkg.ID, testVersion100)
 	require.NoError(t, err)
 	require.Equal(t, v.ID, got.ID)
 	require.JSONEq(t, `{"name":"left-pad","version":"1.0.0"}`, string(got.Metadata))
@@ -113,7 +113,7 @@ func TestPackageVersionPutGet(t *testing.T) {
 	v.SourceActor = &source
 	require.NoError(t, db.PutPackageVersion(ctx, v))
 
-	got, err = db.GetPackageVersion(ctx, pkg.ID, "1.0.0")
+	got, err = db.GetPackageVersion(ctx, pkg.ID, testVersion100)
 	require.NoError(t, err)
 	require.JSONEq(t, `{"name":"left-pad","version":"1.0.0","updated":true}`, string(got.Metadata))
 	require.NotNil(t, got.SourceActor)
@@ -180,7 +180,7 @@ func TestPackageFileCRUD(t *testing.T) {
 
 	pkg, err := db.GetOrCreatePackage(ctx, "maven", "com.example:lib", testAliceActor)
 	require.NoError(t, err)
-	v := &PackageVersion{PackageID: pkg.ID, Version: "1.0.0", Metadata: []byte(`{}`)}
+	v := &PackageVersion{PackageID: pkg.ID, Version: testVersion100, Metadata: []byte(`{}`)}
 	require.NoError(t, db.PutPackageVersion(ctx, v))
 
 	contentType := "application/java-archive"
@@ -349,7 +349,7 @@ func TestPutBlobReferences(t *testing.T) {
 	v := &PackageVersion{PackageID: pkg.ID, Version: "sha256:m", Metadata: []byte(`{}`)}
 	require.NoError(t, db.PutPackageVersion(ctx, v))
 
-	mt := "application/vnd.oci.image.layer.v1.tar+gzip"
+	mt := testLayerMediaType
 	require.NoError(t, db.PutBlob(ctx, "sha256:layerA", 1024, &mt, true))
 	require.NoError(t, db.PutBlob(ctx, "sha256:layerB", 2048, &mt, true))
 
@@ -407,7 +407,7 @@ func TestLegacyManifestTranslation(t *testing.T) {
 	artifactType := "application/vnd.cncf.notary.signature"
 	m := &Manifest{
 		RepositoryID:  repo.ID,
-		Digest:        "sha256:abc",
+		Digest:        testDigestABC,
 		MediaType:     testManifestMediaType,
 		SizeBytes:     321,
 		Content:       []byte(`{"schemaVersion":2}`),
@@ -417,7 +417,7 @@ func TestLegacyManifestTranslation(t *testing.T) {
 	require.NoError(t, db.PutManifest(ctx, m))
 	require.NotZero(t, m.ID)
 
-	got, err := db.GetManifestByDigest(ctx, repo.ID, "sha256:abc")
+	got, err := db.GetManifestByDigest(ctx, repo.ID, testDigestABC)
 	require.NoError(t, err)
 	require.Equal(t, m.ID, got.ID)
 	require.Equal(t, testManifestMediaType, got.MediaType)
@@ -425,19 +425,19 @@ func TestLegacyManifestTranslation(t *testing.T) {
 	require.Equal(t, []byte(`{"schemaVersion":2}`), got.Content)
 
 	// Reads are visible through the canonical API too.
-	v, err := db.GetPackageVersion(ctx, repo.ID, "sha256:abc")
+	v, err := db.GetPackageVersion(ctx, repo.ID, testDigestABC)
 	require.NoError(t, err)
 	require.Equal(t, m.Content, v.Metadata)
 	require.Equal(t, m.MediaType, v.MediaType)
 
 	// Tag → manifest lookup.
-	require.NoError(t, db.PutTag(ctx, repo.ID, "latest", "sha256:abc"))
+	require.NoError(t, db.PutTag(ctx, repo.ID, "latest", testDigestABC))
 	gotByTag, err := db.GetManifestByTag(ctx, repo.ID, "latest")
 	require.NoError(t, err)
-	require.Equal(t, "sha256:abc", gotByTag.Digest)
+	require.Equal(t, testDigestABC, gotByTag.Digest)
 
 	// Subject lookup goes through translation.
-	signerSubject := "sha256:abc"
+	signerSubject := testDigestABC
 	signer := &Manifest{
 		RepositoryID:  repo.ID,
 		Digest:        "sha256:sig",
@@ -449,7 +449,7 @@ func TestLegacyManifestTranslation(t *testing.T) {
 	}
 	require.NoError(t, db.PutManifest(ctx, signer))
 
-	refs, err := db.ListManifestsBySubject(ctx, repo.ID, "sha256:abc")
+	refs, err := db.ListManifestsBySubject(ctx, repo.ID, testDigestABC)
 	require.NoError(t, err)
 	require.Len(t, refs, 1)
 	require.Equal(t, "sha256:sig", refs[0].Digest)
@@ -470,17 +470,17 @@ func TestLegacyManifestLayers(t *testing.T) {
 	}
 	require.NoError(t, db.PutManifest(ctx, m))
 
-	mt := "application/vnd.oci.image.layer.v1.tar+gzip"
-	require.NoError(t, db.PutBlob(ctx, "sha256:layer1", 500, &mt, true))
-	require.NoError(t, db.PutBlob(ctx, "sha256:layer2", 600, &mt, true))
+	mt := testLayerMediaType
+	require.NoError(t, db.PutBlob(ctx, testLayerDigest, 500, &mt, true))
+	require.NoError(t, db.PutBlob(ctx, testLayerDigest2, 600, &mt, true))
 
-	require.NoError(t, db.PutManifestLayers(ctx, m.ID, []string{"sha256:layer1", "sha256:layer2"}))
+	require.NoError(t, db.PutManifestLayers(ctx, m.ID, []string{testLayerDigest, testLayerDigest2}))
 
-	exists, err := db.BlobExistsInRepo(ctx, "foo.com/layers", "sha256:layer1")
+	exists, err := db.BlobExistsInRepo(ctx, "foo.com/layers", testLayerDigest)
 	require.NoError(t, err)
 	require.True(t, exists)
 
-	repoName, err := db.FindRepoForBlob(ctx, "sha256:layer2")
+	repoName, err := db.FindRepoForBlob(ctx, testLayerDigest2)
 	require.NoError(t, err)
 	require.Equal(t, "foo.com/layers", repoName)
 
@@ -539,4 +539,61 @@ func TestGetPackageTagMissing(t *testing.T) {
 	got, err := db.GetPackageTag(ctx, pkg.ID, "latest")
 	require.NoError(t, err)
 	require.Nil(t, got)
+}
+
+func TestListLocallyHostedRepos(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	mt := testLayerMediaType
+
+	repo, err := db.GetOrCreateRepository(ctx, "docker.io/app/image", testAliceActor)
+	require.NoError(t, err)
+	v := &PackageVersion{PackageID: repo.ID, Version: testDigestABC, Metadata: []byte(`{}`)}
+	require.NoError(t, db.PutPackageVersion(ctx, v))
+	require.NoError(t, db.PutBlob(ctx, testLayerDigest, 2048, &mt, true))
+	require.NoError(t, db.PutBlobReferences(ctx, v.ID, map[string]string{testLayerDigest: testLayerDigest}))
+	require.NoError(t, db.PutPackageTag(ctx, repo.ID, "latest", v.Version, false))
+
+	repos, err := db.ListLocallyHostedRepos(ctx)
+	require.NoError(t, err)
+	require.Len(t, repos, 1)
+	require.Equal(t, "docker.io/app/image", repos[0].Name)
+	require.Equal(t, int64(2048), repos[0].SizeBytes)
+	require.Equal(t, []string{"latest"}, repos[0].Tags)
+
+	repo2, err := db.GetOrCreateRepository(ctx, "docker.io/app/bigger", testAliceActor)
+	require.NoError(t, err)
+	v2 := &PackageVersion{PackageID: repo2.ID, Version: "sha256:def", Metadata: []byte(`{}`)}
+	require.NoError(t, db.PutPackageVersion(ctx, v2))
+	require.NoError(t, db.PutBlob(ctx, testLayerDigest2, 1024*1024, &mt, true))
+	require.NoError(t, db.PutBlobReferences(ctx, v2.ID, map[string]string{testLayerDigest2: testLayerDigest2}))
+
+	repos, err = db.ListLocallyHostedRepos(ctx)
+	require.NoError(t, err)
+	require.Len(t, repos, 2)
+	require.Equal(t, "docker.io/app/bigger", repos[0].Name)
+	require.Equal(t, int64(1024*1024), repos[0].SizeBytes)
+	require.Empty(t, repos[0].Tags)
+
+	repo3, err := db.GetOrCreateRepository(ctx, "docker.io/app/remote", testAliceActor)
+	require.NoError(t, err)
+	v3 := &PackageVersion{PackageID: repo3.ID, Version: "sha256:ghi", Metadata: []byte(`{}`)}
+	require.NoError(t, db.PutPackageVersion(ctx, v3))
+	require.NoError(t, db.PutBlob(ctx, "sha256:remote", 512, &mt, false))
+	require.NoError(t, db.PutBlobReferences(ctx, v3.ID, map[string]string{"sha256:remote": "sha256:remote"}))
+
+	repos, err = db.ListLocallyHostedRepos(ctx)
+	require.NoError(t, err)
+	require.Len(t, repos, 2)
+
+	npmPkg, err := db.GetOrCreatePackage(ctx, "npm", "left-pad", testAliceActor)
+	require.NoError(t, err)
+	npmV := &PackageVersion{PackageID: npmPkg.ID, Version: testVersion100, Metadata: []byte(`{}`)}
+	require.NoError(t, db.PutPackageVersion(ctx, npmV))
+	require.NoError(t, db.PutBlob(ctx, "sha256:npmblob", 100, &mt, true))
+	require.NoError(t, db.PutBlobReferences(ctx, npmV.ID, map[string]string{"sha256:npmblob": "sha256:npmblob"}))
+
+	repos, err = db.ListLocallyHostedRepos(ctx)
+	require.NoError(t, err)
+	require.Len(t, repos, 2)
 }

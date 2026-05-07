@@ -12,6 +12,13 @@ import (
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/version"
 )
 
+type ImageEntry struct {
+	Name      string    `json:"name"`
+	Tags      []string  `json:"tags"`
+	SizeBytes int64     `json:"size_bytes"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
 type Client struct {
 	base   string
 	token  string
@@ -31,6 +38,11 @@ func NewClient(baseURL, token string) *Client {
 func (c *Client) GetIdentity(ctx context.Context) (map[string]string, error) {
 	var out map[string]string
 	return out, c.get(ctx, "/identity", &out)
+}
+
+func (c *Client) ListImages(ctx context.Context) ([]ImageEntry, error) {
+	var out []ImageEntry
+	return out, c.get(ctx, "/images", &out)
 }
 
 func (c *Client) ListActors(ctx context.Context) (json.RawMessage, error) {

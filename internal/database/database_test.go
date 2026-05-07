@@ -14,8 +14,13 @@ const (
 	testMediaType         = "application/octet-stream"
 	testPeerName          = "peer"
 	testManifestMediaType = "application/vnd.oci.image.manifest.v1+json"
+	testLayerMediaType    = "application/vnd.oci.image.layer.v1.tar+gzip"
 	replPolicyLazy        = "lazy"
 	testBaseDigest        = "sha256:base"
+	testLayerDigest       = "sha256:layer1"
+	testLayerDigest2      = "sha256:layer2"
+	testDigestABC         = "sha256:abc"
+	testVersion100        = "1.0.0"
 )
 
 func testDB(t *testing.T) *DB {
@@ -405,16 +410,16 @@ func TestPeerBlobLookup(t *testing.T) {
 		IsHealthy:         true,
 	}))
 
-	require.NoError(t, db.PutPeerBlob(ctx, testAliceActor, "sha256:layer1", "https://alice.example.com"))
+	require.NoError(t, db.PutPeerBlob(ctx, testAliceActor, testLayerDigest, "https://alice.example.com"))
 
-	pbs, err := db.FindPeersWithBlob(ctx, "sha256:layer1")
+	pbs, err := db.FindPeersWithBlob(ctx, testLayerDigest)
 	require.NoError(t, err)
 	require.Len(t, pbs, 1)
 	require.Equal(t, testAliceActor, pbs[0].PeerActor)
 
 	// Unhealthy peer should be excluded
 	require.NoError(t, db.SetPeerHealth(ctx, testAliceActor, false))
-	pbs2, _ := db.FindPeersWithBlob(ctx, "sha256:layer1")
+	pbs2, _ := db.FindPeersWithBlob(ctx, testLayerDigest)
 	require.Len(t, pbs2, 0)
 }
 
@@ -433,16 +438,16 @@ func TestManifestLayers(t *testing.T) {
 	require.NoError(t, db.PutManifest(ctx, m))
 	got, _ := db.GetManifestByDigest(ctx, repo.ID, "sha256:manifest-with-layers")
 
-	require.NoError(t, db.PutBlob(ctx, "sha256:layer1", 100, nil, true))
-	require.NoError(t, db.PutBlob(ctx, "sha256:layer2", 200, nil, true))
-	require.NoError(t, db.PutManifestLayers(ctx, got.ID, []string{"sha256:layer1", "sha256:layer2"}))
+	require.NoError(t, db.PutBlob(ctx, testLayerDigest, 100, nil, true))
+	require.NoError(t, db.PutBlob(ctx, testLayerDigest2, 200, nil, true))
+	require.NoError(t, db.PutManifestLayers(ctx, got.ID, []string{testLayerDigest, testLayerDigest2}))
 
 	files, err := db.ListPackageFiles(ctx, got.ID)
 	require.NoError(t, err)
 	require.Len(t, files, 2)
 	digests := []string{files[0].BlobDigest, files[1].BlobDigest}
-	require.Contains(t, digests, "sha256:layer1")
-	require.Contains(t, digests, "sha256:layer2")
+	require.Contains(t, digests, testLayerDigest)
+	require.Contains(t, digests, testLayerDigest2)
 }
 
 func TestFollowsCRUD(t *testing.T) {

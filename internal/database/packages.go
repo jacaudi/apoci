@@ -712,23 +712,28 @@ func (db *DB) ListReposWithStatsPaginated(ctx context.Context, query string, pag
 	return db.queryRepoStats(ctx, query, page, pageSize, true)
 }
 
-func (db *DB) queryRepoStats(ctx context.Context, query string, page, pageSize int, paginated bool) (*ReposPage, error) {
+func (db *DB) tagAggSQL() string {
 	_, isPostgres := db.bun.Dialect().(*pgdialect.Dialect)
-
-	tagAgg := `COALESCE(
-			(SELECT GROUP_CONCAT(t.name, ',') FROM (
-				SELECT name FROM package_tags WHERE package_id = p.id ORDER BY updated_at DESC LIMIT 10
-			) t),
-			''
-		)`
 	if isPostgres {
-		tagAgg = `COALESCE(
+		return `COALESCE(
 			(SELECT STRING_AGG(t.name, ',') FROM (
 				SELECT name FROM package_tags WHERE package_id = p.id ORDER BY updated_at DESC LIMIT 10
 			) t),
 			''
 		)`
 	}
+	return `COALESCE(
+			(SELECT GROUP_CONCAT(t.name, ',') FROM (
+				SELECT name FROM package_tags WHERE package_id = p.id ORDER BY updated_at DESC LIMIT 10
+			) t),
+			''
+		)`
+}
+
+func (db *DB) queryRepoStats(ctx context.Context, query string, page, pageSize int, paginated bool) (*ReposPage, error) {
+	_, isPostgres := db.bun.Dialect().(*pgdialect.Dialect)
+
+	tagAgg := db.tagAggSQL()
 
 	totalCount := 0
 	if paginated {
@@ -911,4 +916,66 @@ func (db *DB) ListTagsWithDetails(ctx context.Context, repoID int64, page, pageS
 		PageSize:   pageSize,
 		TotalPages: totalPages,
 	}, nil
+}
+
+func (db *DB) ListLocallyHostedRepos(ctx context.Context) ([]RepoWithStats, error) {
+	tagAgg := db.tagAggSQL()
+	q := `
+		SELECT
+			p.id,
+			p.name,
+			p.owner_id,
+			` + tagAgg + ` as tags,
+			COALESCE(
+				(SELECT SUM(b.size_bytes) FROM blobs b
+				 WHERE b.stored_locally = true
+				 AND b.digest IN (
+					SELECT DISTINCT pf.blob_digest
+					FROM package_files pf
+					JOIN package_versions pv ON pv.id = pf.version_id
+					WHERE pv.package_id = p.id
+				 )),
+				0
+			) as size_bytes,
+			COALESCE(
+				(SELECT MAX(updated_at) FROM package_tags WHERE package_id = p.id),
+				p.created_at
+			) as updated_at
+		FROM packages p
+		WHERE p.type = ?
+		AND EXISTS (
+			SELECT 1 FROM blobs b
+			JOIN package_files pf ON pf.blob_digest = b.digest
+			JOIN package_versions pv ON pv.id = pf.version_id
+			WHERE pv.package_id = p.id AND b.stored_locally = true
+		)
+		ORDER BY size_bytes DESC
+	`
+	var rows []struct {
+		ID        int64     `bun:"id"`
+		Name      string    `bun:"name"`
+		OwnerID   string    `bun:"owner_id"`
+		Tags      string    `bun:"tags"`
+		SizeBytes int64     `bun:"size_bytes"`
+		UpdatedAt time.Time `bun:"updated_at"`
+	}
+	if err := db.bun.NewRaw(q, ociPackageType).Scan(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("listing locally hosted repos: %w", err)
+	}
+	repos := make([]RepoWithStats, len(rows))
+	for i, row := range rows {
+		var tags []string
+		if row.Tags != "" {
+			tags = strings.Split(row.Tags, ",")
+		}
+		repos[i] = RepoWithStats{
+			ID:        row.ID,
+			Name:      row.Name,
+			OwnerID:   row.OwnerID,
+			Tags:      tags,
+			SizeBytes: row.SizeBytes,
+			UpdatedAt: row.UpdatedAt,
+		}
+	}
+	return repos, nil
 }
