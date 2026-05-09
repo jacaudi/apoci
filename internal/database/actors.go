@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"path"
+	"strings"
 	"time"
 
 	"github.com/uptrace/bun"
@@ -269,6 +271,44 @@ func (db *DB) ListFollowers(ctx context.Context) ([]Actor, error) {
 // ListFollows returns followers (alias for compatibility).
 func (db *DB) ListFollows(ctx context.Context) ([]Actor, error) {
 	return db.ListFollowers(ctx)
+}
+
+var (
+	ErrInvalidGlob      = errors.New("invalid tag glob")
+	ErrFollowerNotFound = errors.New("follower not found")
+)
+
+// UpdateFollowFilter sets the follower's federation_tag_globs. Empty list clears it.
+func (db *DB) UpdateFollowFilter(ctx context.Context, actorURL string, tagGlobs []string) error {
+	cleaned := make([]string, 0, len(tagGlobs))
+	for _, g := range tagGlobs {
+		g = strings.TrimSpace(g)
+		if g == "" {
+			continue
+		}
+		if _, err := path.Match(g, "probe"); err != nil {
+			return fmt.Errorf("%w %q: %s", ErrInvalidGlob, g, err)
+		}
+		cleaned = append(cleaned, g)
+	}
+	var arg any
+	if len(cleaned) == 0 {
+		arg = nil
+	} else {
+		arg = strings.Join(cleaned, ",")
+	}
+	res, err := db.bun.NewRaw(
+		"UPDATE actors SET federation_tag_globs = ? WHERE actor_url = ? AND they_follow_us = TRUE",
+		arg, actorURL,
+	).Exec(ctx)
+	if err != nil {
+		return fmt.Errorf("updating follow filter: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	if n == 0 {
+		return fmt.Errorf("%w: %q", ErrFollowerNotFound, actorURL)
+	}
+	return nil
 }
 
 // GetFollow returns an actor that follows us.

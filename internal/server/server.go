@@ -103,10 +103,20 @@ func New(cfg *config.Config, db *database.DB, blobs blobstore.BlobStore, identit
 
 	blobReplicator := peering.NewBlobReplicator(db, blobs, fetcher, notifier, logger)
 	gc := peering.NewGarbageCollector(peering.GCConfig{
-		Interval:         cfg.GC.Interval,
-		StalePeerBlobAge: cfg.GC.StalePeerBlobAge,
-		OrphanBatchSize:  cfg.GC.OrphanBatchSize,
+		Interval:              cfg.GC.Interval,
+		StalePeerBlobAge:      cfg.GC.StalePeerBlobAge,
+		OrphanBatchSize:       cfg.GC.OrphanBatchSize,
+		BlobGCGracePeriod:     cfg.GC.BlobGCGracePeriod,
+		UntaggedManifestAge:   cfg.GC.UntaggedManifestAge,
+		UntaggedBatchSize:     cfg.GC.UntaggedBatchSize,
+		RetentionTagsPerCycle: cfg.GC.RetentionTagsPerCycle,
+		RetentionDefaults: peering.RetentionPolicy{
+			KeepLastN:   cfg.GC.Retention.KeepLastN,
+			MaxAge:      cfg.GC.Retention.MaxAge,
+			PinnedGlobs: cfg.GC.Retention.PinnedGlobs,
+		},
 	}, db, blobs, notifier, logger)
+	gc.SetFederationPublisher(apPublisher)
 
 	apPublisher.SetNotifyFunc(deliveryQueue.Notify)
 

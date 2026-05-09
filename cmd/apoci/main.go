@@ -268,7 +268,58 @@ func followCmd(configPath *string) *cobra.Command {
 	outgoingCmd.Flags().String("status", "", "filter by status (pending, accepted, rejected)")
 	cmd.AddCommand(outgoingCmd)
 
+	filterCmd := &cobra.Command{
+		Use:   "filter <domain|handle|actor-url>",
+		Short: "Set tag-glob filter for an inbound follower",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			tag, _ := cmd.Flags().GetString("tag")
+			clear, _ := cmd.Flags().GetBool("clear")
+			var globs []string
+			if !clear && tag != "" {
+				for g := range strings.SplitSeq(tag, ",") {
+					if s := strings.TrimSpace(g); s != "" {
+						globs = append(globs, s)
+					}
+				}
+			}
+			if c := remoteClient(remote, token); c != nil {
+				if _, err := c.UpdateFollowFilter(cmd.Context(), args[0], globs); err != nil {
+					return err
+				}
+				if clear || len(globs) == 0 {
+					_, _ = lipgloss.Println(successStyle.Render("Filter cleared for " + args[0]))
+				} else {
+					_, _ = lipgloss.Println(successStyle.Render("Filter set for " + args[0] + " (" + strings.Join(globs, ", ") + ")"))
+				}
+				return nil
+			}
+			return runFollowFilter(cmd.Context(), *configPath, args[0], globs)
+		},
+	}
+	filterCmd.Flags().String("tag", "", "comma-separated glob list (e.g. \"latest,v*\")")
+	filterCmd.Flags().Bool("clear", false, "clear the filter (deliver everything)")
+	cmd.AddCommand(filterCmd)
+
 	return cmd
+}
+
+func runFollowFilter(ctx context.Context, configPath, target string, globs []string) error {
+	db, _, _, err := openAll(configPath, cliLogger())
+	if err != nil {
+		return err
+	}
+	defer func() { _ = db.Close() }()
+
+	if err := db.UpdateFollowFilter(ctx, target, globs); err != nil {
+		return err
+	}
+	if len(globs) == 0 {
+		_, _ = lipgloss.Println(successStyle.Render("Filter cleared for " + target))
+	} else {
+		_, _ = lipgloss.Println(successStyle.Render("Filter set for " + target + " (" + strings.Join(globs, ", ") + ")"))
+	}
+	return nil
 }
 
 func runFollowAdd(ctx context.Context, configPath, input string) error {
@@ -655,9 +706,18 @@ func runGCRun(ctx context.Context, configPath string) error {
 
 	notifier := notify.New(cfg.Name, nil, nil, logger)
 	gc := peering.NewGarbageCollector(peering.GCConfig{
-		Interval:         cfg.GC.Interval,
-		StalePeerBlobAge: cfg.GC.StalePeerBlobAge,
-		OrphanBatchSize:  cfg.GC.OrphanBatchSize,
+		Interval:              cfg.GC.Interval,
+		StalePeerBlobAge:      cfg.GC.StalePeerBlobAge,
+		OrphanBatchSize:       cfg.GC.OrphanBatchSize,
+		BlobGCGracePeriod:     cfg.GC.BlobGCGracePeriod,
+		UntaggedManifestAge:   cfg.GC.UntaggedManifestAge,
+		UntaggedBatchSize:     cfg.GC.UntaggedBatchSize,
+		RetentionTagsPerCycle: cfg.GC.RetentionTagsPerCycle,
+		RetentionDefaults: peering.RetentionPolicy{
+			KeepLastN:   cfg.GC.Retention.KeepLastN,
+			MaxAge:      cfg.GC.Retention.MaxAge,
+			PinnedGlobs: cfg.GC.Retention.PinnedGlobs,
+		},
 	}, db, blobs, notifier, logger)
 
 	_, _ = lipgloss.Println(dimStyle.Render("Running GC..."))

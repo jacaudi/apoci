@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect/pgdialect"
 )
 
@@ -660,6 +661,154 @@ func (db *DB) RecordDeletedManifest(ctx context.Context, digest, repoName, sourc
 
 func (db *DB) PruneDeletedManifests(ctx context.Context, olderThan time.Duration) (int64, error) {
 	return db.PruneDeletedVersions(ctx, olderThan)
+}
+
+type UntaggedManifest struct {
+	PackageID   int64
+	PackageName string
+	Digest      string
+}
+
+type PackageRetention struct {
+	ID                     int64
+	Name                   string
+	RetentionKeepLast      *int
+	RetentionMaxAgeSeconds *int64
+	RetentionPinnedGlobs   *string
+}
+
+type TagForRetention struct {
+	Name      string
+	Immutable bool
+	UpdatedAt time.Time
+}
+
+func (db *DB) ListOCIPackagesForRetention(ctx context.Context, startAfter string, limit int) ([]PackageRetention, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	var rows []struct {
+		ID                     int64   `bun:"id"`
+		Name                   string  `bun:"name"`
+		RetentionKeepLast      *int    `bun:"retention_keep_last"`
+		RetentionMaxAgeSeconds *int64  `bun:"retention_max_age_seconds"`
+		RetentionPinnedGlobs   *string `bun:"retention_pinned_globs"`
+	}
+	err := db.bun.NewRaw(`
+		SELECT id, name, retention_keep_last, retention_max_age_seconds, retention_pinned_globs
+		FROM packages
+		WHERE type = ? AND name > ?
+		ORDER BY name
+		LIMIT ?`, ociPackageType, startAfter, limit).Scan(ctx, &rows)
+	if err != nil {
+		return nil, fmt.Errorf("listing oci packages for retention: %w", err)
+	}
+	out := make([]PackageRetention, len(rows))
+	for i, r := range rows {
+		out[i] = PackageRetention{
+			ID:                     r.ID,
+			Name:                   r.Name,
+			RetentionKeepLast:      r.RetentionKeepLast,
+			RetentionMaxAgeSeconds: r.RetentionMaxAgeSeconds,
+			RetentionPinnedGlobs:   r.RetentionPinnedGlobs,
+		}
+	}
+	return out, nil
+}
+
+func (db *DB) ListTagsForRetention(ctx context.Context, packageID int64) ([]TagForRetention, error) {
+	var rows []struct {
+		Name      string    `bun:"name"`
+		Immutable bool      `bun:"immutable"`
+		UpdatedAt time.Time `bun:"updated_at"`
+	}
+	err := db.bun.NewRaw(
+		"SELECT name, immutable, updated_at FROM package_tags WHERE package_id = ? ORDER BY updated_at DESC",
+		packageID,
+	).Scan(ctx, &rows)
+	if err != nil {
+		return nil, fmt.Errorf("listing tags for retention: %w", err)
+	}
+	out := make([]TagForRetention, len(rows))
+	for i, r := range rows {
+		out[i] = TagForRetention{
+			Name:      r.Name,
+			Immutable: r.Immutable,
+			UpdatedAt: r.UpdatedAt,
+		}
+	}
+	return out, nil
+}
+
+// PruneUntaggedManifests deletes OCI manifests with no tag and no referrer
+// pointing at them, older than olderThan. Cascades package_files.
+func (db *DB) PruneUntaggedManifests(ctx context.Context, olderThan time.Duration, limit int) ([]UntaggedManifest, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	cutoff := time.Now().Add(-olderThan)
+
+	tx, err := db.bun.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("beginning prune transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var rows []struct {
+		ID          int64  `bun:"id"`
+		PackageID   int64  `bun:"package_id"`
+		PackageName string `bun:"package_name"`
+		Digest      string `bun:"digest"`
+	}
+	if err := tx.NewRaw(`
+		SELECT pv.id AS id, pv.package_id AS package_id, p.name AS package_name, pv.version AS digest
+		FROM package_versions pv
+		JOIN packages p ON p.id = pv.package_id
+		WHERE p.type = ?
+		  AND pv.created_at < ?
+		  AND NOT EXISTS (SELECT 1 FROM package_tags pt
+		                  WHERE pt.package_id = pv.package_id AND pt.version = pv.version)
+		  AND NOT EXISTS (SELECT 1 FROM package_versions ref
+		                  WHERE ref.package_id = pv.package_id
+		                    AND ref.subject_digest = pv.version)
+		ORDER BY pv.id
+		LIMIT ?
+	`, ociPackageType, cutoff, limit).Scan(ctx, &rows); err != nil {
+		return nil, fmt.Errorf("finding untagged manifests: %w", err)
+	}
+
+	if len(rows) == 0 {
+		if err := tx.Commit(); err != nil {
+			return nil, fmt.Errorf("committing prune transaction: %w", err)
+		}
+		return nil, nil
+	}
+
+	versionIDs := make([]int64, len(rows))
+	for i, r := range rows {
+		versionIDs[i] = r.ID
+	}
+
+	if _, err := tx.NewRaw("DELETE FROM package_files WHERE version_id IN (?)", bun.List(versionIDs)).Exec(ctx); err != nil {
+		return nil, fmt.Errorf("deleting package_files: %w", err)
+	}
+	if _, err := tx.NewRaw("DELETE FROM package_versions WHERE id IN (?)", bun.List(versionIDs)).Exec(ctx); err != nil {
+		return nil, fmt.Errorf("deleting package_versions: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("committing prune transaction: %w", err)
+	}
+
+	out := make([]UntaggedManifest, len(rows))
+	for i, r := range rows {
+		out[i] = UntaggedManifest{
+			PackageID:   r.PackageID,
+			PackageName: r.PackageName,
+			Digest:      r.Digest,
+		}
+	}
+	return out, nil
 }
 
 func packageAsRepository(p *Package) *Repository {

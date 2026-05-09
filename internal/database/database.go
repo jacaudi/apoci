@@ -104,6 +104,11 @@ func (db *DB) QueryContext(ctx context.Context, query string, args ...any) (*sql
 	return db.bun.QueryContext(ctx, query, args...)
 }
 
+// ExecContext exposes raw SQL — used by tests for setup.
+func (db *DB) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	return db.bun.ExecContext(ctx, query, args...)
+}
+
 func (db *DB) Close() error {
 	return db.bun.Close()
 }
@@ -191,9 +196,88 @@ func (db *DB) migrate(ctx context.Context) error {
 		}
 		version = 6
 	}
+
+	if version < 7 {
+		if err := db.migrateV7(ctx); err != nil {
+			return fmt.Errorf("migration v7: %w", err)
+		}
+		if _, err := db.bun.ExecContext(ctx, `UPDATE schema_version SET version = 7`); err != nil {
+			return fmt.Errorf("updating schema version to 7: %w", err)
+		}
+		version = 7
+	}
 	_ = version // used by future migrations
 
 	return nil
+}
+
+// migrateV7 adds retention columns to packages and federation_tag_globs to actors.
+// Idempotent: a fresh DB already gets these columns via v6's CreateTable from
+// the current struct definition.
+func (db *DB) migrateV7(ctx context.Context) error {
+	const pkgs = "packages"
+	type colDef struct{ table, column, definition string }
+	cols := []colDef{
+		{pkgs, "retention_keep_last", "INTEGER"},
+		{pkgs, "retention_max_age_seconds", "BIGINT"},
+		{pkgs, "retention_pinned_globs", "TEXT"},
+		{"actors", "federation_tag_globs", "TEXT"},
+	}
+	for _, c := range cols {
+		if err := db.addColumnIfMissing(ctx, c.table, c.column, c.definition); err != nil {
+			return fmt.Errorf("adding %s.%s: %w", c.table, c.column, err)
+		}
+	}
+	return nil
+}
+
+func (db *DB) addColumnIfMissing(ctx context.Context, table, column, definition string) error {
+	exists, err := db.columnExists(ctx, table, column)
+	if err != nil {
+		return err
+	}
+	if exists {
+		return nil
+	}
+	_, err = db.bun.ExecContext(ctx, fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, definition))
+	return err
+}
+
+func (db *DB) columnExists(ctx context.Context, table, column string) (bool, error) {
+	if _, isPostgres := db.bun.Dialect().(*pgdialect.Dialect); isPostgres {
+		var n int
+		err := db.bun.NewRaw(
+			"SELECT COUNT(*) FROM information_schema.columns WHERE table_name = ? AND column_name = ?",
+			table, column,
+		).Scan(ctx, &n)
+		if err != nil {
+			return false, err
+		}
+		return n > 0, nil
+	}
+	// SQLite
+	rows, err := db.bun.QueryContext(ctx, fmt.Sprintf("PRAGMA table_info(%s)", table))
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var (
+			cid     int
+			name    string
+			ctype   string
+			notnull int
+			dflt    sql.NullString
+			pk      int
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, rows.Err()
+		}
+	}
+	return false, rows.Err()
 }
 
 // migrateV6 unifies the OCI tables into the generic package schema. Row IDs

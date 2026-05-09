@@ -210,6 +210,32 @@ apoci follow remove bar.com --force   # remove follow flags AND fully delete the
 apoci identity show
 ```
 
+### Retention and federation filters
+
+Without retention, every push of `:latest` or `:main` leaves an orphan manifest behind, and peers mirror them all. Configure the GC to drop old tags and reap untagged manifests:
+
+```yaml
+gc:
+  interval: 6h
+  blobGCGracePeriod: 1h        # skip blob files modified in the last hour (uploads in flight)
+  untaggedManifestAge: 168h    # 7 days; manifests with no tag and no referrer are pruned past this
+  retention:
+    keepLastN: 5               # keep at most N mutable, non-pinned tags per repo
+    maxAge: 720h               # 30 days; tags older than this are deleted
+    pinnedGlobs: ["latest", "v*"]
+```
+
+`keepLastN` and `maxAge` apply per repo. Pinned globs and immutable tags are always kept and don't consume a slot. Per-repo overrides live on the `packages` row (`retention_keep_last`, `retention_max_age_seconds`, `retention_pinned_globs`); NULL inherits the global default. Tag deletes federate via `Delete OCITag`; untagged manifest prunes federate via `Delete OCIManifest`, so peers free their copies on the next GC cycle.
+
+By default a follower mirrors every push. To restrict a follower to specific tags:
+
+```bash
+apoci follow filter bar.com --tag "latest,v*"   # bar.com only receives :latest and v* tags
+apoci follow filter bar.com --clear             # restore "deliver everything"
+```
+
+Globs use `path.Match` syntax. Blob announces and manifest deletes always pass the filter (otherwise a peer would end up with stale references). Untagged manifest pushes (push by digest) also bypass the filter so a later `:latest` tag activity has the manifest content it points at.
+
 ### Remote CLI
 
 All `follow` and `identity` subcommands can target a remote instance using `--remote` and `--token`:

@@ -10,6 +10,70 @@ import (
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/database"
 )
 
+const tagLatest = "latest"
+
+func TestActorAcceptsActivity(t *testing.T) {
+	cases := []struct {
+		name   string
+		filter *string
+		pubCtx pubContext
+		want   bool
+	}{
+		{"nil filter accepts everything", nil, pubContext{kind: pubKindManifest, tag: "anything"}, true},
+		{"empty filter rejects tagged activity", new(""), pubContext{kind: pubKindManifest, tag: tagLatest}, false},
+		{"latest matches latest", new(tagLatest), pubContext{kind: pubKindManifest, tag: tagLatest}, true},
+		{"latest does not match dev", new(tagLatest), pubContext{kind: pubKindManifest, tag: "dev"}, false},
+		{"v* matches v1.0", new("v*"), pubContext{kind: pubKindTag, tag: "v1.0"}, true},
+		{"latest,v* matches v2.3", new("latest,v*"), pubContext{kind: pubKindTag, tag: "v2.3"}, true},
+		{"blob always passes filter", new("nothing"), pubContext{kind: pubKindBlob}, true},
+		{"manifest-delete always passes filter", new("nothing"), pubContext{kind: pubKindManifestDelete}, true},
+		{"untagged manifest passes filter (digest push)", new(tagLatest), pubContext{kind: pubKindManifest, tag: ""}, true},
+		{"tag-delete still subject to filter", new(tagLatest), pubContext{kind: pubKindTagDelete, tag: "dev"}, false},
+		{"whitespace tolerant", new(" latest , v* "), pubContext{kind: pubKindManifest, tag: "v9"}, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			actor := &database.Actor{FederationTagGlobs: c.filter}
+			require.Equal(t, c.want, actorAcceptsActivity(actor, c.pubCtx))
+		})
+	}
+}
+
+func TestPublishManifestRespectsFilter(t *testing.T) {
+	dir := t.TempDir()
+	db, err := database.OpenSQLite(dir, 0, 0, discardLogger())
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	id, _ := LoadOrCreateIdentity("https://test.example.com", "test.example.com", "", "", discardLogger())
+	pub := NewAPPublisher(id, db, "https://test.example.com", discardLogger())
+	t.Cleanup(pub.Stop)
+
+	ctx := context.Background()
+
+	// Three followers, each filter different.
+	require.NoError(t, db.AddFollow(ctx, "https://a.example.com/ap/actor", "PEM", "https://a.example.com", nil))
+	require.NoError(t, db.AddFollow(ctx, "https://b.example.com/ap/actor", "PEM", "https://b.example.com", nil))
+	require.NoError(t, db.AddFollow(ctx, "https://c.example.com/ap/actor", "PEM", "https://c.example.com", nil))
+	require.NoError(t, db.UpdateFollowFilter(ctx, "https://b.example.com/ap/actor", []string{tagLatest}))
+	require.NoError(t, db.UpdateFollowFilter(ctx, "https://c.example.com/ap/actor", []string{"v*"}))
+
+	// We can't easily mock inbox resolution, so we just verify the DB-level filter
+	// behaves correctly. The actorAcceptsActivity test above proves the filter
+	// logic; this confirms the filter persists through Add/Update/GetFollow.
+	a, err := db.GetFollow(ctx, "https://a.example.com/ap/actor")
+	require.NoError(t, err)
+	require.Nil(t, a.FederationTagGlobs)
+
+	b, err := db.GetFollow(ctx, "https://b.example.com/ap/actor")
+	require.NoError(t, err)
+	require.Equal(t, tagLatest, *b.FederationTagGlobs)
+
+	c, err := db.GetFollow(ctx, "https://c.example.com/ap/actor")
+	require.NoError(t, err)
+	require.Equal(t, "v*", *c.FederationTagGlobs)
+}
+
 func TestPublishManifestCreatesActivity(t *testing.T) {
 	dir := t.TempDir()
 	db, err := database.OpenSQLite(dir, 0, 0, discardLogger())

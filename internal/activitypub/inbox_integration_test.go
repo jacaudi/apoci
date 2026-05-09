@@ -337,7 +337,7 @@ func TestInboxUpdateTag(t *testing.T) {
 		KeyObject: map[string]any{
 			KeyType:          TypeOCITag,
 			KeyOCIRepository: repoName,
-			KeyOCITag:        "latest",
+			KeyOCITag:        tagLatest,
 			KeyOCIDigest:     digest,
 		},
 	}
@@ -348,7 +348,7 @@ func TestInboxUpdateTag(t *testing.T) {
 
 	require.Equal(t, http.StatusAccepted, rec.Code, rec.Body.String())
 
-	m, err := db.GetManifestByTag(ctx, repoObj.ID, "latest")
+	m, err := db.GetManifestByTag(ctx, repoObj.ID, tagLatest)
 	require.NoError(t, err)
 	require.NotNil(t, m)
 	require.Equal(t, digest, m.Digest)
@@ -1138,7 +1138,7 @@ func TestInboxUpdateTagUnknownManifest(t *testing.T) {
 		KeyObject: map[string]any{
 			KeyType:          TypeOCITag,
 			KeyOCIRepository: repoName,
-			KeyOCITag:        "latest",
+			KeyOCITag:        tagLatest,
 			KeyOCIDigest:     "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		},
 	}

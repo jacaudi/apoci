@@ -24,6 +24,10 @@ type Package struct {
 	OwnerID   string    `bun:"owner_id,notnull"`
 	Private   bool      `bun:"private,notnull,default:false"`
 	CreatedAt time.Time `bun:"created_at,notnull,default:current_timestamp"`
+
+	RetentionKeepLast      *int    `bun:"retention_keep_last"`
+	RetentionMaxAgeSeconds *int64  `bun:"retention_max_age_seconds"`
+	RetentionPinnedGlobs   *string `bun:"retention_pinned_globs"`
 }
 
 // PackageVersion's Version is the backend's identifier (digest for OCI,
@@ -163,6 +167,8 @@ type Actor struct {
 	IsHealthy         bool       `bun:"is_healthy,notnull,default:true" json:"is_healthy"`
 	ReplicationPolicy string     `bun:"replication_policy,notnull,default:'lazy'" json:"replication_policy"`
 	LastSeenAt        *time.Time `bun:"last_seen_at" json:"last_seen_at,omitempty"`
+
+	FederationTagGlobs *string `bun:"federation_tag_globs" json:"federation_tag_globs,omitempty"`
 
 	CreatedAt time.Time `bun:"created_at,notnull,default:current_timestamp" json:"created_at"`
 }

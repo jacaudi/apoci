@@ -21,6 +21,8 @@ const (
 	testLayerDigest2      = "sha256:layer2"
 	testDigestABC         = "sha256:abc"
 	testVersion100        = "1.0.0"
+	testTagLatest         = "latest"
+	testPeerActorURL      = "https://peer.example.com/ap/actor"
 )
 
 func testDB(t *testing.T) *DB {
@@ -285,33 +287,33 @@ func TestTagCRUD(t *testing.T) {
 	require.NoError(t, db.PutManifest(ctx, m))
 
 	// Put tag
-	require.NoError(t, db.PutTag(ctx, repo.ID, "latest", "sha256:manifest1"))
+	require.NoError(t, db.PutTag(ctx, repo.ID, testTagLatest, "sha256:manifest1"))
 
 	// Get tag
-	tag, err := db.GetTag(ctx, repo.ID, "latest")
+	tag, err := db.GetTag(ctx, repo.ID, testTagLatest)
 	require.NoError(t, err)
 	require.NotNil(t, tag, "expected tag, got nil")
 	require.Equal(t, "sha256:manifest1", tag.ManifestDigest)
 
 	// Get manifest by tag
-	got, err := db.GetManifestByTag(ctx, repo.ID, "latest")
+	got, err := db.GetManifestByTag(ctx, repo.ID, testTagLatest)
 	require.NoError(t, err)
 	require.NotNil(t, got, "expected manifest by tag, got nil")
 	require.Equal(t, "sha256:manifest1", got.Digest)
 
 	// Update tag
-	require.NoError(t, db.PutTag(ctx, repo.ID, "latest", "sha256:manifest2"))
-	tag2, _ := db.GetTag(ctx, repo.ID, "latest")
+	require.NoError(t, db.PutTag(ctx, repo.ID, testTagLatest, "sha256:manifest2"))
+	tag2, _ := db.GetTag(ctx, repo.ID, testTagLatest)
 	require.Equal(t, "sha256:manifest2", tag2.ManifestDigest)
 
 	// List tags
 	tags, err := db.ListTagsAfter(ctx, repo.ID, "", 100)
 	require.NoError(t, err)
-	require.Equal(t, []string{"latest"}, tags)
+	require.Equal(t, []string{testTagLatest}, tags)
 
 	// Delete tag
-	require.NoError(t, db.DeleteTag(ctx, repo.ID, "latest"))
-	tag3, _ := db.GetTag(ctx, repo.ID, "latest")
+	require.NoError(t, db.DeleteTag(ctx, repo.ID, testTagLatest))
+	tag3, _ := db.GetTag(ctx, repo.ID, testTagLatest)
 	require.Nil(t, tag3, "expected nil after delete")
 }
 
@@ -653,14 +655,14 @@ func TestCleanupStalePeerBlobsPassesTimeDirect(t *testing.T) {
 	now := time.Now()
 	name := "peer-for-cleanup"
 	require.NoError(t, db.UpsertActor(ctx, &Actor{
-		ActorURL:          "https://peer.example.com/ap/actor",
+		ActorURL:          testPeerActorURL,
 		Name:              &name,
 		Endpoint:          "https://peer.example.com",
 		ReplicationPolicy: replPolicyLazy,
 		LastSeenAt:        &now,
 		IsHealthy:         true,
 	}))
-	require.NoError(t, db.PutPeerBlob(ctx, "https://peer.example.com/ap/actor", "sha256:staleclean", "https://peer.example.com"))
+	require.NoError(t, db.PutPeerBlob(ctx, testPeerActorURL, "sha256:staleclean", "https://peer.example.com"))
 
 	// Cleanup with a negative age — the just-inserted row counts as stale.
 	n, err := db.CleanupStalePeerBlobs(ctx, -1*time.Second)

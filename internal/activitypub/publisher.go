@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"path"
 	"strings"
 	"sync"
 
@@ -14,6 +15,21 @@ import (
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/metrics"
 
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/database"
+)
+
+// pubContext lets enqueueToFollowers apply per-follower tag-glob filters.
+type pubContext struct {
+	kind string
+	repo string
+	tag  string
+}
+
+const (
+	pubKindManifest       = "manifest"
+	pubKindTag            = "tag"
+	pubKindBlob           = "blob"
+	pubKindManifestDelete = "manifest-delete"
+	pubKindTagDelete      = "tag-delete"
 )
 
 // PublicCollection is the special ActivityStreams address for public content.
@@ -70,7 +86,7 @@ func (p *APPublisher) PublishManifest(ctx context.Context, repo, tag, digest, me
 		object.SubjectDigest = *subjectDigest
 	}
 
-	return p.createAndDeliver(ctx, ActivityCreate, object)
+	return p.createAndDeliver(ctx, ActivityCreate, object, pubContext{kind: pubKindManifest, repo: repo, tag: tag})
 }
 
 func (p *APPublisher) PublishTag(ctx context.Context, repo, tag, digest string) error {
@@ -87,11 +103,12 @@ func (p *APPublisher) PublishTag(ctx context.Context, repo, tag, digest string) 
 		Digest:       digest,
 	}
 
-	return p.createAndDeliver(ctx, ActivityUpdate, object)
+	return p.createAndDeliver(ctx, ActivityUpdate, object, pubContext{kind: pubKindTag, repo: repo, tag: tag})
 }
 
+// Publish is used by non-OCI backends (npm/cargo/pypi) which carry no tag context.
 func (p *APPublisher) Publish(ctx context.Context, activityType string, object any) error {
-	return p.createAndDeliver(ctx, activityType, object)
+	return p.createAndDeliver(ctx, activityType, object, pubContext{kind: pubKindBlob})
 }
 
 func (p *APPublisher) PublishManifestDelete(ctx context.Context, repo, digest string) error {
@@ -107,7 +124,7 @@ func (p *APPublisher) PublishManifestDelete(ctx context.Context, repo, digest st
 		Digest:       digest,
 	}
 
-	return p.createAndDeliver(ctx, ActivityDelete, object)
+	return p.createAndDeliver(ctx, ActivityDelete, object, pubContext{kind: pubKindManifestDelete, repo: repo})
 }
 
 func (p *APPublisher) PublishTagDelete(ctx context.Context, repo, tag string) error {
@@ -123,7 +140,7 @@ func (p *APPublisher) PublishTagDelete(ctx context.Context, repo, tag string) er
 		Tag:          tag,
 	}
 
-	return p.createAndDeliver(ctx, ActivityDelete, object)
+	return p.createAndDeliver(ctx, ActivityDelete, object, pubContext{kind: pubKindTagDelete, repo: repo, tag: tag})
 }
 
 func (p *APPublisher) PublishBlobRef(ctx context.Context, digest string, size int64) error {
@@ -140,7 +157,7 @@ func (p *APPublisher) PublishBlobRef(ctx context.Context, digest string, size in
 		Endpoint:     p.endpoint,
 	}
 
-	return p.createAndDeliver(ctx, ActivityAnnounce, object)
+	return p.createAndDeliver(ctx, ActivityAnnounce, object, pubContext{kind: pubKindBlob})
 }
 
 // Stop releases background resources (actor cache eviction).
@@ -152,7 +169,7 @@ func (p *APPublisher) ActorCache() *ActorCache {
 	return p.actorCache
 }
 
-func (p *APPublisher) createAndDeliver(ctx context.Context, activityType string, object any) error {
+func (p *APPublisher) createAndDeliver(ctx context.Context, activityType string, object any, pubCtx pubContext) error {
 	metrics.OutboundActivities.WithLabelValues(activityType).Inc()
 	activityID := p.activityURL()
 	followersURL := p.endpoint + "/ap/followers"
@@ -177,13 +194,44 @@ func (p *APPublisher) createAndDeliver(ctx context.Context, activityType string,
 		return fmt.Errorf("storing activity: %w", err)
 	}
 
-	return p.enqueueToFollowers(ctx, activityID, activityJSON)
+	return p.enqueueToFollowers(ctx, activityID, activityJSON, pubCtx)
+}
+
+// actorAcceptsActivity matches a follower's federation_tag_globs filter against
+// the activity. Activities without a tag context (blobs, manifest deletes, and
+// manifests pushed by digest) always pass — otherwise a later tag activity
+// would point at content the peer never received.
+func actorAcceptsActivity(actor *database.Actor, pubCtx pubContext) bool {
+	if pubCtx.kind == pubKindBlob || pubCtx.kind == pubKindManifestDelete {
+		return true
+	}
+	if pubCtx.kind == pubKindManifest && pubCtx.tag == "" {
+		return true
+	}
+	if actor.FederationTagGlobs == nil {
+		return true
+	}
+	raw := strings.TrimSpace(*actor.FederationTagGlobs)
+	if raw == "" {
+		// Explicit empty list = receive nothing tag-bearing.
+		return false
+	}
+	for glob := range strings.SplitSeq(raw, ",") {
+		g := strings.TrimSpace(glob)
+		if g == "" {
+			continue
+		}
+		if ok, err := path.Match(g, pubCtx.tag); err == nil && ok {
+			return true
+		}
+	}
+	return false
 }
 
 // enqueueToFollowers resolves follower inboxes (using shared inbox when available)
 // and enqueues deliveries to the persistent delivery queue.
 // Followers are loaded in batches to avoid unbounded memory usage.
-func (p *APPublisher) enqueueToFollowers(ctx context.Context, activityID string, activityJSON []byte) error {
+func (p *APPublisher) enqueueToFollowers(ctx context.Context, activityID string, activityJSON []byte, pubCtx pubContext) error {
 	var (
 		mu      sync.Mutex
 		inboxes = make(map[string]struct{})
@@ -202,6 +250,9 @@ func (p *APPublisher) enqueueToFollowers(ctx context.Context, activityID string,
 		g, gctx := errgroup.WithContext(ctx)
 		g.SetLimit(20)
 		for _, f := range batch {
+			if !actorAcceptsActivity(&f, pubCtx) {
+				continue
+			}
 			g.Go(func() error {
 				inbox, err := p.resolveInbox(gctx, f.ActorURL)
 				if err != nil {

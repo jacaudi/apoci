@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -29,6 +30,7 @@ func (s *Server) adminRouter() http.Handler {
 	r.Post("/follows/accept", s.adminAcceptFollow)
 	r.Post("/follows/reject", s.adminRejectFollow)
 	r.Delete("/follows", s.adminRemoveFollow)
+	r.Patch("/follows", s.adminUpdateFollowFilter)
 	r.Delete("/mirrors/*", s.adminEvictMirror)
 	r.Post("/gc", s.adminRunGC)
 
@@ -223,6 +225,35 @@ func (s *Server) adminRemoveFollow(w http.ResponseWriter, r *http.Request) {
 	s.logger.Debug("admin: DELETE /follows done", "actorURL", actorURL)
 
 	writeJSON(w, map[string]string{"removed": actorURL})
+}
+
+type adminFollowFilterRequest struct {
+	Target   string   `json:"target"`
+	TagGlobs []string `json:"tag_globs"`
+}
+
+func (s *Server) adminUpdateFollowFilter(w http.ResponseWriter, r *http.Request) {
+	var req adminFollowFilterRequest
+	r.Body = http.MaxBytesReader(w, r.Body, adminMaxBody)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Target == "" {
+		http.Error(w, "missing target", http.StatusBadRequest)
+		return
+	}
+	s.logger.Debug("admin: PATCH /follows", "target", req.Target, "tag_globs", req.TagGlobs)
+
+	if err := s.db.UpdateFollowFilter(r.Context(), req.Target, req.TagGlobs); err != nil {
+		s.logger.Error("updating follow filter", "target", req.Target, "error", err)
+		switch {
+		case errors.Is(err, database.ErrInvalidGlob):
+			http.Error(w, err.Error(), http.StatusBadRequest)
+		case errors.Is(err, database.ErrFollowerNotFound):
+			http.Error(w, err.Error(), http.StatusNotFound)
+		default:
+			http.Error(w, "internal error", http.StatusInternalServerError)
+		}
+		return
+	}
+	writeJSON(w, map[string]any{"updated": req.Target, "tag_globs": req.TagGlobs})
 }
 
 func (s *Server) adminEvictMirror(w http.ResponseWriter, r *http.Request) {

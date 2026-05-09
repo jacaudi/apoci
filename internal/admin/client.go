@@ -87,6 +87,12 @@ func (c *Client) RejectFollow(ctx context.Context, target string) (map[string]st
 	return out, c.post(ctx, "/follows/reject", map[string]string{keyTarget: target}, &out)
 }
 
+func (c *Client) UpdateFollowFilter(ctx context.Context, target string, tagGlobs []string) (map[string]any, error) {
+	var out map[string]any
+	body := map[string]any{keyTarget: target, "tag_globs": tagGlobs}
+	return out, c.do(ctx, http.MethodPatch, "/follows", body, &out)
+}
+
 func (c *Client) RemoveFollow(ctx context.Context, target string, force bool) (map[string]string, error) {
 	var out map[string]string
 	body := map[string]any{keyTarget: target}

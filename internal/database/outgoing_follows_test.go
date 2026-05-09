@@ -11,7 +11,7 @@ import (
 func TestOutgoingFollowLifecycle(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()
-	url := "https://peer.example.com/ap/actor"
+	url := testPeerActorURL
 
 	// Add
 	require.NoError(t, db.AddOutgoingFollow(ctx, url))

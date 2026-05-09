@@ -623,14 +623,14 @@ func TestListLocallyHostedRepos(t *testing.T) {
 	require.NoError(t, db.PutPackageVersion(ctx, v))
 	require.NoError(t, db.PutBlob(ctx, testLayerDigest, 2048, &mt, true))
 	require.NoError(t, db.PutBlobReferences(ctx, v.ID, map[string]string{testLayerDigest: testLayerDigest}))
-	require.NoError(t, db.PutPackageTag(ctx, repo.ID, "latest", v.Version, false))
+	require.NoError(t, db.PutPackageTag(ctx, repo.ID, testTagLatest, v.Version, false))
 
 	repos, err := db.ListLocallyHostedRepos(ctx)
 	require.NoError(t, err)
 	require.Len(t, repos, 1)
 	require.Equal(t, "docker.io/app/image", repos[0].Name)
 	require.Equal(t, int64(2048), repos[0].SizeBytes)
-	require.Equal(t, []string{"latest"}, repos[0].Tags)
+	require.Equal(t, []string{testTagLatest}, repos[0].Tags)
 
 	repo2, err := db.GetOrCreateRepository(ctx, "docker.io/app/bigger", testAliceActor)
 	require.NoError(t, err)

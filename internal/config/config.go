@@ -128,10 +128,21 @@ type Notifications struct {
 }
 
 type GC struct {
-	Enabled          *bool         `yaml:"enabled"          env:"ENABLED"`
-	Interval         time.Duration `yaml:"interval"         env:"INTERVAL"`
-	StalePeerBlobAge time.Duration `yaml:"stalePeerBlobAge" env:"STALE_PEER_BLOB_AGE"`
-	OrphanBatchSize  int           `yaml:"orphanBatchSize"  env:"ORPHAN_BATCH_SIZE"`
+	Enabled               *bool         `yaml:"enabled"               env:"ENABLED"`
+	Interval              time.Duration `yaml:"interval"              env:"INTERVAL"`
+	StalePeerBlobAge      time.Duration `yaml:"stalePeerBlobAge"      env:"STALE_PEER_BLOB_AGE"`
+	OrphanBatchSize       int           `yaml:"orphanBatchSize"       env:"ORPHAN_BATCH_SIZE"`
+	BlobGCGracePeriod     time.Duration `yaml:"blobGCGracePeriod"     env:"BLOB_GC_GRACE_PERIOD"`
+	UntaggedManifestAge   time.Duration `yaml:"untaggedManifestAge"   env:"UNTAGGED_MANIFEST_AGE"`
+	UntaggedBatchSize     int           `yaml:"untaggedBatchSize"     env:"UNTAGGED_BATCH_SIZE"`
+	RetentionTagsPerCycle int           `yaml:"retentionTagsPerCycle" env:"RETENTION_TAGS_PER_CYCLE"`
+	Retention             Retention     `yaml:"retention"             envPrefix:"RETENTION_"`
+}
+
+type Retention struct {
+	KeepLastN   int           `yaml:"keepLastN"   env:"KEEP_LAST_N"`
+	MaxAge      time.Duration `yaml:"maxAge"      env:"MAX_AGE"`
+	PinnedGlobs []string      `yaml:"pinnedGlobs" env:"PINNED_GLOBS" envSeparator:","`
 }
 
 // Upstream configures an external OCI registry for pull-through caching.
@@ -380,6 +391,21 @@ func applyGCDefaults(cfg *Config) {
 	if cfg.GC.OrphanBatchSize == 0 {
 		cfg.GC.OrphanBatchSize = 500
 	}
+	if cfg.GC.BlobGCGracePeriod == 0 {
+		cfg.GC.BlobGCGracePeriod = time.Hour
+	}
+	if cfg.GC.UntaggedManifestAge == 0 {
+		cfg.GC.UntaggedManifestAge = 7 * 24 * time.Hour
+	}
+	if cfg.GC.UntaggedBatchSize == 0 {
+		cfg.GC.UntaggedBatchSize = 500
+	}
+	if cfg.GC.RetentionTagsPerCycle == 0 {
+		cfg.GC.RetentionTagsPerCycle = 10000
+	}
+	if cfg.GC.Retention.PinnedGlobs == nil {
+		cfg.GC.Retention.PinnedGlobs = []string{"latest", "v*"}
+	}
 }
 
 func applyUpstreamDefaults(cfg *Config) {
@@ -606,6 +632,9 @@ func validateNonNegative(cfg *Config) error {
 	}
 	if cfg.GC.OrphanBatchSize < 0 {
 		return fmt.Errorf("gc.orphanBatchSize must not be negative")
+	}
+	if cfg.GC.BlobGCGracePeriod < 0 {
+		return fmt.Errorf("gc.blobGCGracePeriod must not be negative")
 	}
 	return nil
 }

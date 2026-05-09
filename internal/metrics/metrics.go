@@ -129,6 +129,18 @@ var (
 		Name:      "cycles_completed_total",
 		Help:      "Total GC cycles completed.",
 	})
+	GCRetentionTagsDeleted = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: namespace,
+		Subsystem: "gc",
+		Name:      "retention_tags_deleted_total",
+		Help:      "Total tags deleted by retention policy.",
+	})
+	GCUntaggedManifestsPruned = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: namespace,
+		Subsystem: "gc",
+		Name:      "untagged_manifests_pruned_total",
+		Help:      "Total untagged manifests pruned.",
+	})
 
 	// OCI registry operations.
 	RegistryManifestPushes = prometheus.NewCounter(prometheus.CounterOpts{
@@ -267,6 +279,8 @@ func init() {
 		GCOrphanedMetadata,
 		GCOrphanedFiles,
 		GCCyclesCompleted,
+		GCRetentionTagsDeleted,
+		GCUntaggedManifestsPruned,
 		RegistryManifestPushes,
 		RegistryManifestPulls,
 		RegistryBlobPushes,

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/validate"
 )
@@ -32,6 +33,7 @@ type BlobStore interface {
 	// Delete removes the blob. It is not an error if the blob does not exist.
 	Delete(ctx context.Context, digest string) error
 	ListDigests(ctx context.Context) ([]string, error)
+	ModTime(ctx context.Context, digest string) (time.Time, error)
 }
 
 type Store struct {
@@ -133,6 +135,21 @@ func (s *Store) Exists(_ context.Context, digest string) (bool, error) {
 		return false, nil
 	}
 	return false, fmt.Errorf("checking blob existence: %w", err)
+}
+
+func (s *Store) ModTime(_ context.Context, digest string) (time.Time, error) {
+	path, err := s.pathForDigest(digest)
+	if err != nil {
+		return time.Time{}, err
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return time.Time{}, ErrBlobNotFound
+		}
+		return time.Time{}, fmt.Errorf("statting blob: %w", err)
+	}
+	return fi.ModTime(), nil
 }
 
 func (s *Store) Delete(_ context.Context, digest string) error {
