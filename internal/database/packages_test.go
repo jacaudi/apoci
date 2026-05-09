@@ -174,6 +174,77 @@ func TestDeletePackageVersion(t *testing.T) {
 	require.NoError(t, db.DeletePackageVersion(ctx, pkg.ID, "9.9.9"))
 }
 
+func TestDeletePackageCascade(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+
+	pkg, err := db.GetOrCreatePackage(ctx, "oci", "ghcr.io/user/repo", "https://remote.example.com/ap/actor")
+	require.NoError(t, err)
+
+	const dgstA, dgstB = "sha256:cas1", "sha256:cas2"
+	v1 := &PackageVersion{PackageID: pkg.ID, Version: dgstA, Metadata: []byte(`{}`)}
+	require.NoError(t, db.PutPackageVersion(ctx, v1))
+	v2 := &PackageVersion{PackageID: pkg.ID, Version: dgstB, Metadata: []byte(`{}`)}
+	require.NoError(t, db.PutPackageVersion(ctx, v2))
+
+	require.NoError(t, db.PutPackageFile(ctx, &PackageFile{
+		VersionID:  v1.ID,
+		Filename:   "layer1",
+		BlobDigest: testLayerDigest,
+		SizeBytes:  100,
+	}))
+	require.NoError(t, db.PutPackageFile(ctx, &PackageFile{
+		VersionID:  v2.ID,
+		Filename:   "layer2",
+		BlobDigest: testLayerDigest2,
+		SizeBytes:  200,
+	}))
+
+	require.NoError(t, db.PutPackageTag(ctx, pkg.ID, "v1", dgstA, true))
+	require.NoError(t, db.PutPackageTag(ctx, pkg.ID, "latest", dgstB, false))
+
+	require.NoError(t, db.DeletePackage(ctx, pkg.ID))
+
+	gone, err := db.GetPackage(ctx, "oci", "ghcr.io/user/repo")
+	require.NoError(t, err)
+	require.Nil(t, gone)
+
+	versions, err := db.ListPackageVersions(ctx, pkg.ID)
+	require.NoError(t, err)
+	require.Empty(t, versions)
+
+	tags, err := db.ListPackageTags(ctx, pkg.ID)
+	require.NoError(t, err)
+	require.Empty(t, tags)
+
+	files1, err := db.ListPackageFiles(ctx, v1.ID)
+	require.NoError(t, err)
+	require.Empty(t, files1)
+	files2, err := db.ListPackageFiles(ctx, v2.ID)
+	require.NoError(t, err)
+	require.Empty(t, files2)
+}
+
+func TestDeleteRepositoryAlias(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+
+	repo, err := db.GetOrCreateRepository(ctx, "ghcr.io/user/mirror", "https://remote.example.com/ap/actor")
+	require.NoError(t, err)
+	require.NoError(t, db.PutManifest(ctx, &Manifest{
+		RepositoryID: repo.ID,
+		Digest:       "sha256:cafe",
+		MediaType:    testManifestMediaType,
+		Content:      []byte(`{}`),
+	}))
+
+	require.NoError(t, db.DeleteRepository(ctx, repo.ID))
+
+	got, err := db.GetRepository(ctx, "ghcr.io/user/mirror")
+	require.NoError(t, err)
+	require.Nil(t, got)
+}
+
 func TestPackageFileCRUD(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()

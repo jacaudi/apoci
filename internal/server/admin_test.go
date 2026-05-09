@@ -1060,6 +1060,133 @@ func TestAdminListImagesWithData(t *testing.T) {
 	require.Equal(t, []string{"latest"}, images[0].Tags)
 }
 
+func TestAdminEvictMirrorWholeRepo(t *testing.T) {
+	s := testServerWithMock(t, &mockAPFederator{})
+	s.cfg.RegistryToken = testToken
+	s.cfg.AdminToken = testToken
+	ctx := context.Background()
+
+	const remote = "https://remote.example.com/ap/actor"
+	repo, err := s.db.GetOrCreateRepository(ctx, "ghcr.io/user/mirrored", remote)
+	require.NoError(t, err)
+	require.NoError(t, s.db.PutManifest(ctx, &database.Manifest{
+		RepositoryID: repo.ID,
+		Digest:       "sha256:" + strings.Repeat("a", 64),
+		MediaType:    "application/vnd.oci.image.manifest.v1+json",
+		Content:      []byte(`{}`),
+	}))
+
+	beforeActs, err := s.db.ListActivitiesPage(ctx, s.identity.ActorURL, 0, 50)
+	require.NoError(t, err)
+
+	srv := httptest.NewServer(s.routes())
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/admin/mirrors/ghcr.io/user/mirrored", nil)
+	req.Header.Set("Authorization", "Bearer test-token")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	gone, err := s.db.GetRepository(ctx, "ghcr.io/user/mirrored")
+	require.NoError(t, err)
+	require.Nil(t, gone, "mirror repo row should be gone")
+
+	afterActs, err := s.db.ListActivitiesPage(ctx, s.identity.ActorURL, 0, 50)
+	require.NoError(t, err)
+	require.Equal(t, len(beforeActs), len(afterActs), "eviction must not emit AP activities")
+}
+
+func TestAdminEvictMirrorSingleManifest(t *testing.T) {
+	s := testServerWithMock(t, &mockAPFederator{})
+	s.cfg.RegistryToken = testToken
+	s.cfg.AdminToken = testToken
+	ctx := context.Background()
+
+	const remote = "https://remote.example.com/ap/actor"
+	repo, err := s.db.GetOrCreateRepository(ctx, "ghcr.io/user/mirrored", remote)
+	require.NoError(t, err)
+	dgst := "sha256:" + strings.Repeat("b", 64)
+	require.NoError(t, s.db.PutManifest(ctx, &database.Manifest{
+		RepositoryID: repo.ID,
+		Digest:       dgst,
+		MediaType:    "application/vnd.oci.image.manifest.v1+json",
+		Content:      []byte(`{}`),
+	}))
+
+	srv := httptest.NewServer(s.routes())
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/admin/mirrors/ghcr.io/user/mirrored?digest="+dgst, nil)
+	req.Header.Set("Authorization", "Bearer test-token")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	got, err := s.db.GetManifestByDigest(ctx, repo.ID, dgst)
+	require.NoError(t, err)
+	require.Nil(t, got)
+	stillThere, err := s.db.GetRepository(ctx, "ghcr.io/user/mirrored")
+	require.NoError(t, err)
+	require.NotNil(t, stillThere, "repo row should remain after per-manifest evict")
+}
+
+func TestAdminEvictMirrorRejectsLocallyOwned(t *testing.T) {
+	s := testServerWithMock(t, &mockAPFederator{})
+	s.cfg.RegistryToken = testToken
+	s.cfg.AdminToken = testToken
+	ctx := context.Background()
+
+	_, err := s.db.GetOrCreateRepository(ctx, "test.example.com/local", s.identity.ActorURL)
+	require.NoError(t, err)
+
+	srv := httptest.NewServer(s.routes())
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/admin/mirrors/test.example.com/local", nil)
+	req.Header.Set("Authorization", "Bearer test-token")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode, "locally owned repo must be rejected")
+
+	got, err := s.db.GetRepository(ctx, "test.example.com/local")
+	require.NoError(t, err)
+	require.NotNil(t, got, "rejected eviction must not delete the repo")
+}
+
+func TestAdminEvictMirrorNotFound(t *testing.T) {
+	s := testServerWithMock(t, &mockAPFederator{})
+	s.cfg.RegistryToken = testToken
+	s.cfg.AdminToken = testToken
+	srv := httptest.NewServer(s.routes())
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/admin/mirrors/ghcr.io/user/nonexistent", nil)
+	req.Header.Set("Authorization", "Bearer test-token")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+func TestAdminEvictMirrorRequiresAuth(t *testing.T) {
+	s := testServerWithMock(t, &mockAPFederator{})
+	s.cfg.RegistryToken = testToken
+	s.cfg.AdminToken = testToken
+	srv := httptest.NewServer(s.routes())
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodDelete, srv.URL+"/api/admin/mirrors/anything", nil)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
 func TestAdminListImagesInternalError(t *testing.T) {
 	s := testServerWithMock(t, &mockAPFederator{})
 	s.cfg.AdminToken = testToken

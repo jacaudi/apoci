@@ -60,6 +60,64 @@ func TestPublishTagCreatesUpdateActivity(t *testing.T) {
 	require.Equal(t, "Update", activities[0].Type)
 }
 
+func TestPublishManifestDeleteCreatesDeleteActivity(t *testing.T) {
+	dir := t.TempDir()
+	db, err := database.OpenSQLite(dir, 0, 0, discardLogger())
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	id, _ := LoadOrCreateIdentity("https://test.example.com", "test.example.com", "", "", discardLogger())
+	pub := NewAPPublisher(id, db, "https://test.example.com", discardLogger())
+	t.Cleanup(pub.Stop)
+
+	ctx := context.Background()
+	err = pub.PublishManifestDelete(ctx, "test/repo", "sha256:abc123")
+	require.NoError(t, err)
+
+	activities, err := db.ListActivitiesPage(ctx, id.ActorURL, 0, 10)
+	require.NoError(t, err)
+	require.Len(t, activities, 1)
+	require.Equal(t, "Delete", activities[0].Type)
+
+	var activity map[string]any
+	require.NoError(t, json.Unmarshal(activities[0].ObjectJSON, &activity))
+	require.Equal(t, "Delete", activity["type"])
+
+	obj, ok := activity["object"].(map[string]any)
+	require.True(t, ok, "expected object to be a map")
+	require.Equal(t, "OCIManifest", obj["type"])
+	require.Equal(t, "test/repo", obj["ociRepository"])
+	require.Equal(t, "sha256:abc123", obj["ociDigest"])
+}
+
+func TestPublishTagDeleteCreatesDeleteActivity(t *testing.T) {
+	dir := t.TempDir()
+	db, err := database.OpenSQLite(dir, 0, 0, discardLogger())
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	id, _ := LoadOrCreateIdentity("https://test.example.com", "test.example.com", "", "", discardLogger())
+	pub := NewAPPublisher(id, db, "https://test.example.com", discardLogger())
+	t.Cleanup(pub.Stop)
+
+	ctx := context.Background()
+	err = pub.PublishTagDelete(ctx, "test/repo", "v1.0")
+	require.NoError(t, err)
+
+	activities, err := db.ListActivitiesPage(ctx, id.ActorURL, 0, 10)
+	require.NoError(t, err)
+	require.Len(t, activities, 1)
+	require.Equal(t, "Delete", activities[0].Type)
+
+	var activity map[string]any
+	require.NoError(t, json.Unmarshal(activities[0].ObjectJSON, &activity))
+	obj, ok := activity["object"].(map[string]any)
+	require.True(t, ok, "expected object to be a map")
+	require.Equal(t, "OCITag", obj["type"])
+	require.Equal(t, "test/repo", obj["ociRepository"])
+	require.Equal(t, "v1.0", obj["ociTag"])
+}
+
 func TestPublishBlobRefCreatesAnnounceActivity(t *testing.T) {
 	dir := t.TempDir()
 	db, err := database.OpenSQLite(dir, 0, 0, discardLogger())

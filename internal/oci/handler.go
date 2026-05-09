@@ -47,6 +47,7 @@ type RegistryRepository interface {
 	PutManifest(ctx context.Context, m *database.Manifest) error
 	DeleteManifest(ctx context.Context, repoID int64, digest string) error
 	IsManifestDeleted(ctx context.Context, digest string) (bool, error)
+	RecordDeletedManifest(ctx context.Context, digest, repoName, sourceActor string) error
 	ListManifestsBySubject(ctx context.Context, repoID int64, subjectDigest string) ([]database.Manifest, error)
 	PutManifestLayers(ctx context.Context, manifestID int64, layerDigests []string) error
 
@@ -66,6 +67,8 @@ type Publisher interface {
 	PublishManifest(ctx context.Context, repo, tag, digest, mediaType string, size int64, content []byte, subjectDigest *string) error
 	PublishTag(ctx context.Context, repo, tag, digest string) error
 	PublishBlobRef(ctx context.Context, digest string, size int64) error
+	PublishManifestDelete(ctx context.Context, repo, digest string) error
+	PublishTagDelete(ctx context.Context, repo, tag string) error
 }
 
 type BlobPeer struct {
@@ -1224,7 +1227,18 @@ func (r *Registry) deleteManifest(ctx context.Context, repo string, digest ocire
 	if err != nil {
 		return err
 	}
-	return r.db.DeleteManifest(ctx, repoObj.ID, string(digest))
+	if err := r.db.DeleteManifest(ctx, repoObj.ID, string(digest)); err != nil {
+		return err
+	}
+	if err := r.db.RecordDeletedManifest(ctx, string(digest), repo, r.localID); err != nil {
+		r.logger.Warn("failed to record manifest tombstone", "digest", string(digest), "error", err)
+	}
+	if r.publisher != nil {
+		if err := r.publisher.PublishManifestDelete(ctx, repo, string(digest)); err != nil {
+			r.logger.Warn("failed to publish manifest delete to federation", "error", err)
+		}
+	}
+	return nil
 }
 
 func (r *Registry) deleteTag(ctx context.Context, repo string, name string) error {
@@ -1242,6 +1256,11 @@ func (r *Registry) deleteTag(ctx context.Context, repo string, name string) erro
 			return fmt.Errorf("%w: tag %q is immutable", ociregistry.ErrDenied, name)
 		}
 		return fmt.Errorf("deleting tag: %w", err)
+	}
+	if r.publisher != nil {
+		if err := r.publisher.PublishTagDelete(ctx, repo, name); err != nil {
+			r.logger.Warn("failed to publish tag delete to federation", "error", err)
+		}
 	}
 	return nil
 }

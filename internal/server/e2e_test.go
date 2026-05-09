@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -231,12 +232,11 @@ func TestE2EDeleteFlowViaHTTP(t *testing.T) {
 	_ = resp.Body.Close()
 	require.Equal(t, http.StatusAccepted, resp.StatusCode, "manifest delete")
 
-	// Verify manifest is gone
 	req = mustNewRequest(t, "GET", srv.URL+"/v2/test.example.com/deltest/manifests/"+manifestDigest, nil)
 	resp, err = http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	_ = resp.Body.Close()
-	require.Equal(t, http.StatusNotFound, resp.StatusCode, "manifest after delete")
+	require.Equal(t, http.StatusGone, resp.StatusCode, "manifest after delete")
 
 	// Blob should still be fetchable (not deleted with manifest)
 	req = mustNewRequest(t, "GET", srv.URL+"/v2/test.example.com/deltest/blobs/"+blobDigest, nil)
@@ -247,6 +247,99 @@ func TestE2EDeleteFlowViaHTTP(t *testing.T) {
 	if resp.StatusCode == http.StatusOK {
 		require.Equal(t, string(blobData), string(blobBody), "blob content mismatch after manifest delete")
 	}
+}
+
+func TestE2EDeleteManifestPublishesActivity(t *testing.T) {
+	s := testServer(t)
+	srv := httptest.NewServer(s.routes())
+	defer srv.Close()
+
+	blobData := []byte("content for delete-publish test")
+	blobHash := sha256.Sum256(blobData)
+	blobDigest := "sha256:" + hex.EncodeToString(blobHash[:])
+
+	req := authReq(mustNewRequest(t, "POST", srv.URL+"/v2/test.example.com/delpub/blobs/uploads/?digest="+blobDigest, bytes.NewReader(blobData)))
+	req.Header.Set("Content-Type", "application/octet-stream")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+
+	manifest := fmt.Sprintf(`{"schemaVersion":2,"config":{"digest":"%s","size":%d},"layers":[]}`, blobDigest, len(blobData))
+	req = authReq(mustNewRequest(t, "PUT", srv.URL+"/v2/test.example.com/delpub/manifests/latest", strings.NewReader(manifest)))
+	req.Header.Set("Content-Type", "application/vnd.oci.image.manifest.v1+json")
+	resp, err = http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	manifestDigest := resp.Header.Get("Docker-Content-Digest")
+	_ = resp.Body.Close()
+
+	req = authReq(mustNewRequest(t, "DELETE", srv.URL+"/v2/test.example.com/delpub/manifests/"+manifestDigest, nil))
+	resp, err = http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	require.Equal(t, http.StatusAccepted, resp.StatusCode, "manifest delete")
+
+	deleted, err := s.db.IsManifestDeleted(context.Background(), manifestDigest)
+	require.NoError(t, err)
+	require.True(t, deleted, "expected tombstone after manifest delete")
+
+	acts, err := s.db.ListActivitiesPage(context.Background(), s.identity.ActorURL, 0, 50)
+	require.NoError(t, err)
+	var foundDelete bool
+	for _, a := range acts {
+		if a.Type != "Delete" {
+			continue
+		}
+		var act map[string]any
+		require.NoError(t, json.Unmarshal(a.ObjectJSON, &act))
+		obj, ok := act["object"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if obj["ociDigest"] == manifestDigest && obj["ociRepository"] == "test.example.com/delpub" {
+			foundDelete = true
+			break
+		}
+	}
+	require.True(t, foundDelete, "expected outbound Delete(OCIManifest) activity for the manifest")
+}
+
+func TestE2EDeleteTagPublishesActivity(t *testing.T) {
+	s := testServer(t)
+	srv := httptest.NewServer(s.routes())
+	defer srv.Close()
+
+	manifest := `{"schemaVersion":2,"config":{"digest":"sha256:abc","size":0},"layers":[]}`
+	req := authReq(mustNewRequest(t, "PUT", srv.URL+"/v2/test.example.com/deltag/manifests/latest", strings.NewReader(manifest)))
+	req.Header.Set("Content-Type", "application/vnd.oci.image.manifest.v1+json")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+
+	req = authReq(mustNewRequest(t, "DELETE", srv.URL+"/v2/test.example.com/deltag/manifests/latest", nil))
+	resp, err = http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	require.Equal(t, http.StatusAccepted, resp.StatusCode, "tag delete")
+
+	acts, err := s.db.ListActivitiesPage(context.Background(), s.identity.ActorURL, 0, 50)
+	require.NoError(t, err)
+	var foundDeleteTag bool
+	for _, a := range acts {
+		if a.Type != "Delete" {
+			continue
+		}
+		var act map[string]any
+		require.NoError(t, json.Unmarshal(a.ObjectJSON, &act))
+		obj, ok := act["object"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if obj["type"] == "OCITag" && obj["ociTag"] == "latest" && obj["ociRepository"] == "test.example.com/deltag" {
+			foundDeleteTag = true
+			break
+		}
+	}
+	require.True(t, foundDeleteTag, "expected outbound Delete(OCITag) activity for the tag")
 }
 
 func TestE2EWebFingerToActor(t *testing.T) {

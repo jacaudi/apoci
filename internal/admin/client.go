@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/version"
@@ -93,6 +94,15 @@ func (c *Client) RemoveFollow(ctx context.Context, target string, force bool) (m
 		body["force"] = true
 	}
 	return out, c.do(ctx, http.MethodDelete, "/follows", body, &out)
+}
+
+func (c *Client) EvictMirror(ctx context.Context, repo, digest string) (map[string]string, error) {
+	var out map[string]string
+	path := "/mirrors/" + repo
+	if digest != "" {
+		path += "?digest=" + url.QueryEscape(digest)
+	}
+	return out, c.do(ctx, http.MethodDelete, path, nil, &out)
 }
 
 func (c *Client) get(ctx context.Context, path string, out any) error {

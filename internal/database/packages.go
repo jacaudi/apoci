@@ -579,6 +579,42 @@ func (db *DB) DeleteManifest(ctx context.Context, repoID int64, digest string) e
 	return db.DeletePackageVersion(ctx, repoID, digest)
 }
 
+func (db *DB) DeletePackage(ctx context.Context, packageID int64) error {
+	tx, err := db.bun.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("beginning delete package transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.NewRaw(
+		`DELETE FROM package_files
+		 WHERE version_id IN (SELECT id FROM package_versions WHERE package_id = ?)`,
+		packageID,
+	).Exec(ctx); err != nil {
+		return fmt.Errorf("deleting package files: %w", err)
+	}
+	if _, err := tx.NewRaw(
+		"DELETE FROM package_tags WHERE package_id = ?", packageID,
+	).Exec(ctx); err != nil {
+		return fmt.Errorf("deleting package tags: %w", err)
+	}
+	if _, err := tx.NewRaw(
+		"DELETE FROM package_versions WHERE package_id = ?", packageID,
+	).Exec(ctx); err != nil {
+		return fmt.Errorf("deleting package versions: %w", err)
+	}
+	if _, err := tx.NewRaw(
+		"DELETE FROM packages WHERE id = ?", packageID,
+	).Exec(ctx); err != nil {
+		return fmt.Errorf("deleting package: %w", err)
+	}
+	return tx.Commit()
+}
+
+func (db *DB) DeleteRepository(ctx context.Context, repoID int64) error {
+	return db.DeletePackage(ctx, repoID)
+}
+
 func (db *DB) PutManifestLayers(ctx context.Context, manifestID int64, blobDigests []string) error {
 	if len(blobDigests) == 0 {
 		return nil

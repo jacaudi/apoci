@@ -65,6 +65,7 @@ func main() {
 	rootCmd.AddCommand(identityCmd(&configPath))
 	rootCmd.AddCommand(actorCmd(&configPath))
 	rootCmd.AddCommand(imagesCmd(&configPath))
+	rootCmd.AddCommand(mirrorCmd(&configPath))
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -562,6 +563,78 @@ func imagesCmd(configPath *string) *cobra.Command {
 	})
 
 	return cmd
+}
+
+func mirrorCmd(configPath *string) *cobra.Command {
+	var remote, token string
+
+	cmd := &cobra.Command{
+		Use:   "mirror",
+		Short: "Manage upstream image mirrors",
+	}
+
+	cmd.PersistentFlags().StringVar(&remote, "remote", "", "remote instance URL")
+	cmd.PersistentFlags().StringVar(&token, "token", "", "registry token for remote auth")
+
+	evictCmd := &cobra.Command{
+		Use:   "evict <repo>",
+		Short: "Drop a locally-mirrored upstream repository (does not affect the upstream)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			digest, _ := cmd.Flags().GetString("digest")
+			repo := args[0]
+			if c := remoteClient(remote, token); c != nil {
+				res, err := c.EvictMirror(cmd.Context(), repo, digest)
+				if err != nil {
+					return err
+				}
+				msg := "Evicted mirror " + res["evicted"]
+				if d := res["digest"]; d != "" {
+					msg += "@" + d
+				}
+				_, _ = lipgloss.Println(successStyle.Render(msg))
+				return nil
+			}
+			return runMirrorEvict(cmd.Context(), *configPath, repo, digest)
+		},
+	}
+	evictCmd.Flags().String("digest", "", "evict only the manifest with this digest (sha256:...)")
+	cmd.AddCommand(evictCmd)
+
+	return cmd
+}
+
+func runMirrorEvict(ctx context.Context, configPath, repo, digest string) error {
+	db, identity, _, err := openAll(configPath, cliLogger())
+	if err != nil {
+		return err
+	}
+	defer func() { _ = db.Close() }()
+
+	repoObj, err := db.GetRepository(ctx, repo)
+	if err != nil {
+		return fmt.Errorf("looking up repository: %w", err)
+	}
+	if repoObj == nil {
+		return fmt.Errorf("repository %q not found", repo)
+	}
+	if repoObj.OwnerID == identity.ActorURL {
+		return fmt.Errorf("repository %q is locally owned; use the OCI delete API to remove it", repo)
+	}
+
+	if digest != "" {
+		if err := db.DeleteManifest(ctx, repoObj.ID, digest); err != nil {
+			return fmt.Errorf("evicting manifest: %w", err)
+		}
+		_, _ = lipgloss.Println(successStyle.Render("Evicted mirror " + repo + "@" + digest))
+		return nil
+	}
+
+	if err := db.DeleteRepository(ctx, repoObj.ID); err != nil {
+		return fmt.Errorf("evicting repository: %w", err)
+	}
+	_, _ = lipgloss.Println(successStyle.Render("Evicted mirror " + repo))
+	return nil
 }
 
 func runImageList(ctx context.Context, configPath string) error {

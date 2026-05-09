@@ -94,6 +94,38 @@ func (p *APPublisher) Publish(ctx context.Context, activityType string, object a
 	return p.createAndDeliver(ctx, activityType, object)
 }
 
+func (p *APPublisher) PublishManifestDelete(ctx context.Context, repo, digest string) error {
+	objectID := p.objectURL("manifest", digest)
+
+	object := OCIManifest{
+		Context:      ociContext(),
+		Type:         TypeOCIManifest,
+		ID:           objectID,
+		AttributedTo: p.identity.ActorURL,
+		Published:    NowRFC3339(),
+		Repository:   repo,
+		Digest:       digest,
+	}
+
+	return p.createAndDeliver(ctx, ActivityDelete, object)
+}
+
+func (p *APPublisher) PublishTagDelete(ctx context.Context, repo, tag string) error {
+	objectID := p.objectURL("tag", repo+"/"+tag)
+
+	object := OCITag{
+		Context:      ociContext(),
+		Type:         TypeOCITag,
+		ID:           objectID,
+		AttributedTo: p.identity.ActorURL,
+		Published:    NowRFC3339(),
+		Repository:   repo,
+		Tag:          tag,
+	}
+
+	return p.createAndDeliver(ctx, ActivityDelete, object)
+}
+
 func (p *APPublisher) PublishBlobRef(ctx context.Context, digest string, size int64) error {
 	objectID := p.objectURL("blob", digest)
 

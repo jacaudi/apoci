@@ -10,6 +10,7 @@ import (
 
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/admin"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/database"
+	"git.erwanleboucher.dev/eleboucher/apoci/internal/validate"
 )
 
 const adminMaxBody int64 = 4 * 1024 // 4 KB
@@ -28,6 +29,7 @@ func (s *Server) adminRouter() http.Handler {
 	r.Post("/follows/accept", s.adminAcceptFollow)
 	r.Post("/follows/reject", s.adminRejectFollow)
 	r.Delete("/follows", s.adminRemoveFollow)
+	r.Delete("/mirrors/*", s.adminEvictMirror)
 
 	return r
 }
@@ -220,6 +222,58 @@ func (s *Server) adminRemoveFollow(w http.ResponseWriter, r *http.Request) {
 	s.logger.Debug("admin: DELETE /follows done", "actorURL", actorURL)
 
 	writeJSON(w, map[string]string{"removed": actorURL})
+}
+
+func (s *Server) adminEvictMirror(w http.ResponseWriter, r *http.Request) {
+	repo := chi.URLParam(r, "*")
+	if repo == "" {
+		http.Error(w, "missing repository", http.StatusBadRequest)
+		return
+	}
+	if err := validate.RepoName(repo); err != nil {
+		http.Error(w, "invalid repository name", http.StatusBadRequest)
+		return
+	}
+	digest := r.URL.Query().Get("digest")
+	if digest != "" {
+		if err := validate.Digest(digest); err != nil {
+			http.Error(w, "invalid digest", http.StatusBadRequest)
+			return
+		}
+	}
+	s.logger.Debug("admin: DELETE /mirrors", "repo", repo, "digest", digest)
+
+	repoObj, err := s.db.GetRepository(r.Context(), repo)
+	if err != nil {
+		s.logger.Error("looking up repo for eviction", "repo", repo, "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if repoObj == nil {
+		http.Error(w, "repository not found", http.StatusNotFound)
+		return
+	}
+	if repoObj.OwnerID == s.identity.ActorURL {
+		http.Error(w, "repository is locally owned; use the /v2/ delete API to remove it", http.StatusBadRequest)
+		return
+	}
+
+	if digest != "" {
+		if err := s.db.DeleteManifest(r.Context(), repoObj.ID, digest); err != nil {
+			s.logger.Error("evicting mirror manifest", "repo", repo, "digest", digest, "error", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, map[string]string{"evicted": repo, "digest": digest})
+		return
+	}
+
+	if err := s.db.DeleteRepository(r.Context(), repoObj.ID); err != nil {
+		s.logger.Error("evicting mirror repository", "repo", repo, "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]string{"evicted": repo})
 }
 
 // classifyError maps service errors to HTTP status codes.
