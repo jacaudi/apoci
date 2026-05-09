@@ -38,6 +38,7 @@ type Server struct {
 	registry            *oci.Registry
 	workers             *workers.Workers
 	deliveryQueue       *activitypub.DeliveryQueue
+	gc                  *peering.GarbageCollector
 	ociHandler          http.Handler
 	actorHandler        http.Handler
 	webfingerHandler    http.Handler
@@ -258,6 +259,7 @@ func New(cfg *config.Config, db *database.DB, blobs blobstore.BlobStore, identit
 			Logger:   logger,
 		},
 		registry:            registry,
+		gc:                  gc,
 		packageBackends:     packageBackends,
 		workers:             w,
 		ociHandler:          registry.Handler(),

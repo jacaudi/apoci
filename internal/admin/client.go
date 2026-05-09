@@ -96,6 +96,11 @@ func (c *Client) RemoveFollow(ctx context.Context, target string, force bool) (m
 	return out, c.do(ctx, http.MethodDelete, "/follows", body, &out)
 }
 
+func (c *Client) RunGC(ctx context.Context) (map[string]string, error) {
+	var out map[string]string
+	return out, c.post(ctx, "/gc", nil, &out)
+}
+
 func (c *Client) EvictMirror(ctx context.Context, repo, digest string) (map[string]string, error) {
 	var out map[string]string
 	path := "/mirrors/" + repo

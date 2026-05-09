@@ -30,6 +30,7 @@ func (s *Server) adminRouter() http.Handler {
 	r.Post("/follows/reject", s.adminRejectFollow)
 	r.Delete("/follows", s.adminRemoveFollow)
 	r.Delete("/mirrors/*", s.adminEvictMirror)
+	r.Post("/gc", s.adminRunGC)
 
 	return r
 }
@@ -274,6 +275,12 @@ func (s *Server) adminEvictMirror(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]string{"evicted": repo})
+}
+
+func (s *Server) adminRunGC(w http.ResponseWriter, r *http.Request) {
+	s.logger.Debug("admin: POST /gc")
+	s.gc.RunOnce(r.Context())
+	writeJSON(w, map[string]string{"status": "ok"})
 }
 
 // classifyError maps service errors to HTTP status codes.

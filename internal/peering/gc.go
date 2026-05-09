@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"codeberg.org/gruf/go-runners"
@@ -39,6 +40,7 @@ type GarbageCollector struct {
 	notifier Notifier
 	logger   *slog.Logger
 	service  runners.Service
+	mu       sync.Mutex
 }
 
 func NewGarbageCollector(cfg GCConfig, db GCRepository, blobs blobstore.BlobStore, notifier Notifier, logger *slog.Logger) *GarbageCollector {
@@ -63,6 +65,10 @@ func (gc *GarbageCollector) Stop() {
 	gc.service.Stop()
 }
 
+func (gc *GarbageCollector) RunOnce(ctx context.Context) {
+	gc.collect(ctx)
+}
+
 func (gc *GarbageCollector) run(parentCtx, svcCtx context.Context) {
 	// Run once shortly after startup.
 	timer := time.NewTimer(time.Minute)
@@ -84,6 +90,9 @@ func (gc *GarbageCollector) run(parentCtx, svcCtx context.Context) {
 const deletedManifestRetention = 30 * 24 * time.Hour
 
 func (gc *GarbageCollector) collect(ctx context.Context) {
+	gc.mu.Lock()
+	defer gc.mu.Unlock()
+
 	gc.logger.Info("starting garbage collection cycle")
 
 	gc.cleanupStalePeerBlobs(ctx)

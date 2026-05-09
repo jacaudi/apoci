@@ -1173,6 +1173,48 @@ func TestAdminEvictMirrorNotFound(t *testing.T) {
 	require.Equal(t, http.StatusNotFound, resp.StatusCode)
 }
 
+func TestAdminRunGCRemovesOrphanMetadata(t *testing.T) {
+	s := testServerWithMock(t, &mockAPFederator{})
+	s.cfg.RegistryToken = testToken
+	s.cfg.AdminToken = testToken
+	ctx := context.Background()
+
+	const orphanDigest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	require.NoError(t, s.db.PutBlob(ctx, orphanDigest, 42, nil, false))
+
+	got, err := s.db.GetBlob(ctx, orphanDigest)
+	require.NoError(t, err)
+	require.NotNil(t, got, "orphan metadata should be present before GC")
+
+	srv := httptest.NewServer(s.routes())
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/admin/gc", nil)
+	req.Header.Set("Authorization", "Bearer test-token")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	got, err = s.db.GetBlob(ctx, orphanDigest)
+	require.NoError(t, err)
+	require.Nil(t, got, "orphan metadata should be removed by GC")
+}
+
+func TestAdminRunGCRequiresAuth(t *testing.T) {
+	s := testServerWithMock(t, &mockAPFederator{})
+	s.cfg.RegistryToken = testToken
+	s.cfg.AdminToken = testToken
+	srv := httptest.NewServer(s.routes())
+	defer srv.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, srv.URL+"/api/admin/gc", nil)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
 func TestAdminEvictMirrorRequiresAuth(t *testing.T) {
 	s := testServerWithMock(t, &mockAPFederator{})
 	s.cfg.RegistryToken = testToken

@@ -23,6 +23,8 @@ import (
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/config"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/database"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/federation"
+	"git.erwanleboucher.dev/eleboucher/apoci/internal/notify"
+	"git.erwanleboucher.dev/eleboucher/apoci/internal/peering"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/server"
 )
 
@@ -66,6 +68,7 @@ func main() {
 	rootCmd.AddCommand(actorCmd(&configPath))
 	rootCmd.AddCommand(imagesCmd(&configPath))
 	rootCmd.AddCommand(mirrorCmd(&configPath))
+	rootCmd.AddCommand(gcCmd(&configPath))
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
@@ -602,6 +605,65 @@ func mirrorCmd(configPath *string) *cobra.Command {
 	cmd.AddCommand(evictCmd)
 
 	return cmd
+}
+
+func gcCmd(configPath *string) *cobra.Command {
+	var remote, token string
+
+	cmd := &cobra.Command{
+		Use:   "gc",
+		Short: "Manage the garbage collector",
+	}
+
+	cmd.PersistentFlags().StringVar(&remote, "remote", "", "remote instance URL")
+	cmd.PersistentFlags().StringVar(&token, "token", "", "registry token for remote auth")
+
+	cmd.AddCommand(&cobra.Command{
+		Use:   "run",
+		Short: "Run a GC cycle now (synchronous)",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if c := remoteClient(remote, token); c != nil {
+				_, _ = lipgloss.Println(dimStyle.Render("Triggering GC..."))
+				if _, err := c.RunGC(cmd.Context()); err != nil {
+					return err
+				}
+				_, _ = lipgloss.Println(successStyle.Render("GC cycle complete"))
+				return nil
+			}
+			return runGCRun(cmd.Context(), *configPath)
+		},
+	})
+
+	return cmd
+}
+
+func runGCRun(ctx context.Context, configPath string) error {
+	logger := cliLogger()
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+	db, err := openDB(cfg, logger)
+	if err != nil {
+		return fmt.Errorf("opening database: %w", err)
+	}
+	defer func() { _ = db.Close() }()
+	blobs, err := openBlobStore(cfg, logger)
+	if err != nil {
+		return fmt.Errorf("opening blobstore: %w", err)
+	}
+
+	notifier := notify.New(cfg.Name, nil, nil, logger)
+	gc := peering.NewGarbageCollector(peering.GCConfig{
+		Interval:         cfg.GC.Interval,
+		StalePeerBlobAge: cfg.GC.StalePeerBlobAge,
+		OrphanBatchSize:  cfg.GC.OrphanBatchSize,
+	}, db, blobs, notifier, logger)
+
+	_, _ = lipgloss.Println(dimStyle.Render("Running GC..."))
+	gc.RunOnce(ctx)
+	_, _ = lipgloss.Println(successStyle.Render("GC cycle complete"))
+	return nil
 }
 
 func runMirrorEvict(ctx context.Context, configPath, repo, digest string) error {
