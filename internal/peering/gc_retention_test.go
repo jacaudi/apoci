@@ -215,6 +215,69 @@ func TestPruneUntaggedManifestsGC_FederatesDelete(t *testing.T) {
 	require.Nil(t, gone)
 }
 
+func TestGCFullPipeline(t *testing.T) {
+	db, blobs := testGCDeps(t)
+	ctx := context.Background()
+
+	pkg, err := db.GetOrCreatePackage(ctx, "oci", "foo.com/full", testActor)
+	require.NoError(t, err)
+
+	digest, _, err := blobs.Put(ctx, strings.NewReader("layer payload"), "")
+	require.NoError(t, err)
+	require.NoError(t, db.PutBlob(ctx, digest, 13, nil, true))
+
+	v := &database.PackageVersion{PackageID: pkg.ID, Version: "sha256:m1", Metadata: []byte(`{}`)}
+	require.NoError(t, db.PutPackageVersion(ctx, v))
+	require.NoError(t, db.PutManifestLayers(ctx, v.ID, []database.BlobRef{{Digest: digest, Size: 13}}))
+	require.NoError(t, db.PutPackageTag(ctx, pkg.ID, "old", v.Version, false))
+
+	_, err = db.ExecContext(ctx,
+		"UPDATE package_tags SET updated_at = ? WHERE package_id = ?",
+		time.Now().Add(-48*time.Hour), pkg.ID)
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx,
+		"UPDATE package_versions SET created_at = ? WHERE package_id = ?",
+		time.Now().Add(-48*time.Hour), pkg.ID)
+	require.NoError(t, err)
+	_, err = db.ExecContext(ctx,
+		"UPDATE blobs SET created_at = ? WHERE digest = ?",
+		time.Now().Add(-48*time.Hour), digest)
+	require.NoError(t, err)
+
+	pub := &recordingPublisher{}
+	gc := NewGarbageCollector(GCConfig{
+		Interval:              6 * time.Hour,
+		StalePeerBlobAge:      30 * 24 * time.Hour,
+		OrphanBatchSize:       500,
+		BlobGCGracePeriod:     0,
+		UntaggedManifestAge:   time.Hour,
+		UntaggedBatchSize:     100,
+		RetentionDefaults:     RetentionPolicy{MaxAge: 24 * time.Hour},
+		RetentionTagsPerCycle: 100,
+	}, db, blobs, notify.New("test", nil, nil, nopLog()), nopLog())
+	gc.SetFederationPublisher(pub)
+	gc.RunOnce(ctx)
+
+	tag, err := db.GetPackageTag(ctx, pkg.ID, "old")
+	require.NoError(t, err)
+	require.Nil(t, tag, "retention should remove aged tag")
+
+	pv, err := db.GetPackageVersion(ctx, pkg.ID, v.Version)
+	require.NoError(t, err)
+	require.Nil(t, pv, "untagged manifest should be pruned")
+
+	blobMeta, err := db.GetBlob(ctx, digest)
+	require.NoError(t, err)
+	require.Nil(t, blobMeta, "orphan blob row should be removed")
+
+	stillOnDisk, err := blobs.Exists(ctx, digest)
+	require.NoError(t, err)
+	require.False(t, stillOnDisk, "orphan blob file should be removed")
+
+	require.Len(t, pub.tagDels, 1)
+	require.Len(t, pub.manDels, 1)
+}
+
 func TestCleanupOrphanedBlobFiles_GraceWindow(t *testing.T) {
 	db, blobs := testGCDeps(t)
 	ctx := context.Background()

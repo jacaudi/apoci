@@ -163,7 +163,7 @@ func TestGCPreservesValidData(t *testing.T) {
 	require.NoError(t, db.PutPackageVersion(ctx, v))
 	localDigest := "sha256:2222222222222222222222222222222222222222222222222222222222222222"
 	require.NoError(t, db.PutBlob(ctx, localDigest, 200, nil, true))
-	require.NoError(t, db.PutBlobReferences(ctx, v.ID, map[string]string{localDigest: localDigest}))
+	require.NoError(t, db.PutBlobReferences(ctx, v.ID, []database.BlobRef{{Digest: localDigest, Size: 200}}))
 
 	orphans, err := db.OrphanedBlobs(ctx, 100, time.Time{})
 	require.NoError(t, err)

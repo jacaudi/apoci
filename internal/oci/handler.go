@@ -49,7 +49,7 @@ type RegistryRepository interface {
 	IsManifestDeleted(ctx context.Context, digest string) (bool, error)
 	RecordDeletedManifest(ctx context.Context, digest, repoName, sourceActor string) error
 	ListManifestsBySubject(ctx context.Context, repoID int64, subjectDigest string) ([]database.Manifest, error)
-	PutManifestLayers(ctx context.Context, manifestID int64, layerDigests []string) error
+	PutManifestLayers(ctx context.Context, manifestID int64, refs []database.BlobRef) error
 
 	PutTagWithImmutable(ctx context.Context, repoID int64, tag, digest string, immutable bool) error
 	DeleteTag(ctx context.Context, repoID int64, tag string) error
@@ -494,19 +494,22 @@ func (r *Registry) fetchManifestFromUpstream(ctx context.Context, repo, referenc
 		ArtifactType:  meta.artifactType,
 	}
 	if err := r.db.PutManifest(ctx, m); err != nil {
-		r.logger.Warn("failed to cache upstream manifest", "error", err)
+		return nil, fmt.Errorf("caching upstream manifest: %w", err)
 	}
 
-	if len(meta.layerDigests) > 0 {
+	if len(meta.layers) > 0 {
 		storedMan, err := r.db.GetManifestByDigest(ctx, repoObj.ID, computed)
-		if err == nil && storedMan != nil {
-			if err := r.db.PutManifestLayers(ctx, storedMan.ID, meta.layerDigests); err != nil {
-				r.logger.Warn("failed to record upstream manifest layers", "error", err)
-			}
+		if err != nil {
+			return nil, fmt.Errorf("loading cached manifest: %w", err)
+		}
+		if storedMan == nil {
+			return nil, fmt.Errorf("cached manifest not found after store")
+		}
+		if err := r.db.PutManifestLayers(ctx, storedMan.ID, meta.layers); err != nil {
+			return nil, fmt.Errorf("recording upstream manifest layers: %w", err)
 		}
 	}
 
-	// If reference was a tag (not a digest), store the tag mapping
 	if !refIsDigest {
 		if err := r.db.PutTagWithImmutable(ctx, repoObj.ID, reference, computed, false); err != nil {
 			r.logger.Warn("failed to cache upstream tag", "tag", reference, "error", err)
@@ -1111,16 +1114,16 @@ func (r *Registry) pushManifest(ctx context.Context, repo string, tag string, co
 
 	// Verify all referenced blobs exist locally before accepting the manifest.
 	// Only check well-formed digests to avoid rejecting manifests with placeholder references.
-	for _, blobDigest := range meta.layerDigests {
-		if validate.Digest(blobDigest) != nil {
+	for _, ref := range meta.layers {
+		if validate.Digest(ref.Digest) != nil {
 			continue
 		}
-		blob, err := r.db.GetBlob(ctx, blobDigest)
+		blob, err := r.db.GetBlob(ctx, ref.Digest)
 		if err != nil {
-			return ociregistry.Descriptor{}, fmt.Errorf("checking blob %s: %w", blobDigest, err)
+			return ociregistry.Descriptor{}, fmt.Errorf("checking blob %s: %w", ref.Digest, err)
 		}
 		if blob == nil || !blob.StoredLocally {
-			return ociregistry.Descriptor{}, fmt.Errorf("%w: referenced blob %s not found", ociregistry.ErrBlobUnknown, blobDigest)
+			return ociregistry.Descriptor{}, fmt.Errorf("%w: referenced blob %s not found", ociregistry.ErrBlobUnknown, ref.Digest)
 		}
 	}
 
@@ -1138,6 +1141,20 @@ func (r *Registry) pushManifest(ctx context.Context, repo string, tag string, co
 		return ociregistry.Descriptor{}, fmt.Errorf("storing manifest: %w", err)
 	}
 
+	// Layers before tag: a tag write may set immutable=true, blocking retry.
+	if len(meta.layers) > 0 {
+		man, err := r.db.GetManifestByDigest(ctx, repoObj.ID, digest)
+		if err != nil {
+			return ociregistry.Descriptor{}, fmt.Errorf("loading stored manifest: %w", err)
+		}
+		if man == nil {
+			return ociregistry.Descriptor{}, fmt.Errorf("manifest not found after storing")
+		}
+		if err := r.db.PutManifestLayers(ctx, man.ID, meta.layers); err != nil {
+			return ociregistry.Descriptor{}, fmt.Errorf("recording manifest layers: %w", err)
+		}
+	}
+
 	if tag != "" {
 		immutable := r.immutableTagRe != nil && r.immutableTagRe.MatchString(tag)
 		if err := r.db.PutTagWithImmutable(ctx, repoObj.ID, tag, digest, immutable); err != nil {
@@ -1145,15 +1162,6 @@ func (r *Registry) pushManifest(ctx context.Context, repo string, tag string, co
 				return ociregistry.Descriptor{}, fmt.Errorf("%w: tag %q is immutable", ociregistry.ErrDenied, tag)
 			}
 			return ociregistry.Descriptor{}, fmt.Errorf("storing tag: %w", err)
-		}
-	}
-
-	if len(meta.layerDigests) > 0 {
-		man, err := r.db.GetManifestByDigest(ctx, repoObj.ID, digest)
-		if err == nil && man != nil {
-			if err := r.db.PutManifestLayers(ctx, man.ID, meta.layerDigests); err != nil {
-				r.logger.Warn("failed to record manifest layers", "digest", digest, "error", err)
-			}
 		}
 	}
 
@@ -1362,7 +1370,7 @@ func (r *Registry) referrers(ctx context.Context, repo string, digest ociregistr
 }
 
 type manifestMeta struct {
-	layerDigests  []string
+	layers        []database.BlobRef
 	subjectDigest *string
 	artifactType  *string
 }
@@ -1383,13 +1391,24 @@ func parseManifestMeta(content []byte, logger *slog.Logger) manifestMeta {
 
 	var meta manifestMeta
 
-	if parsed.Config.Digest != "" {
-		meta.layerDigests = append(meta.layerDigests, string(parsed.Config.Digest))
-	}
-	for _, layer := range parsed.Layers {
-		if layer.Digest != "" {
-			meta.layerDigests = append(meta.layerDigests, string(layer.Digest))
+	addRef := func(d ocispec.Descriptor) {
+		if d.Digest == "" {
+			return
 		}
+		var mt *string
+		if d.MediaType != "" {
+			s := d.MediaType
+			mt = &s
+		}
+		meta.layers = append(meta.layers, database.BlobRef{
+			Digest:    string(d.Digest),
+			Size:      d.Size,
+			MediaType: mt,
+		})
+	}
+	addRef(parsed.Config)
+	for _, layer := range parsed.Layers {
+		addRef(layer)
 	}
 
 	if parsed.Subject != nil && parsed.Subject.Digest != "" {

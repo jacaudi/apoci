@@ -283,10 +283,14 @@ func (db *DB) PutPackageFile(ctx context.Context, f *PackageFile) error {
 	return nil
 }
 
-// PutBlobReferences attaches existing blobs to a version, inheriting the
-// size and content type from the blobs table.
-func (db *DB) PutBlobReferences(ctx context.Context, versionID int64, filenameByDigest map[string]string) error {
-	if len(filenameByDigest) == 0 {
+type BlobRef struct {
+	Digest    string
+	Size      int64
+	MediaType *string
+}
+
+func (db *DB) PutBlobReferences(ctx context.Context, versionID int64, refs []BlobRef) error {
+	if len(refs) == 0 {
 		return nil
 	}
 	tx, err := db.bun.BeginTx(ctx, nil)
@@ -295,15 +299,19 @@ func (db *DB) PutBlobReferences(ctx context.Context, versionID int64, filenameBy
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	for digest, filename := range filenameByDigest {
+	for _, r := range refs {
+		if r.Digest == "" {
+			continue
+		}
 		if _, err := tx.NewRaw(
 			`INSERT INTO package_files (version_id, filename, blob_digest, size_bytes, content_type)
-			 SELECT ?, ?, b.digest, b.size_bytes, b.media_type
-			 FROM blobs b WHERE b.digest = ?
-			 ON CONFLICT (version_id, filename) DO NOTHING`,
-			versionID, filename, digest,
+			 VALUES (?, ?, ?, ?, ?)
+			 ON CONFLICT (version_id, filename) DO UPDATE SET
+			   size_bytes = CASE WHEN excluded.size_bytes > 0 THEN excluded.size_bytes ELSE package_files.size_bytes END,
+			   content_type = COALESCE(excluded.content_type, package_files.content_type)`,
+			versionID, r.Digest, r.Digest, r.Size, r.MediaType,
 		).Exec(ctx); err != nil {
-			return fmt.Errorf("inserting blob reference %s: %w", digest, err)
+			return fmt.Errorf("inserting blob reference %s: %w", r.Digest, err)
 		}
 	}
 	return tx.Commit()
@@ -616,14 +624,7 @@ func (db *DB) DeleteRepository(ctx context.Context, repoID int64) error {
 	return db.DeletePackage(ctx, repoID)
 }
 
-func (db *DB) PutManifestLayers(ctx context.Context, manifestID int64, blobDigests []string) error {
-	if len(blobDigests) == 0 {
-		return nil
-	}
-	refs := make(map[string]string, len(blobDigests))
-	for _, d := range blobDigests {
-		refs[d] = d
-	}
+func (db *DB) PutManifestLayers(ctx context.Context, manifestID int64, refs []BlobRef) error {
 	return db.PutBlobReferences(ctx, manifestID, refs)
 }
 

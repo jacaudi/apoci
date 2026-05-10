@@ -442,7 +442,10 @@ func TestManifestLayers(t *testing.T) {
 
 	require.NoError(t, db.PutBlob(ctx, testLayerDigest, 100, nil, true))
 	require.NoError(t, db.PutBlob(ctx, testLayerDigest2, 200, nil, true))
-	require.NoError(t, db.PutManifestLayers(ctx, got.ID, []string{testLayerDigest, testLayerDigest2}))
+	require.NoError(t, db.PutManifestLayers(ctx, got.ID, []BlobRef{
+		{Digest: testLayerDigest, Size: 100},
+		{Digest: testLayerDigest2, Size: 200},
+	}))
 
 	files, err := db.ListPackageFiles(ctx, got.ID)
 	require.NoError(t, err)
@@ -596,7 +599,7 @@ func TestBlobExistsInRepo(t *testing.T) {
 	}
 	require.NoError(t, db.PutManifest(ctx, m))
 	got, _ := db.GetManifestByDigest(ctx, repo.ID, "sha256:manifest-scoped")
-	require.NoError(t, db.PutManifestLayers(ctx, got.ID, []string{"sha256:scoped1"}))
+	require.NoError(t, db.PutManifestLayers(ctx, got.ID, []BlobRef{{Digest: "sha256:scoped1", Size: 1}}))
 
 	// Blob exists in the repo that references it.
 	exists, err := db.BlobExistsInRepo(ctx, "test/scoped", "sha256:scoped1")

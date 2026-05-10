@@ -424,9 +424,9 @@ func TestPutBlobReferences(t *testing.T) {
 	require.NoError(t, db.PutBlob(ctx, "sha256:layerA", 1024, &mt, true))
 	require.NoError(t, db.PutBlob(ctx, "sha256:layerB", 2048, &mt, true))
 
-	require.NoError(t, db.PutBlobReferences(ctx, v.ID, map[string]string{
-		"sha256:layerA": "sha256:layerA",
-		"sha256:layerB": "sha256:layerB",
+	require.NoError(t, db.PutBlobReferences(ctx, v.ID, []BlobRef{
+		{Digest: "sha256:layerA", Size: 1024, MediaType: &mt},
+		{Digest: "sha256:layerB", Size: 2048, MediaType: &mt},
 	}))
 
 	files, err := db.ListPackageFiles(ctx, v.ID)
@@ -437,6 +437,54 @@ func TestPutBlobReferences(t *testing.T) {
 		require.NotNil(t, f.ContentType)
 		require.Equal(t, mt, *f.ContentType)
 	}
+}
+
+func TestPutBlobReferences_BlobRowMissing(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+
+	pkg, err := db.GetOrCreatePackage(ctx, "oci", "foo.com/preblob", testAliceActor)
+	require.NoError(t, err)
+	v := &PackageVersion{PackageID: pkg.ID, Version: "sha256:mfst", Metadata: []byte(`{}`)}
+	require.NoError(t, db.PutPackageVersion(ctx, v))
+
+	mt := testLayerMediaType
+	require.NoError(t, db.PutBlobReferences(ctx, v.ID, []BlobRef{
+		{Digest: "sha256:notyet", Size: 4096, MediaType: &mt},
+	}))
+
+	files, err := db.ListPackageFiles(ctx, v.ID)
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+	require.Equal(t, "sha256:notyet", files[0].BlobDigest)
+	require.Equal(t, int64(4096), files[0].SizeBytes)
+	require.NotNil(t, files[0].ContentType)
+	require.Equal(t, mt, *files[0].ContentType)
+}
+
+func TestPutBlobReferences_UpsertRefreshesSize(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+
+	pkg, err := db.GetOrCreatePackage(ctx, "oci", "foo.com/upsert", testAliceActor)
+	require.NoError(t, err)
+	v := &PackageVersion{PackageID: pkg.ID, Version: "sha256:up", Metadata: []byte(`{}`)}
+	require.NoError(t, db.PutPackageVersion(ctx, v))
+
+	mt := testLayerMediaType
+	require.NoError(t, db.PutBlobReferences(ctx, v.ID, []BlobRef{
+		{Digest: "sha256:l", Size: 0, MediaType: &mt},
+	}))
+	require.NoError(t, db.PutBlobReferences(ctx, v.ID, []BlobRef{
+		{Digest: "sha256:l", Size: 9999, MediaType: nil},
+	}))
+
+	files, err := db.ListPackageFiles(ctx, v.ID)
+	require.NoError(t, err)
+	require.Len(t, files, 1)
+	require.Equal(t, int64(9999), files[0].SizeBytes)
+	require.NotNil(t, files[0].ContentType)
+	require.Equal(t, mt, *files[0].ContentType)
 }
 
 func TestLegacyRepositoryTranslation(t *testing.T) {
@@ -545,7 +593,10 @@ func TestLegacyManifestLayers(t *testing.T) {
 	require.NoError(t, db.PutBlob(ctx, testLayerDigest, 500, &mt, true))
 	require.NoError(t, db.PutBlob(ctx, testLayerDigest2, 600, &mt, true))
 
-	require.NoError(t, db.PutManifestLayers(ctx, m.ID, []string{testLayerDigest, testLayerDigest2}))
+	require.NoError(t, db.PutManifestLayers(ctx, m.ID, []BlobRef{
+		{Digest: testLayerDigest, Size: 500, MediaType: &mt},
+		{Digest: testLayerDigest2, Size: 600, MediaType: &mt},
+	}))
 
 	exists, err := db.BlobExistsInRepo(ctx, "foo.com/layers", testLayerDigest)
 	require.NoError(t, err)
@@ -622,7 +673,7 @@ func TestListLocallyHostedRepos(t *testing.T) {
 	v := &PackageVersion{PackageID: repo.ID, Version: testDigestABC, Metadata: []byte(`{}`)}
 	require.NoError(t, db.PutPackageVersion(ctx, v))
 	require.NoError(t, db.PutBlob(ctx, testLayerDigest, 2048, &mt, true))
-	require.NoError(t, db.PutBlobReferences(ctx, v.ID, map[string]string{testLayerDigest: testLayerDigest}))
+	require.NoError(t, db.PutBlobReferences(ctx, v.ID, []BlobRef{{Digest: testLayerDigest, Size: 2048, MediaType: &mt}}))
 	require.NoError(t, db.PutPackageTag(ctx, repo.ID, testTagLatest, v.Version, false))
 
 	repos, err := db.ListLocallyHostedRepos(ctx)
@@ -637,7 +688,7 @@ func TestListLocallyHostedRepos(t *testing.T) {
 	v2 := &PackageVersion{PackageID: repo2.ID, Version: "sha256:def", Metadata: []byte(`{}`)}
 	require.NoError(t, db.PutPackageVersion(ctx, v2))
 	require.NoError(t, db.PutBlob(ctx, testLayerDigest2, 1024*1024, &mt, true))
-	require.NoError(t, db.PutBlobReferences(ctx, v2.ID, map[string]string{testLayerDigest2: testLayerDigest2}))
+	require.NoError(t, db.PutBlobReferences(ctx, v2.ID, []BlobRef{{Digest: testLayerDigest2, Size: 1024 * 1024, MediaType: &mt}}))
 
 	repos, err = db.ListLocallyHostedRepos(ctx)
 	require.NoError(t, err)
@@ -651,7 +702,7 @@ func TestListLocallyHostedRepos(t *testing.T) {
 	v3 := &PackageVersion{PackageID: repo3.ID, Version: "sha256:ghi", Metadata: []byte(`{}`)}
 	require.NoError(t, db.PutPackageVersion(ctx, v3))
 	require.NoError(t, db.PutBlob(ctx, "sha256:remote", 512, &mt, false))
-	require.NoError(t, db.PutBlobReferences(ctx, v3.ID, map[string]string{"sha256:remote": "sha256:remote"}))
+	require.NoError(t, db.PutBlobReferences(ctx, v3.ID, []BlobRef{{Digest: "sha256:remote", Size: 512, MediaType: &mt}}))
 
 	repos, err = db.ListLocallyHostedRepos(ctx)
 	require.NoError(t, err)
@@ -662,7 +713,7 @@ func TestListLocallyHostedRepos(t *testing.T) {
 	npmV := &PackageVersion{PackageID: npmPkg.ID, Version: testVersion100, Metadata: []byte(`{}`)}
 	require.NoError(t, db.PutPackageVersion(ctx, npmV))
 	require.NoError(t, db.PutBlob(ctx, "sha256:npmblob", 100, &mt, true))
-	require.NoError(t, db.PutBlobReferences(ctx, npmV.ID, map[string]string{"sha256:npmblob": "sha256:npmblob"}))
+	require.NoError(t, db.PutBlobReferences(ctx, npmV.ID, []BlobRef{{Digest: "sha256:npmblob", Size: 100, MediaType: &mt}}))
 
 	repos, err = db.ListLocallyHostedRepos(ctx)
 	require.NoError(t, err)

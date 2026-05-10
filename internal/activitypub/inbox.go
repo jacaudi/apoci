@@ -40,7 +40,7 @@ type InboxRepository interface {
 	IsRepositoryOwner(ctx context.Context, repoID int64, did string) (bool, error)
 	PutManifest(ctx context.Context, m *database.Manifest) error
 	GetManifestByDigest(ctx context.Context, repoID int64, digest string) (*database.Manifest, error)
-	PutManifestLayers(ctx context.Context, manifestID int64, blobDigests []string) error
+	PutManifestLayers(ctx context.Context, manifestID int64, refs []database.BlobRef) error
 	DeleteManifest(ctx context.Context, repoID int64, digest string) error
 	RecordDeletedManifest(ctx context.Context, digest, repoName, sourceActor string) error
 	PutTag(ctx context.Context, repoID int64, name, manifestDigest string) error

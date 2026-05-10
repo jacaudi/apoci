@@ -436,8 +436,8 @@ func (h *InboxHandler) recordLayersAndReplicate(ctx context.Context, content []b
 	if content == nil {
 		return
 	}
-	layerDigests := extractLayerDigests(content)
-	if len(layerDigests) == 0 {
+	refs := extractLayerRefs(content)
+	if len(refs) == 0 {
 		return
 	}
 
@@ -449,48 +449,57 @@ func (h *InboxHandler) recordLayersAndReplicate(ctx context.Context, content []b
 	if man == nil {
 		return
 	}
-	if err := h.db.PutManifestLayers(ctx, man.ID, layerDigests); err != nil {
+	if err := h.db.PutManifestLayers(ctx, man.ID, refs); err != nil {
 		h.logger.Warn("inbox: failed to record manifest layers", "digest", digest, "error", err)
 	}
 
 	if h.blobReplicator == nil {
 		return
 	}
-	for _, ld := range layerDigests {
-		peers, err := h.db.FindPeersWithBlob(ctx, ld)
+	for _, r := range refs {
+		peers, err := h.db.FindPeersWithBlob(ctx, r.Digest)
 		if err != nil || len(peers) == 0 {
 			continue
 		}
-		blob, err := h.db.GetBlob(ctx, ld)
+		blob, err := h.db.GetBlob(ctx, r.Digest)
 		if err != nil || blob == nil || blob.StoredLocally {
 			continue
 		}
-		h.blobReplicator.ReplicateBlob(ctx, peers[0].PeerEndpoint, ld, blob.SizeBytes)
+		h.blobReplicator.ReplicateBlob(ctx, peers[0].PeerEndpoint, r.Digest, blob.SizeBytes)
 	}
 }
 
-// extractLayerDigests parses an OCI manifest and returns all referenced digests
-// (config + layers) for recording in manifest_layers.
-func extractLayerDigests(content []byte) []string {
+func extractLayerRefs(content []byte) []database.BlobRef {
 	var parsed struct {
 		Config struct {
-			Digest string `json:"digest"`
+			Digest    string `json:"digest"`
+			Size      int64  `json:"size"`
+			MediaType string `json:"mediaType"`
 		} `json:"config"`
 		Layers []struct {
-			Digest string `json:"digest"`
+			Digest    string `json:"digest"`
+			Size      int64  `json:"size"`
+			MediaType string `json:"mediaType"`
 		} `json:"layers"`
 	}
 	if err := json.Unmarshal(content, &parsed); err != nil {
 		return nil
 	}
-	var digests []string
-	if parsed.Config.Digest != "" {
-		digests = append(digests, parsed.Config.Digest)
-	}
-	for _, l := range parsed.Layers {
-		if l.Digest != "" {
-			digests = append(digests, l.Digest)
+	var refs []database.BlobRef
+	addRef := func(digest, mediaType string, size int64) {
+		if digest == "" {
+			return
 		}
+		var mt *string
+		if mediaType != "" {
+			s := mediaType
+			mt = &s
+		}
+		refs = append(refs, database.BlobRef{Digest: digest, Size: size, MediaType: mt})
 	}
-	return digests
+	addRef(parsed.Config.Digest, parsed.Config.MediaType, parsed.Config.Size)
+	for _, l := range parsed.Layers {
+		addRef(l.Digest, l.MediaType, l.Size)
+	}
+	return refs
 }
