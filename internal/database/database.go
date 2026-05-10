@@ -113,13 +113,24 @@ func (db *DB) Close() error {
 	return db.bun.Close()
 }
 
-// tableExists checks if a table exists in the database.
 func (db *DB) tableExists(ctx context.Context, tableName string) bool {
-	exists, _ := db.bun.NewSelect().
-		TableExpr(tableName).
-		Limit(1).
-		Exists(ctx)
-	return exists
+	var n int
+	if _, isPostgres := db.bun.Dialect().(*pgdialect.Dialect); isPostgres {
+		if err := db.bun.NewRaw(
+			"SELECT COUNT(*) FROM information_schema.tables WHERE table_name = ?",
+			tableName,
+		).Scan(ctx, &n); err != nil {
+			return false
+		}
+		return n > 0
+	}
+	if err := db.bun.NewRaw(
+		"SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?",
+		tableName,
+	).Scan(ctx, &n); err != nil {
+		return false
+	}
+	return n > 0
 }
 
 func (db *DB) migrate(ctx context.Context) error {
@@ -403,16 +414,20 @@ func (db *DB) dropV5OCITables(ctx context.Context) error {
 	return nil
 }
 
-// resetV6PostgresSequences advances auto-increment sequences past the
-// preserved IDs (Postgres doesn't update them on explicit-id inserts; SQLite does).
+// resetV6PostgresSequences advances auto-increment sequences past preserved
+// IDs (Postgres doesn't update them on explicit-id inserts; SQLite does).
 func (db *DB) resetV6PostgresSequences(ctx context.Context) error {
 	tables := []string{"packages", "package_versions", "package_files", "package_tags", "deleted_versions"}
 	for _, t := range tables {
-		stmt := fmt.Sprintf(
-			`SELECT setval(pg_get_serial_sequence('%s', 'id'), GREATEST(COALESCE((SELECT MAX(id) FROM %s), 0), 1))`,
-			t, t,
-		)
-		if _, err := db.bun.ExecContext(ctx, stmt); err != nil {
+		var maxID int64
+		if err := db.bun.NewRaw(fmt.Sprintf("SELECT COALESCE(MAX(id), 0) FROM %s", t)).Scan(ctx, &maxID); err != nil {
+			return fmt.Errorf("reading max id from %s: %w", t, err)
+		}
+		if maxID == 0 {
+			continue
+		}
+		stmt := fmt.Sprintf(`SELECT setval(pg_get_serial_sequence('%s', 'id'), ?)`, t)
+		if _, err := db.bun.ExecContext(ctx, stmt, maxID); err != nil {
 			return fmt.Errorf("setval on %s: %w", t, err)
 		}
 	}
@@ -430,28 +445,10 @@ func isMissingTableErr(err error) bool {
 }
 
 func (db *DB) migrateV4(ctx context.Context) error {
-	if _, ok := db.bun.Dialect().(*pgdialect.Dialect); ok {
-		_, err := db.bun.ExecContext(ctx,
-			"ALTER TABLE repositories ADD COLUMN IF NOT EXISTS private BOOLEAN NOT NULL DEFAULT FALSE")
-		if err != nil {
-			return fmt.Errorf("adding private column: %w", err)
-		}
+	if !db.tableExists(ctx, "repositories") {
 		return nil
 	}
-	var count int
-	if err := db.bun.NewRaw(
-		"SELECT COUNT(*) FROM pragma_table_info('repositories') WHERE name = 'private'").
-		Scan(ctx, &count); err != nil {
-		return fmt.Errorf("checking repositories.private column: %w", err)
-	}
-	if count > 0 {
-		return nil // column already exists (fresh database)
-	}
-	if _, err := db.bun.ExecContext(ctx,
-		"ALTER TABLE repositories ADD COLUMN private BOOLEAN NOT NULL DEFAULT FALSE"); err != nil {
-		return fmt.Errorf("adding private column: %w", err)
-	}
-	return nil
+	return db.addColumnIfMissing(ctx, "repositories", "private", "BOOLEAN NOT NULL DEFAULT FALSE")
 }
 
 // migrateV1 creates the legacy OCI tables (dropped in v6) and the shared
@@ -535,6 +532,7 @@ func (db *DB) migrateV1(ctx context.Context) error {
 		"CREATE UNIQUE INDEX IF NOT EXISTS idx_repo_owners_pk ON repository_owners (repository_id, owner_id)",
 		"CREATE UNIQUE INDEX IF NOT EXISTS idx_manifest_layers_pk ON manifest_layers (manifest_id, blob_digest)",
 		"CREATE UNIQUE INDEX IF NOT EXISTS idx_delivery_queue_activity_inbox ON delivery_queue (activity_id, inbox_url)",
+		"CREATE UNIQUE INDEX IF NOT EXISTS idx_actors_actor_url ON actors (actor_url)",
 	}
 	for _, ddl := range compositeConstraints {
 		if _, err := db.bun.ExecContext(ctx, ddl); err != nil {
@@ -551,7 +549,6 @@ func (db *DB) migrateV1(ctx context.Context) error {
 		"CREATE INDEX IF NOT EXISTS idx_actors_is_healthy ON actors (is_healthy)",
 		"CREATE INDEX IF NOT EXISTS idx_upload_sessions_expires ON upload_sessions (expires_at)",
 		"CREATE INDEX IF NOT EXISTS idx_repositories_owner ON repositories (owner_id)",
-		"CREATE INDEX IF NOT EXISTS idx_actors_actor_url ON actors (actor_url)",
 		"CREATE INDEX IF NOT EXISTS idx_actors_they_follow_us ON actors (they_follow_us)",
 		"CREATE INDEX IF NOT EXISTS idx_actors_we_follow_them ON actors (we_follow_them)",
 		"CREATE INDEX IF NOT EXISTS idx_actors_we_follow_status ON actors (we_follow_status)",
@@ -591,20 +588,13 @@ func (db *DB) migrateV3(ctx context.Context) error {
 	return nil
 }
 
-// migrateV2 adds the alias column to follows and follow_requests.
-// Note: follows table was removed in v5, so we skip if it doesn't exist.
 func (db *DB) migrateV2(ctx context.Context) error {
-	stmts := []string{
-		"ALTER TABLE follows ADD COLUMN alias TEXT",
-		"ALTER TABLE follow_requests ADD COLUMN alias TEXT",
-	}
-	for _, ddl := range stmts {
-		if _, err := db.bun.ExecContext(ctx, ddl); err != nil {
-			errMsg := err.Error()
-			if strings.Contains(errMsg, "duplicate column") || strings.Contains(errMsg, "already exists") ||
-				strings.Contains(errMsg, "no such table") {
-				continue
-			}
+	tables := []string{"follows", "follow_requests"}
+	for _, table := range tables {
+		if !db.tableExists(ctx, table) {
+			continue
+		}
+		if err := db.addColumnIfMissing(ctx, table, "alias", "TEXT"); err != nil {
 			return fmt.Errorf("migrateV2: %w", err)
 		}
 	}
