@@ -18,7 +18,7 @@ The activity envelope is generic AS2:
 }
 ```
 
-The `object` payload is backend-specific. Each backend defines its types in `internal/registry/<backend>/federation.go`. The shipped types are listed in the README federation table.
+The `object` payload is backend-specific. Each backend defines its types in `internal/registry/<backend>/federation.go`.
 
 ## Adapter contract
 
