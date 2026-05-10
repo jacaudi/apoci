@@ -138,6 +138,7 @@ func New(cfg *config.Config, db *database.DB, blobs blobstore.BlobStore, identit
 			PinnedGlobs: cfg.GC.Retention.PinnedGlobs,
 		},
 		RetentionPerRepo: toRetentionMap(cfg.GC.Retention.PerRepo),
+		LocalActor:       identity.ActorURL,
 	}, db, blobs, notifier, logger)
 	gc.SetFederationPublisher(apPublisher)
 

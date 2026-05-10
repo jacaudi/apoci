@@ -211,24 +211,10 @@ func (db *DB) migrate(ctx context.Context) error {
 	return nil
 }
 
-// migrateV7 adds retention columns to packages and federation_tag_globs to actors.
-// Idempotent: a fresh DB already gets these columns via v6's CreateTable from
-// the current struct definition.
+// migrateV7 adds federation_tag_globs to actors.
+// Idempotent: skips if the column already exists.
 func (db *DB) migrateV7(ctx context.Context) error {
-	const pkgs = "packages"
-	type colDef struct{ table, column, definition string }
-	cols := []colDef{
-		{pkgs, "retention_keep_last", "INTEGER"},
-		{pkgs, "retention_max_age_seconds", "BIGINT"},
-		{pkgs, "retention_pinned_globs", "TEXT"},
-		{"actors", "federation_tag_globs", "TEXT"},
-	}
-	for _, c := range cols {
-		if err := db.addColumnIfMissing(ctx, c.table, c.column, c.definition); err != nil {
-			return fmt.Errorf("adding %s.%s: %w", c.table, c.column, err)
-		}
-	}
-	return nil
+	return db.addColumnIfMissing(ctx, "actors", "federation_tag_globs", "TEXT")
 }
 
 func (db *DB) addColumnIfMissing(ctx context.Context, table, column, definition string) error {

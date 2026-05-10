@@ -69,7 +69,7 @@ func TestGCCleansOrphanedBlobMetadata(t *testing.T) {
 	orphanDigest := "sha256:0000000000000000000000000000000000000000000000000000000000000001"
 	require.NoError(t, db.PutBlob(ctx, orphanDigest, 100, nil, false))
 
-	digests, err := db.OrphanedBlobs(ctx, 100)
+	digests, err := db.OrphanedBlobs(ctx, 100, time.Time{})
 	require.NoError(t, err)
 	require.Len(t, digests, 1)
 	require.Equal(t, orphanDigest, digests[0])
@@ -79,6 +79,37 @@ func TestGCCleansOrphanedBlobMetadata(t *testing.T) {
 	blob, err := db.GetBlob(ctx, orphanDigest)
 	require.NoError(t, err)
 	require.Nil(t, blob, "expected orphaned blob metadata to be removed")
+}
+
+func TestOrphanedBlobs_LocallyStoredWithoutReferences(t *testing.T) {
+	db, _ := testGCDeps(t)
+	ctx := context.Background()
+
+	// stored_locally=true with no manifest or peer reference: was the bug we fixed.
+	digest := "sha256:0000000000000000000000000000000000000000000000000000000000000777"
+	require.NoError(t, db.PutBlob(ctx, digest, 100, nil, true))
+
+	digests, err := db.OrphanedBlobs(ctx, 100, time.Time{})
+	require.NoError(t, err)
+	require.Contains(t, digests, digest)
+}
+
+func TestOrphanedBlobs_GracePeriod(t *testing.T) {
+	db, _ := testGCDeps(t)
+	ctx := context.Background()
+
+	digest := "sha256:0000000000000000000000000000000000000000000000000000000000000888"
+	require.NoError(t, db.PutBlob(ctx, digest, 100, nil, true))
+
+	// Cutoff in the past: just-inserted blob is preserved.
+	digests, err := db.OrphanedBlobs(ctx, 100, time.Now().Add(-time.Hour))
+	require.NoError(t, err)
+	require.NotContains(t, digests, digest)
+
+	// Cutoff in the future: blob shows up as orphan.
+	digests, err = db.OrphanedBlobs(ctx, 100, time.Now().Add(time.Hour))
+	require.NoError(t, err)
+	require.Contains(t, digests, digest)
 }
 
 func TestGCCleansOrphanedBlobFiles(t *testing.T) {
@@ -125,14 +156,19 @@ func TestGCPreservesValidData(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, pbs, 1)
 
-	// 2. Locally stored blob should NOT be returned as orphaned.
+	// 2. Locally stored blob referenced by a manifest is NOT an orphan.
+	pkg, err := db.GetOrCreatePackage(ctx, "oci", "foo.com/img", "https://alice.example.com/ap/actor")
+	require.NoError(t, err)
+	v := &database.PackageVersion{PackageID: pkg.ID, Version: "sha256:m1", Metadata: []byte(`{}`)}
+	require.NoError(t, db.PutPackageVersion(ctx, v))
 	localDigest := "sha256:2222222222222222222222222222222222222222222222222222222222222222"
 	require.NoError(t, db.PutBlob(ctx, localDigest, 200, nil, true))
+	require.NoError(t, db.PutBlobReferences(ctx, v.ID, map[string]string{localDigest: localDigest}))
 
-	orphans, err := db.OrphanedBlobs(ctx, 100)
+	orphans, err := db.OrphanedBlobs(ctx, 100, time.Time{})
 	require.NoError(t, err)
 	for _, d := range orphans {
-		require.NotEqual(t, localDigest, d, "expected local blob to NOT be orphaned")
+		require.NotEqual(t, localDigest, d, "expected referenced local blob to NOT be orphaned")
 	}
 
 	// 3. Blob file on disk with a matching DB record should be preserved.

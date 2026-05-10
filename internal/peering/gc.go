@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"path"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -22,7 +21,7 @@ import (
 
 type GCRepository interface {
 	CleanupStalePeerBlobs(ctx context.Context, olderThan time.Duration) (int64, error)
-	OrphanedBlobs(ctx context.Context, limit int) ([]string, error)
+	OrphanedBlobs(ctx context.Context, limit int, createdBefore time.Time) ([]string, error)
 	DeleteBlob(ctx context.Context, digest string) error
 	AllBlobDigests(ctx context.Context, pageSize int) (map[string]bool, error)
 	PruneDeletedManifests(ctx context.Context, olderThan time.Duration) (int64, error)
@@ -32,6 +31,7 @@ type GCRepository interface {
 	ListTagsForRetention(ctx context.Context, packageID int64) ([]database.TagForRetention, error)
 	DeletePackageTag(ctx context.Context, packageID int64, name string) error
 	PruneUntaggedManifests(ctx context.Context, olderThan time.Duration, limit int) ([]database.UntaggedManifest, error)
+	RecordDeletedManifest(ctx context.Context, digest, repoName, sourceActor string) error
 }
 
 type FederationPublisher interface {
@@ -63,6 +63,8 @@ type GCConfig struct {
 	// Per-repo overrides keyed by repo name; non-zero fields win over DB columns.
 	RetentionPerRepo      map[string]RetentionPolicy
 	RetentionTagsPerCycle int
+	// LocalActor is used as source_actor when recording manifest tombstones.
+	LocalActor string
 
 	DiskUsageThreshold     int
 	DiskUsageCheckInterval time.Duration
@@ -195,40 +197,22 @@ func (gc *GarbageCollector) collect(ctx context.Context) {
 	gc.logger.Info("garbage collection cycle complete")
 }
 
-// effectiveRetention layers config perRepo → DB column overrides → global defaults.
-// Config wins so removing an entry from apoci.yaml reverts the policy.
-func (gc *GarbageCollector) effectiveRetention(pkg database.PackageRetention) RetentionPolicy {
+// effectiveRetention overlays non-zero fields from the per-repo entry on top
+// of the global default.
+func (gc *GarbageCollector) effectiveRetention(repo string) RetentionPolicy {
 	out := gc.cfg.RetentionDefaults
-	if pkg.RetentionKeepLast != nil {
-		out.KeepLastN = *pkg.RetentionKeepLast
+	cfg, ok := gc.cfg.RetentionPerRepo[repo]
+	if !ok {
+		return out
 	}
-	if pkg.RetentionMaxAgeSeconds != nil {
-		out.MaxAge = time.Duration(*pkg.RetentionMaxAgeSeconds) * time.Second
+	if cfg.KeepLastN != 0 {
+		out.KeepLastN = cfg.KeepLastN
 	}
-	if pkg.RetentionPinnedGlobs != nil {
-		raw := strings.TrimSpace(*pkg.RetentionPinnedGlobs)
-		if raw == "" {
-			out.PinnedGlobs = nil
-		} else {
-			parts := strings.Split(raw, ",")
-			out.PinnedGlobs = make([]string, 0, len(parts))
-			for _, p := range parts {
-				if g := strings.TrimSpace(p); g != "" {
-					out.PinnedGlobs = append(out.PinnedGlobs, g)
-				}
-			}
-		}
+	if cfg.MaxAge != 0 {
+		out.MaxAge = cfg.MaxAge
 	}
-	if cfg, ok := gc.cfg.RetentionPerRepo[pkg.Name]; ok {
-		if cfg.KeepLastN != 0 {
-			out.KeepLastN = cfg.KeepLastN
-		}
-		if cfg.MaxAge != 0 {
-			out.MaxAge = cfg.MaxAge
-		}
-		if cfg.PinnedGlobs != nil {
-			out.PinnedGlobs = cfg.PinnedGlobs
-		}
+	if cfg.PinnedGlobs != nil {
+		out.PinnedGlobs = cfg.PinnedGlobs
 	}
 	return out
 }
@@ -266,7 +250,7 @@ func (gc *GarbageCollector) retentionSweep(ctx context.Context) {
 			if totalDeleted >= budget {
 				break
 			}
-			policy := gc.effectiveRetention(pkg)
+			policy := gc.effectiveRetention(pkg.Name)
 			if policy.KeepLastN <= 0 && policy.MaxAge <= 0 {
 				continue
 			}
@@ -355,8 +339,13 @@ func (gc *GarbageCollector) pruneUntaggedManifests(ctx context.Context) {
 	metrics.GCUntaggedManifestsPruned.Add(float64(len(rows)))
 	gc.logger.Info("gc: pruned untagged manifests", "count", len(rows))
 
-	if gc.publisher != nil {
-		for _, r := range rows {
+	for _, r := range rows {
+		if gc.cfg.LocalActor != "" {
+			if err := gc.db.RecordDeletedManifest(ctx, r.Digest, r.PackageName, gc.cfg.LocalActor); err != nil {
+				gc.logger.Warn("gc: record manifest tombstone failed", "repo", r.PackageName, "digest", r.Digest, "error", err)
+			}
+		}
+		if gc.publisher != nil {
 			if err := gc.publisher.PublishManifestDelete(ctx, r.PackageName, r.Digest); err != nil {
 				gc.logger.Warn("gc: federate manifest delete failed", "repo", r.PackageName, "digest", r.Digest, "error", err)
 			}
@@ -389,10 +378,14 @@ func (gc *GarbageCollector) cleanupStalePeerBlobs(ctx context.Context) {
 	}
 }
 
-// cleanupOrphanedBlobMetadata removes blob DB records that are not stored locally
-// and have no peer references or manifest layer references.
+// cleanupOrphanedBlobMetadata removes orphan blob rows. The grace period
+// excludes rows younger than BlobGCGracePeriod (in-flight uploads).
 func (gc *GarbageCollector) cleanupOrphanedBlobMetadata(ctx context.Context) {
-	digests, err := gc.db.OrphanedBlobs(ctx, gc.cfg.OrphanBatchSize)
+	var cutoff time.Time
+	if gc.cfg.BlobGCGracePeriod > 0 {
+		cutoff = time.Now().Add(-gc.cfg.BlobGCGracePeriod)
+	}
+	digests, err := gc.db.OrphanedBlobs(ctx, gc.cfg.OrphanBatchSize, cutoff)
 	if err != nil {
 		gc.logger.Error("gc: failed to find orphaned blobs", "error", err)
 		gc.notifier.Send(notify.EventGCError, fmt.Sprintf("GC: failed to find orphaned blobs: %v", err))

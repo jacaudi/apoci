@@ -24,10 +24,6 @@ type Package struct {
 	OwnerID   string    `bun:"owner_id,notnull"`
 	Private   bool      `bun:"private,notnull,default:false"`
 	CreatedAt time.Time `bun:"created_at,notnull,default:current_timestamp"`
-
-	RetentionKeepLast      *int    `bun:"retention_keep_last"`
-	RetentionMaxAgeSeconds *int64  `bun:"retention_max_age_seconds"`
-	RetentionPinnedGlobs   *string `bun:"retention_pinned_globs"`
 }
 
 // PackageVersion's Version is the backend's identifier (digest for OCI,

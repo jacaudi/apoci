@@ -670,11 +670,8 @@ type UntaggedManifest struct {
 }
 
 type PackageRetention struct {
-	ID                     int64
-	Name                   string
-	RetentionKeepLast      *int
-	RetentionMaxAgeSeconds *int64
-	RetentionPinnedGlobs   *string
+	ID   int64
+	Name string
 }
 
 type TagForRetention struct {
@@ -688,30 +685,19 @@ func (db *DB) ListOCIPackagesForRetention(ctx context.Context, startAfter string
 		limit = 100
 	}
 	var rows []struct {
-		ID                     int64   `bun:"id"`
-		Name                   string  `bun:"name"`
-		RetentionKeepLast      *int    `bun:"retention_keep_last"`
-		RetentionMaxAgeSeconds *int64  `bun:"retention_max_age_seconds"`
-		RetentionPinnedGlobs   *string `bun:"retention_pinned_globs"`
+		ID   int64  `bun:"id"`
+		Name string `bun:"name"`
 	}
-	err := db.bun.NewRaw(`
-		SELECT id, name, retention_keep_last, retention_max_age_seconds, retention_pinned_globs
-		FROM packages
-		WHERE type = ? AND name > ?
-		ORDER BY name
-		LIMIT ?`, ociPackageType, startAfter, limit).Scan(ctx, &rows)
+	err := db.bun.NewRaw(
+		"SELECT id, name FROM packages WHERE type = ? AND name > ? ORDER BY name LIMIT ?",
+		ociPackageType, startAfter, limit,
+	).Scan(ctx, &rows)
 	if err != nil {
 		return nil, fmt.Errorf("listing oci packages for retention: %w", err)
 	}
 	out := make([]PackageRetention, len(rows))
 	for i, r := range rows {
-		out[i] = PackageRetention{
-			ID:                     r.ID,
-			Name:                   r.Name,
-			RetentionKeepLast:      r.RetentionKeepLast,
-			RetentionMaxAgeSeconds: r.RetentionMaxAgeSeconds,
-			RetentionPinnedGlobs:   r.RetentionPinnedGlobs,
-		}
+		out[i] = PackageRetention{ID: r.ID, Name: r.Name}
 	}
 	return out, nil
 }

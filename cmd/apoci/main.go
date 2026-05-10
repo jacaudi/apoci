@@ -690,13 +690,9 @@ func gcCmd(configPath *string) *cobra.Command {
 
 func runGCRun(ctx context.Context, configPath string) error {
 	logger := cliLogger()
-	cfg, err := config.Load(configPath)
+	db, identity, cfg, err := openAll(configPath, logger)
 	if err != nil {
 		return err
-	}
-	db, err := openDB(cfg, logger)
-	if err != nil {
-		return fmt.Errorf("opening database: %w", err)
 	}
 	defer func() { _ = db.Close() }()
 	blobs, err := openBlobStore(cfg, logger)
@@ -730,6 +726,7 @@ func runGCRun(ctx context.Context, configPath string) error {
 			PinnedGlobs: cfg.GC.Retention.PinnedGlobs,
 		},
 		RetentionPerRepo: perRepo,
+		LocalActor:       identity.ActorURL,
 	}, db, blobs, notifier, logger)
 
 	_, _ = lipgloss.Println(dimStyle.Render("Running GC..."))

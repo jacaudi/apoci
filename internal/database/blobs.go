@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 )
 
 func (db *DB) GetBlob(ctx context.Context, digest string) (*Blob, error) {
@@ -74,17 +75,22 @@ func (db *DB) DeleteBlob(ctx context.Context, digest string) error {
 	return nil
 }
 
-// OrphanedBlobs returns digests of blobs that aren't stored locally, aren't
-// referenced by any package file, and have no peer references.
-func (db *DB) OrphanedBlobs(ctx context.Context, limit int) ([]string, error) {
+// OrphanedBlobs returns digests of blobs with no manifest or peer reference.
+// A non-zero createdBefore protects in-flight uploads (PutBlob committed,
+// manifest commit not yet) by excluding rows newer than the cutoff.
+func (db *DB) OrphanedBlobs(ctx context.Context, limit int, createdBefore time.Time) ([]string, error) {
 	var digests []string
-	err := db.bun.NewRaw(
-		`SELECT b.digest FROM blobs b
-		 WHERE b.stored_locally = false
-		   AND NOT EXISTS (SELECT 1 FROM package_files pf WHERE pf.blob_digest = b.digest)
-		   AND NOT EXISTS (SELECT 1 FROM peer_blobs pb WHERE pb.blob_digest = b.digest)
-		 LIMIT ?`, limit).Scan(ctx, &digests)
-	if err != nil {
+	q := `SELECT b.digest FROM blobs b
+	      WHERE NOT EXISTS (SELECT 1 FROM package_files pf WHERE pf.blob_digest = b.digest)
+	        AND NOT EXISTS (SELECT 1 FROM peer_blobs pb WHERE pb.blob_digest = b.digest)`
+	args := []any{}
+	if !createdBefore.IsZero() {
+		q += " AND b.created_at < ?"
+		args = append(args, createdBefore)
+	}
+	q += " LIMIT ?"
+	args = append(args, limit)
+	if err := db.bun.NewRaw(q, args...).Scan(ctx, &digests); err != nil {
 		return nil, fmt.Errorf("finding orphaned blobs: %w", err)
 	}
 	return digests, nil
