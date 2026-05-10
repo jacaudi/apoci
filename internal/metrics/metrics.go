@@ -141,6 +141,18 @@ var (
 		Name:      "untagged_manifests_pruned_total",
 		Help:      "Total untagged manifests pruned.",
 	})
+	GCDiskUsedPercent = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: namespace,
+		Subsystem: "gc",
+		Name:      "disk_used_percent",
+		Help:      "Last observed filesystem usage percentage of the blob volume.",
+	})
+	GCDiskTriggered = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: namespace,
+		Subsystem: "gc",
+		Name:      "disk_triggered_total",
+		Help:      "Total GC cycles triggered by disk usage threshold.",
+	})
 
 	// OCI registry operations.
 	RegistryManifestPushes = prometheus.NewCounter(prometheus.CounterOpts{
@@ -281,6 +293,8 @@ func init() {
 		GCCyclesCompleted,
 		GCRetentionTagsDeleted,
 		GCUntaggedManifestsPruned,
+		GCDiskUsedPercent,
+		GCDiskTriggered,
 		RegistryManifestPushes,
 		RegistryManifestPulls,
 		RegistryBlobPushes,

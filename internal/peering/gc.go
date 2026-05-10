@@ -8,6 +8,7 @@ import (
 	"path"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"codeberg.org/gruf/go-runners"
@@ -62,6 +63,10 @@ type GCConfig struct {
 	// Per-repo overrides keyed by repo name; non-zero fields win over DB columns.
 	RetentionPerRepo      map[string]RetentionPolicy
 	RetentionTagsPerCycle int
+
+	DiskUsageThreshold     int
+	DiskUsageCheckInterval time.Duration
+	DiskUsagePath          string
 }
 
 type GarbageCollector struct {
@@ -73,15 +78,18 @@ type GarbageCollector struct {
 	logger    *slog.Logger
 	service   runners.Service
 	mu        sync.Mutex
+	lastRunNS atomic.Int64
+	diskUsage func(path string) (int, error)
 }
 
 func NewGarbageCollector(cfg GCConfig, db GCRepository, blobs blobstore.BlobStore, notifier Notifier, logger *slog.Logger) *GarbageCollector {
 	return &GarbageCollector{
-		cfg:      cfg,
-		db:       db,
-		blobs:    blobs,
-		notifier: notifier,
-		logger:   logger,
+		cfg:       cfg,
+		db:        db,
+		blobs:     blobs,
+		notifier:  notifier,
+		logger:    logger,
+		diskUsage: diskUsedPercent,
 	}
 }
 
@@ -103,24 +111,69 @@ func (gc *GarbageCollector) Stop() {
 
 func (gc *GarbageCollector) RunOnce(ctx context.Context) {
 	gc.collect(ctx)
+	gc.lastRunNS.Store(time.Now().UnixNano())
 }
 
 func (gc *GarbageCollector) run(parentCtx, svcCtx context.Context) {
-	// Run once shortly after startup.
-	timer := time.NewTimer(time.Minute)
-	defer timer.Stop()
+	tick := gc.cfg.Interval
+	if gc.diskTriggerEnabled() && gc.cfg.DiskUsageCheckInterval > 0 && gc.cfg.DiskUsageCheckInterval < tick {
+		tick = gc.cfg.DiskUsageCheckInterval
+	}
 
+	startup := time.NewTimer(time.Minute)
+	defer startup.Stop()
+
+	var ticker *time.Ticker
+	var tickerC <-chan time.Time
 	for {
 		select {
 		case <-svcCtx.Done():
+			if ticker != nil {
+				ticker.Stop()
+			}
 			return
 		case <-parentCtx.Done():
+			if ticker != nil {
+				ticker.Stop()
+			}
 			return
-		case <-timer.C:
+		case <-startup.C:
 			gc.collect(parentCtx)
-			timer.Reset(gc.cfg.Interval)
+			gc.lastRunNS.Store(time.Now().UnixNano())
+			ticker = time.NewTicker(tick)
+			tickerC = ticker.C
+		case <-tickerC:
+			gc.maybeCollect(parentCtx)
 		}
 	}
+}
+
+func (gc *GarbageCollector) diskTriggerEnabled() bool {
+	return gc.cfg.DiskUsageThreshold > 0 && gc.cfg.DiskUsagePath != ""
+}
+
+func (gc *GarbageCollector) maybeCollect(ctx context.Context) {
+	if time.Since(time.Unix(0, gc.lastRunNS.Load())) >= gc.cfg.Interval {
+		gc.collect(ctx)
+		gc.lastRunNS.Store(time.Now().UnixNano())
+		return
+	}
+	if !gc.diskTriggerEnabled() {
+		return
+	}
+	pct, err := gc.diskUsage(gc.cfg.DiskUsagePath)
+	if err != nil {
+		gc.logger.Warn("gc: disk usage check failed", "path", gc.cfg.DiskUsagePath, "error", err)
+		return
+	}
+	metrics.GCDiskUsedPercent.Set(float64(pct))
+	if pct < gc.cfg.DiskUsageThreshold {
+		return
+	}
+	gc.logger.Info("gc: disk usage threshold reached, triggering cycle", "used_percent", pct, "threshold", gc.cfg.DiskUsageThreshold)
+	metrics.GCDiskTriggered.Add(1)
+	gc.collect(ctx)
+	gc.lastRunNS.Store(time.Now().UnixNano())
 }
 
 const deletedManifestRetention = 30 * 24 * time.Hour

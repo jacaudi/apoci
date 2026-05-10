@@ -714,13 +714,16 @@ func runGCRun(ctx context.Context, configPath string) error {
 		}
 	}
 	gc := peering.NewGarbageCollector(peering.GCConfig{
-		Interval:              cfg.GC.Interval,
-		StalePeerBlobAge:      cfg.GC.StalePeerBlobAge,
-		OrphanBatchSize:       cfg.GC.OrphanBatchSize,
-		BlobGCGracePeriod:     cfg.GC.BlobGCGracePeriod,
-		UntaggedManifestAge:   cfg.GC.UntaggedManifestAge,
-		UntaggedBatchSize:     cfg.GC.UntaggedBatchSize,
-		RetentionTagsPerCycle: cfg.GC.RetentionTagsPerCycle,
+		Interval:               cfg.GC.Interval,
+		StalePeerBlobAge:       cfg.GC.StalePeerBlobAge,
+		OrphanBatchSize:        cfg.GC.OrphanBatchSize,
+		BlobGCGracePeriod:      cfg.GC.BlobGCGracePeriod,
+		UntaggedManifestAge:    cfg.GC.UntaggedManifestAge,
+		UntaggedBatchSize:      cfg.GC.UntaggedBatchSize,
+		RetentionTagsPerCycle:  cfg.GC.RetentionTagsPerCycle,
+		DiskUsageThreshold:     cfg.GC.DiskUsageThreshold,
+		DiskUsageCheckInterval: cfg.GC.DiskUsageCheckInterval,
+		DiskUsagePath:          cfg.BlobDiskPath(),
 		RetentionDefaults: peering.RetentionPolicy{
 			KeepLastN:   cfg.GC.Retention.KeepLastN,
 			MaxAge:      cfg.GC.Retention.MaxAge,
@@ -936,7 +939,7 @@ func printTable(headers []string, rows [][]string) {
 
 func openBlobStore(cfg *config.Config, logger *slog.Logger) (blobstore.BlobStore, error) {
 	switch cfg.Storage.Type {
-	case "s3":
+	case config.StorageTypeS3:
 		return blobstore.NewS3(blobstore.S3Config{
 			Bucket:         cfg.Storage.S3.Bucket,
 			Region:         cfg.Storage.S3.Region,
@@ -947,7 +950,7 @@ func openBlobStore(cfg *config.Config, logger *slog.Logger) (blobstore.BlobStore
 			ForcePathStyle: cfg.Storage.S3.ForcePathStyle,
 			TempDir:        cfg.Storage.S3.TempDir,
 		}, logger)
-	case "local":
+	case config.StorageTypeLocal:
 		return blobstore.New(cfg.DataDir, logger)
 	default:
 		return nil, fmt.Errorf("unknown storage type: %s", cfg.Storage.Type)

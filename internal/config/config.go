@@ -22,6 +22,9 @@ const (
 	AutoAcceptNone   = "none"
 	AutoAcceptMutual = "mutual"
 	AutoAcceptAll    = "all"
+
+	StorageTypeLocal = "local"
+	StorageTypeS3    = "s3"
 )
 
 type Config struct {
@@ -128,15 +131,17 @@ type Notifications struct {
 }
 
 type GC struct {
-	Enabled               *bool         `yaml:"enabled"               env:"ENABLED"`
-	Interval              time.Duration `yaml:"interval"              env:"INTERVAL"`
-	StalePeerBlobAge      time.Duration `yaml:"stalePeerBlobAge"      env:"STALE_PEER_BLOB_AGE"`
-	OrphanBatchSize       int           `yaml:"orphanBatchSize"       env:"ORPHAN_BATCH_SIZE"`
-	BlobGCGracePeriod     time.Duration `yaml:"blobGCGracePeriod"     env:"BLOB_GC_GRACE_PERIOD"`
-	UntaggedManifestAge   time.Duration `yaml:"untaggedManifestAge"   env:"UNTAGGED_MANIFEST_AGE"`
-	UntaggedBatchSize     int           `yaml:"untaggedBatchSize"     env:"UNTAGGED_BATCH_SIZE"`
-	RetentionTagsPerCycle int           `yaml:"retentionTagsPerCycle" env:"RETENTION_TAGS_PER_CYCLE"`
-	Retention             Retention     `yaml:"retention"             envPrefix:"RETENTION_"`
+	Enabled                *bool         `yaml:"enabled"                env:"ENABLED"`
+	Interval               time.Duration `yaml:"interval"               env:"INTERVAL"`
+	StalePeerBlobAge       time.Duration `yaml:"stalePeerBlobAge"       env:"STALE_PEER_BLOB_AGE"`
+	OrphanBatchSize        int           `yaml:"orphanBatchSize"        env:"ORPHAN_BATCH_SIZE"`
+	BlobGCGracePeriod      time.Duration `yaml:"blobGCGracePeriod"      env:"BLOB_GC_GRACE_PERIOD"`
+	UntaggedManifestAge    time.Duration `yaml:"untaggedManifestAge"    env:"UNTAGGED_MANIFEST_AGE"`
+	UntaggedBatchSize      int           `yaml:"untaggedBatchSize"      env:"UNTAGGED_BATCH_SIZE"`
+	RetentionTagsPerCycle  int           `yaml:"retentionTagsPerCycle"  env:"RETENTION_TAGS_PER_CYCLE"`
+	DiskUsageThreshold     int           `yaml:"diskUsageThreshold"     env:"DISK_USAGE_THRESHOLD"`
+	DiskUsageCheckInterval time.Duration `yaml:"diskUsageCheckInterval" env:"DISK_USAGE_CHECK_INTERVAL"`
+	Retention              Retention     `yaml:"retention"              envPrefix:"RETENTION_"`
 }
 
 type Retention struct {
@@ -263,6 +268,13 @@ func (b BackendConfig) IsEnabled() bool {
 	return b.Enabled == nil || *b.Enabled
 }
 
+func (c *Config) BlobDiskPath() string {
+	if c.Storage.Type != StorageTypeLocal {
+		return ""
+	}
+	return filepath.Join(c.DataDir, "blobs")
+}
+
 func (b BackendConfig) IsFederated() bool {
 	return b.Federate == nil || *b.Federate
 }
@@ -361,7 +373,7 @@ func applyServerDefaults(cfg *Config) error {
 		cfg.LogFormat = "json"
 	}
 	if cfg.Storage.Type == "" {
-		cfg.Storage.Type = "local"
+		cfg.Storage.Type = StorageTypeLocal
 	}
 	if cfg.Database.Driver == "" {
 		cfg.Database.Driver = "sqlite"
@@ -461,6 +473,9 @@ func applyGCDefaults(cfg *Config) {
 	}
 	if cfg.GC.RetentionTagsPerCycle == 0 {
 		cfg.GC.RetentionTagsPerCycle = 10000
+	}
+	if cfg.GC.DiskUsageCheckInterval == 0 {
+		cfg.GC.DiskUsageCheckInterval = 5 * time.Minute
 	}
 	if cfg.GC.Retention.PinnedGlobs == nil {
 		cfg.GC.Retention.PinnedGlobs = []string{"latest", "v*"}
@@ -574,11 +589,11 @@ func validateEndpoint(cfg *Config) error {
 }
 
 func validateStorage(cfg *Config) error {
-	validStorageTypes := map[string]bool{"local": true, "s3": true}
+	validStorageTypes := map[string]bool{StorageTypeLocal: true, StorageTypeS3: true}
 	if !validStorageTypes[cfg.Storage.Type] {
 		return fmt.Errorf("storage.type must be 'local' or 's3'")
 	}
-	if cfg.Storage.Type == "s3" {
+	if cfg.Storage.Type == StorageTypeS3 {
 		if cfg.Storage.S3.Bucket == "" {
 			return fmt.Errorf("storage.s3.bucket is required when storage.type is 's3'")
 		}
@@ -694,6 +709,12 @@ func validateNonNegative(cfg *Config) error {
 	}
 	if cfg.GC.BlobGCGracePeriod < 0 {
 		return fmt.Errorf("gc.blobGCGracePeriod must not be negative")
+	}
+	if cfg.GC.DiskUsageThreshold < 0 || cfg.GC.DiskUsageThreshold > 100 {
+		return fmt.Errorf("gc.diskUsageThreshold must be between 0 and 100")
+	}
+	if cfg.GC.DiskUsageCheckInterval < 0 {
+		return fmt.Errorf("gc.diskUsageCheckInterval must not be negative")
 	}
 	seen := make(map[string]bool)
 	for i, r := range cfg.GC.Retention.PerRepo {

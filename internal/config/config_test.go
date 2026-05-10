@@ -261,6 +261,8 @@ dataDir: %q
 	require.Equal(t, 6*time.Hour, cfg.GC.Interval)
 	require.Equal(t, 30*24*time.Hour, cfg.GC.StalePeerBlobAge)
 	require.Equal(t, 500, cfg.GC.OrphanBatchSize)
+	require.Equal(t, 0, cfg.GC.DiskUsageThreshold)
+	require.Equal(t, 5*time.Minute, cfg.GC.DiskUsageCheckInterval)
 }
 
 func TestGCCustomValues(t *testing.T) {
@@ -323,6 +325,53 @@ gc:
 	_, err := Load(path)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "gc.interval")
+}
+
+func TestGCDiskUsageThresholdBounds(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		value int
+	}{
+		{"negative", -1},
+		{"over_100", 150},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := writeConfig(t, fmt.Sprintf(`
+endpoint: "https://test.example.com"
+dataDir: %q
+gc:
+  diskUsageThreshold: %d
+`, dir, tc.value))
+			_, err := Load(path)
+			require.Error(t, err)
+			require.Contains(t, err.Error(), "gc.diskUsageThreshold")
+		})
+	}
+}
+
+func TestGCDiskUsageCustomValues(t *testing.T) {
+	dir := t.TempDir()
+	path := writeConfig(t, fmt.Sprintf(`
+endpoint: "https://test.example.com"
+dataDir: %q
+gc:
+  diskUsageThreshold: 85
+  diskUsageCheckInterval: 30s
+`, dir))
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	require.Equal(t, 85, cfg.GC.DiskUsageThreshold)
+	require.Equal(t, 30*time.Second, cfg.GC.DiskUsageCheckInterval)
+}
+
+func TestBlobDiskPath(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &Config{DataDir: dir, Storage: Storage{Type: StorageTypeLocal}}
+	require.Equal(t, filepath.Join(dir, "blobs"), cfg.BlobDiskPath())
+
+	cfg.Storage.Type = StorageTypeS3
+	require.Empty(t, cfg.BlobDiskPath())
 }
 
 func TestFederationDefaults(t *testing.T) {

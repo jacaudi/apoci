@@ -117,14 +117,21 @@ func New(cfg *config.Config, db *database.DB, blobs blobstore.BlobStore, identit
 	healthChecker := peering.NewHealthChecker(&peerHealthAdapter{db: db}, fetcher, cfg.Peering.HealthCheckInterval, notifier, logger)
 
 	blobReplicator := peering.NewBlobReplicator(db, blobs, fetcher, notifier, logger)
+	diskPath := cfg.BlobDiskPath()
+	if cfg.GC.DiskUsageThreshold > 0 && diskPath == "" {
+		logger.Warn("gc.diskUsageThreshold ignored: storage backend has no local filesystem", "storage_type", cfg.Storage.Type)
+	}
 	gc := peering.NewGarbageCollector(peering.GCConfig{
-		Interval:              cfg.GC.Interval,
-		StalePeerBlobAge:      cfg.GC.StalePeerBlobAge,
-		OrphanBatchSize:       cfg.GC.OrphanBatchSize,
-		BlobGCGracePeriod:     cfg.GC.BlobGCGracePeriod,
-		UntaggedManifestAge:   cfg.GC.UntaggedManifestAge,
-		UntaggedBatchSize:     cfg.GC.UntaggedBatchSize,
-		RetentionTagsPerCycle: cfg.GC.RetentionTagsPerCycle,
+		Interval:               cfg.GC.Interval,
+		StalePeerBlobAge:       cfg.GC.StalePeerBlobAge,
+		OrphanBatchSize:        cfg.GC.OrphanBatchSize,
+		BlobGCGracePeriod:      cfg.GC.BlobGCGracePeriod,
+		UntaggedManifestAge:    cfg.GC.UntaggedManifestAge,
+		UntaggedBatchSize:      cfg.GC.UntaggedBatchSize,
+		RetentionTagsPerCycle:  cfg.GC.RetentionTagsPerCycle,
+		DiskUsageThreshold:     cfg.GC.DiskUsageThreshold,
+		DiskUsageCheckInterval: cfg.GC.DiskUsageCheckInterval,
+		DiskUsagePath:          diskPath,
 		RetentionDefaults: peering.RetentionPolicy{
 			KeepLastN:   cfg.GC.Retention.KeepLastN,
 			MaxAge:      cfg.GC.Retention.MaxAge,
