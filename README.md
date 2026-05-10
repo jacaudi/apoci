@@ -223,9 +223,21 @@ gc:
     keepLastN: 5               # keep at most N mutable, non-pinned tags per repo
     maxAge: 720h               # 30 days; tags older than this are deleted
     pinnedGlobs: ["latest", "v*"]
+    perRepo:
+      - repo: "foo.com/myapp"
+        keepLastN: 10           # this repo gets a longer history
+      - repo: "foo.com/legacy"
+        keepLastN: 1            # this one stays trim
+        pinnedGlobs: ["stable"]
 ```
 
-`keepLastN` and `maxAge` apply per repo. Pinned globs and immutable tags are always kept and don't consume a slot. Per-repo overrides live on the `packages` row (`retention_keep_last`, `retention_max_age_seconds`, `retention_pinned_globs`); NULL inherits the global default. Tag deletes federate via `Delete OCITag`; untagged manifest prunes federate via `Delete OCIManifest`, so peers free their copies on the next GC cycle.
+`keepLastN` and `maxAge` apply per repo. Pinned globs and immutable tags are always kept and don't consume a slot. The `perRepo` list is also configurable via env as JSON:
+
+```bash
+APOCI_GC_RETENTION_PER_REPO='[{"repo":"foo.com/myapp","keepLastN":10,"maxAge":"168h","pinnedGlobs":["latest"]},{"repo":"foo.com/legacy","keepLastN":1}]'
+```
+
+Resolution order: `perRepo` config → DB column overrides on the `packages` row → global default. Removing an entry from your config reverts that repo to the global policy. Tag deletes federate via `Delete OCITag`; untagged manifest prunes federate via `Delete OCIManifest`, so peers free their copies on the next GC cycle.
 
 By default a follower mirrors every push. To restrict a follower to specific tags:
 

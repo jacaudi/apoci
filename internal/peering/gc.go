@@ -59,7 +59,8 @@ type GCConfig struct {
 	UntaggedManifestAge time.Duration
 	UntaggedBatchSize   int
 	RetentionDefaults   RetentionPolicy
-	// Cap per-cycle retention work to avoid hogging a single GC run on a big instance.
+	// Per-repo overrides keyed by repo name; non-zero fields win over DB columns.
+	RetentionPerRepo      map[string]RetentionPolicy
 	RetentionTagsPerCycle int
 }
 
@@ -141,8 +142,8 @@ func (gc *GarbageCollector) collect(ctx context.Context) {
 	gc.logger.Info("garbage collection cycle complete")
 }
 
-// effectiveRetention resolves per-package overrides against the global default.
-// nil = inherit; non-nil zero = explicitly disabled for this package.
+// effectiveRetention layers config perRepo → DB column overrides → global defaults.
+// Config wins so removing an entry from apoci.yaml reverts the policy.
 func (gc *GarbageCollector) effectiveRetention(pkg database.PackageRetention) RetentionPolicy {
 	out := gc.cfg.RetentionDefaults
 	if pkg.RetentionKeepLast != nil {
@@ -163,6 +164,17 @@ func (gc *GarbageCollector) effectiveRetention(pkg database.PackageRetention) Re
 					out.PinnedGlobs = append(out.PinnedGlobs, g)
 				}
 			}
+		}
+	}
+	if cfg, ok := gc.cfg.RetentionPerRepo[pkg.Name]; ok {
+		if cfg.KeepLastN != 0 {
+			out.KeepLastN = cfg.KeepLastN
+		}
+		if cfg.MaxAge != 0 {
+			out.MaxAge = cfg.MaxAge
+		}
+		if cfg.PinnedGlobs != nil {
+			out.PinnedGlobs = cfg.PinnedGlobs
 		}
 	}
 	return out

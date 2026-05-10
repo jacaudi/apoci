@@ -705,6 +705,14 @@ func runGCRun(ctx context.Context, configPath string) error {
 	}
 
 	notifier := notify.New(cfg.Name, nil, nil, logger)
+	perRepo := make(map[string]peering.RetentionPolicy, len(cfg.GC.Retention.PerRepo))
+	for _, r := range cfg.GC.Retention.PerRepo {
+		perRepo[r.Repo] = peering.RetentionPolicy{
+			KeepLastN:   r.KeepLastN,
+			MaxAge:      r.MaxAge,
+			PinnedGlobs: r.PinnedGlobs,
+		}
+	}
 	gc := peering.NewGarbageCollector(peering.GCConfig{
 		Interval:              cfg.GC.Interval,
 		StalePeerBlobAge:      cfg.GC.StalePeerBlobAge,
@@ -718,6 +726,7 @@ func runGCRun(ctx context.Context, configPath string) error {
 			MaxAge:      cfg.GC.Retention.MaxAge,
 			PinnedGlobs: cfg.GC.Retention.PinnedGlobs,
 		},
+		RetentionPerRepo: perRepo,
 	}, db, blobs, notifier, logger)
 
 	_, _ = lipgloss.Println(dimStyle.Render("Running GC..."))

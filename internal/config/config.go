@@ -140,9 +140,68 @@ type GC struct {
 }
 
 type Retention struct {
-	KeepLastN   int           `yaml:"keepLastN"   env:"KEEP_LAST_N"`
-	MaxAge      time.Duration `yaml:"maxAge"      env:"MAX_AGE"`
-	PinnedGlobs []string      `yaml:"pinnedGlobs" env:"PINNED_GLOBS" envSeparator:","`
+	KeepLastN   int               `yaml:"keepLastN"   env:"KEEP_LAST_N"`
+	MaxAge      time.Duration     `yaml:"maxAge"      env:"MAX_AGE"`
+	PinnedGlobs []string          `yaml:"pinnedGlobs" env:"PINNED_GLOBS" envSeparator:","`
+	PerRepo     RepoRetentionList `yaml:"perRepo"     env:"PER_REPO"`
+}
+
+type RepoRetention struct {
+	Repo        string        `yaml:"repo"        json:"repo"`
+	KeepLastN   int           `yaml:"keepLastN"   json:"keepLastN,omitempty"`
+	MaxAge      time.Duration `yaml:"maxAge"      json:"maxAge,omitempty"`
+	PinnedGlobs []string      `yaml:"pinnedGlobs" json:"pinnedGlobs,omitempty"`
+}
+
+// UnmarshalJSON accepts maxAge as a duration string ("720h") in addition to the
+// default nanosecond number, so JSON-from-env matches the YAML format.
+func (r *RepoRetention) UnmarshalJSON(data []byte) error {
+	type raw struct {
+		Repo        string          `json:"repo"`
+		KeepLastN   int             `json:"keepLastN"`
+		MaxAge      json.RawMessage `json:"maxAge"`
+		PinnedGlobs []string        `json:"pinnedGlobs"`
+	}
+	var x raw
+	if err := json.Unmarshal(data, &x); err != nil {
+		return err
+	}
+	r.Repo = x.Repo
+	r.KeepLastN = x.KeepLastN
+	r.PinnedGlobs = x.PinnedGlobs
+	if len(x.MaxAge) == 0 || string(x.MaxAge) == "null" {
+		return nil
+	}
+	if x.MaxAge[0] == '"' {
+		var s string
+		if err := json.Unmarshal(x.MaxAge, &s); err != nil {
+			return fmt.Errorf("invalid maxAge: %w", err)
+		}
+		d, err := time.ParseDuration(s)
+		if err != nil {
+			return fmt.Errorf("invalid maxAge %q: %w", s, err)
+		}
+		r.MaxAge = d
+		return nil
+	}
+	var ns int64
+	if err := json.Unmarshal(x.MaxAge, &ns); err != nil {
+		return fmt.Errorf("invalid maxAge: %w", err)
+	}
+	r.MaxAge = time.Duration(ns)
+	return nil
+}
+
+type RepoRetentionList []RepoRetention
+
+func (l *RepoRetentionList) UnmarshalText(text []byte) error {
+	// Cast to a plain slice so json doesn't see UnmarshalText and reject the array.
+	var slice []RepoRetention
+	if err := json.Unmarshal(text, &slice); err != nil {
+		return err
+	}
+	*l = slice
+	return nil
 }
 
 // Upstream configures an external OCI registry for pull-through caching.
@@ -635,6 +694,22 @@ func validateNonNegative(cfg *Config) error {
 	}
 	if cfg.GC.BlobGCGracePeriod < 0 {
 		return fmt.Errorf("gc.blobGCGracePeriod must not be negative")
+	}
+	seen := make(map[string]bool)
+	for i, r := range cfg.GC.Retention.PerRepo {
+		if r.Repo == "" {
+			return fmt.Errorf("gc.retention.perRepo[%d].repo is required", i)
+		}
+		if seen[r.Repo] {
+			return fmt.Errorf("gc.retention.perRepo: duplicate entry for %q", r.Repo)
+		}
+		if r.KeepLastN < 0 {
+			return fmt.Errorf("gc.retention.perRepo[%d].keepLastN must not be negative", i)
+		}
+		if r.MaxAge < 0 {
+			return fmt.Errorf("gc.retention.perRepo[%d].maxAge must not be negative", i)
+		}
+		seen[r.Repo] = true
 	}
 	return nil
 }

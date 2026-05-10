@@ -61,6 +61,21 @@ type peerHealthAdapter struct {
 	db *database.DB
 }
 
+func toRetentionMap(in []config.RepoRetention) map[string]peering.RetentionPolicy {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]peering.RetentionPolicy, len(in))
+	for _, r := range in {
+		out[r.Repo] = peering.RetentionPolicy{
+			KeepLastN:   r.KeepLastN,
+			MaxAge:      r.MaxAge,
+			PinnedGlobs: r.PinnedGlobs,
+		}
+	}
+	return out
+}
+
 func (a *peerHealthAdapter) ListAllPeers(ctx context.Context) ([]peering.PeerRecord, error) {
 	peers, err := a.db.ListAllPeers(ctx)
 	if err != nil {
@@ -115,6 +130,7 @@ func New(cfg *config.Config, db *database.DB, blobs blobstore.BlobStore, identit
 			MaxAge:      cfg.GC.Retention.MaxAge,
 			PinnedGlobs: cfg.GC.Retention.PinnedGlobs,
 		},
+		RetentionPerRepo: toRetentionMap(cfg.GC.Retention.PerRepo),
 	}, db, blobs, notifier, logger)
 	gc.SetFederationPublisher(apPublisher)
 

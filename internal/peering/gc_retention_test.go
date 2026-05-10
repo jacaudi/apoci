@@ -15,6 +15,10 @@ import (
 
 const testActor = "https://alice.example.com/ap/actor"
 
+const tagNewest = "newest"
+
+var retentionSeqTags = []string{"oldest", "second", "third", "fourth", tagNewest}
+
 type recordingPublisher struct {
 	mu      sync.Mutex
 	tagDels []string
@@ -45,8 +49,7 @@ func TestRetentionSweep_KeepLastN(t *testing.T) {
 	// Put 5 tags, then backdate updated_at deterministically so retention has a
 	// stable order to choose by.
 	now := time.Now()
-	tags := []string{"oldest", "second", "third", "fourth", "newest"}
-	for i, name := range tags {
+	for i, name := range retentionSeqTags {
 		dgst := "sha256:" + name
 		require.NoError(t, db.PutPackageVersion(ctx, &database.PackageVersion{
 			PackageID: pkg.ID, Version: dgst, Metadata: []byte(`{}`),
@@ -76,8 +79,49 @@ func TestRetentionSweep_KeepLastN(t *testing.T) {
 	for _, t := range left {
 		names = append(names, t.Name)
 	}
-	require.ElementsMatch(t, []string{"newest", "fourth"}, names)
+	require.ElementsMatch(t, []string{tagNewest, "fourth"}, names)
 	require.Len(t, pub.tagDels, 3)
+}
+
+func TestRetentionSweep_PerRepoOverride(t *testing.T) {
+	db, blobs := testGCDeps(t)
+	ctx := context.Background()
+
+	pkg, err := db.GetOrCreatePackage(ctx, "oci", "foo.com/img", testActor)
+	require.NoError(t, err)
+
+	now := time.Now()
+	for i, name := range retentionSeqTags {
+		dgst := "sha256:" + name
+		require.NoError(t, db.PutPackageVersion(ctx, &database.PackageVersion{
+			PackageID: pkg.ID, Version: dgst, Metadata: []byte(`{}`),
+		}))
+		require.NoError(t, db.PutPackageTag(ctx, pkg.ID, name, dgst, false))
+		_, err := db.ExecContext(ctx,
+			"UPDATE package_tags SET updated_at = ? WHERE package_id = ? AND name = ?",
+			now.Add(time.Duration(i)*time.Minute), pkg.ID, name)
+		require.NoError(t, err)
+	}
+
+	// Global default keeps 4, per-repo override squeezes to 1 — the override wins.
+	gc := NewGarbageCollector(GCConfig{
+		Interval:              6 * time.Hour,
+		StalePeerBlobAge:      30 * 24 * time.Hour,
+		OrphanBatchSize:       500,
+		BlobGCGracePeriod:     time.Hour,
+		RetentionDefaults:     RetentionPolicy{KeepLastN: 4},
+		RetentionPerRepo:      map[string]RetentionPolicy{"foo.com/img": {KeepLastN: 1}},
+		RetentionTagsPerCycle: 100,
+	}, db, blobs, notify.New("test", nil, nil, nopLog()), nopLog())
+	gc.RunOnce(ctx)
+
+	left, err := db.ListPackageTags(ctx, pkg.ID)
+	require.NoError(t, err)
+	names := make([]string, 0, len(left))
+	for _, t := range left {
+		names = append(names, t.Name)
+	}
+	require.ElementsMatch(t, []string{tagNewest}, names)
 }
 
 func TestRetentionSweep_PinnedAndImmutable(t *testing.T) {

@@ -352,3 +352,69 @@ federation:
 	require.Equal(t, 48*time.Hour, cfg.Federation.OutgoingFollowPendingTTL)
 	require.Equal(t, 12*time.Hour, cfg.Federation.OutgoingFollowRejectedTTL)
 }
+
+const tagLatest = "latest"
+
+func TestRetentionPerRepoFromYAML(t *testing.T) {
+	dir := t.TempDir()
+	path := writeConfig(t, fmt.Sprintf(`
+endpoint: "https://test.example.com"
+dataDir: %q
+gc:
+  retention:
+    keepLastN: 5
+    perRepo:
+      - repo: "foo.com/myapp"
+        keepLastN: 10
+        maxAge: 168h
+        pinnedGlobs: ["latest", "v*"]
+      - repo: "foo.com/legacy"
+        keepLastN: 1
+`, dir))
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	require.Len(t, cfg.GC.Retention.PerRepo, 2)
+	require.Equal(t, "foo.com/myapp", cfg.GC.Retention.PerRepo[0].Repo)
+	require.Equal(t, 10, cfg.GC.Retention.PerRepo[0].KeepLastN)
+	require.Equal(t, 168*time.Hour, cfg.GC.Retention.PerRepo[0].MaxAge)
+	require.Equal(t, []string{tagLatest, "v*"}, cfg.GC.Retention.PerRepo[0].PinnedGlobs)
+}
+
+func TestRetentionPerRepoFromEnvJSON(t *testing.T) {
+	dir := t.TempDir()
+	path := writeConfig(t, fmt.Sprintf(`
+endpoint: "https://test.example.com"
+dataDir: %q
+`, dir))
+
+	t.Setenv("APOCI_GC_RETENTION_PER_REPO",
+		`[{"repo":"foo.com/myapp","keepLastN":10,"maxAge":"168h","pinnedGlobs":["latest"]},{"repo":"foo.com/legacy","keepLastN":1}]`)
+
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	require.Len(t, cfg.GC.Retention.PerRepo, 2)
+	require.Equal(t, "foo.com/myapp", cfg.GC.Retention.PerRepo[0].Repo)
+	require.Equal(t, 10, cfg.GC.Retention.PerRepo[0].KeepLastN)
+	require.Equal(t, 168*time.Hour, cfg.GC.Retention.PerRepo[0].MaxAge)
+	require.Equal(t, []string{tagLatest}, cfg.GC.Retention.PerRepo[0].PinnedGlobs)
+	require.Equal(t, "foo.com/legacy", cfg.GC.Retention.PerRepo[1].Repo)
+	require.Equal(t, 1, cfg.GC.Retention.PerRepo[1].KeepLastN)
+}
+
+func TestRetentionPerRepoDuplicate(t *testing.T) {
+	dir := t.TempDir()
+	path := writeConfig(t, fmt.Sprintf(`
+endpoint: "https://test.example.com"
+dataDir: %q
+gc:
+  retention:
+    perRepo:
+      - repo: "foo.com/myapp"
+        keepLastN: 10
+      - repo: "foo.com/myapp"
+        keepLastN: 5
+`, dir))
+	_, err := Load(path)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "duplicate")
+}
