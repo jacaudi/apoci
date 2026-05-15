@@ -104,6 +104,42 @@ func TestPruneUntaggedManifests_PreservesReferrerSubject(t *testing.T) {
 	require.NotNil(t, stillThere, "subject must survive while a referrer references it")
 }
 
+func TestPruneUntaggedManifests_PreservesIndexChildren(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+
+	pkg, err := db.GetOrCreatePackage(ctx, ociPackageType, "foo.com/multiarch", testAliceActor)
+	require.NoError(t, err)
+
+	amd := &PackageVersion{PackageID: pkg.ID, Version: "sha256:amd64", Metadata: []byte(`{}`)}
+	arm := &PackageVersion{PackageID: pkg.ID, Version: "sha256:arm64", Metadata: []byte(`{}`)}
+	idx := &PackageVersion{PackageID: pkg.ID, Version: "sha256:index", Metadata: []byte(`{}`)}
+	require.NoError(t, db.PutPackageVersion(ctx, amd))
+	require.NoError(t, db.PutPackageVersion(ctx, arm))
+	require.NoError(t, db.PutPackageVersion(ctx, idx))
+	require.NoError(t, db.PutPackageTag(ctx, pkg.ID, "v1", idx.Version, false))
+	require.NoError(t, db.PutManifestLayers(ctx, idx.ID, []BlobRef{
+		{Digest: amd.Version, Size: 1},
+		{Digest: arm.Version, Size: 1},
+	}))
+
+	_, err = db.bun.NewRaw(
+		"UPDATE package_versions SET created_at = ? WHERE package_id = ?",
+		time.Now().Add(-2*time.Hour), pkg.ID,
+	).Exec(ctx)
+	require.NoError(t, err)
+
+	rows, err := db.PruneUntaggedManifests(ctx, time.Hour, 10)
+	require.NoError(t, err)
+	require.Empty(t, rows, "no manifests should be pruned: index is tagged, children are referenced")
+
+	for _, v := range []string{amd.Version, arm.Version, idx.Version} {
+		got, err := db.GetPackageVersion(ctx, pkg.ID, v)
+		require.NoError(t, err)
+		require.NotNil(t, got, "%s should survive", v)
+	}
+}
+
 func TestUpdateFollowFilter_SetAndClear(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()

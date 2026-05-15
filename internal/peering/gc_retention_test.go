@@ -215,6 +215,50 @@ func TestPruneUntaggedManifestsGC_FederatesDelete(t *testing.T) {
 	require.Nil(t, gone)
 }
 
+func TestPruneUntaggedManifestsGC_PreservesIndexChildren(t *testing.T) {
+	db, blobs := testGCDeps(t)
+	ctx := context.Background()
+
+	pkg, err := db.GetOrCreatePackage(ctx, "oci", "foo.com/multiarch", testActor)
+	require.NoError(t, err)
+
+	amd := &database.PackageVersion{PackageID: pkg.ID, Version: "sha256:amd64", Metadata: []byte(`{}`)}
+	arm := &database.PackageVersion{PackageID: pkg.ID, Version: "sha256:arm64", Metadata: []byte(`{}`)}
+	idx := &database.PackageVersion{PackageID: pkg.ID, Version: "sha256:index", Metadata: []byte(`{}`)}
+	require.NoError(t, db.PutPackageVersion(ctx, amd))
+	require.NoError(t, db.PutPackageVersion(ctx, arm))
+	require.NoError(t, db.PutPackageVersion(ctx, idx))
+	require.NoError(t, db.PutPackageTag(ctx, pkg.ID, "v1", idx.Version, false))
+	require.NoError(t, db.PutManifestLayers(ctx, idx.ID, []database.BlobRef{
+		{Digest: amd.Version, Size: 1},
+		{Digest: arm.Version, Size: 1},
+	}))
+
+	_, err = db.ExecContext(ctx,
+		"UPDATE package_versions SET created_at = ? WHERE package_id = ?",
+		time.Now().Add(-2*time.Hour), pkg.ID)
+	require.NoError(t, err)
+
+	pub := &recordingPublisher{}
+	gc := NewGarbageCollector(GCConfig{
+		Interval:            6 * time.Hour,
+		StalePeerBlobAge:    30 * 24 * time.Hour,
+		OrphanBatchSize:     500,
+		BlobGCGracePeriod:   time.Hour,
+		UntaggedManifestAge: time.Hour,
+		UntaggedBatchSize:   100,
+	}, db, blobs, notify.New("test", nil, nil, nopLog()), nopLog())
+	gc.SetFederationPublisher(pub)
+	gc.RunOnce(ctx)
+
+	require.Empty(t, pub.manDels, "no manifests should be federated as deleted")
+	for _, v := range []string{amd.Version, arm.Version, idx.Version} {
+		got, err := db.GetPackageVersion(ctx, pkg.ID, v)
+		require.NoError(t, err)
+		require.NotNil(t, got, "%s should survive GC", v)
+	}
+}
+
 func TestGCFullPipeline(t *testing.T) {
 	db, blobs := testGCDeps(t)
 	ctx := context.Background()

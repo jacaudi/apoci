@@ -35,6 +35,8 @@ func (db *DB) PutBlob(ctx context.Context, digest string, sizeBytes int64, media
 	return nil
 }
 
+// JOIN blobs disambiguates: package_files also records index→child manifest
+// digests, which must not be served as blobs.
 func (db *DB) BlobExistsInRepo(ctx context.Context, repoName string, digest string) (bool, error) {
 	var exists bool
 	err := db.bun.NewRaw(
@@ -42,6 +44,7 @@ func (db *DB) BlobExistsInRepo(ctx context.Context, repoName string, digest stri
 			SELECT 1 FROM package_files pf
 			JOIN package_versions pv ON pv.id = pf.version_id
 			JOIN packages p ON p.id = pv.package_id
+			JOIN blobs b ON b.digest = pf.blob_digest
 			WHERE p.type = 'oci' AND p.name = ? AND pf.blob_digest = ?
 		)`, repoName, digest).Scan(ctx, &exists)
 	if err != nil {
@@ -56,6 +59,7 @@ func (db *DB) FindRepoForBlob(ctx context.Context, digest string) (string, error
 		`SELECT p.name FROM packages p
 		 JOIN package_versions pv ON pv.package_id = p.id
 		 JOIN package_files pf ON pf.version_id = pv.id
+		 JOIN blobs b ON b.digest = pf.blob_digest
 		 WHERE p.type = 'oci' AND pf.blob_digest = ?
 		 LIMIT 1`, digest).Scan(ctx, &name)
 	if err != nil {

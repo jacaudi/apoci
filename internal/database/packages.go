@@ -727,8 +727,9 @@ func (db *DB) ListTagsForRetention(ctx context.Context, packageID int64) ([]TagF
 	return out, nil
 }
 
-// PruneUntaggedManifests deletes OCI manifests with no tag and no referrer
-// pointing at them, older than olderThan. Cascades package_files.
+// PruneUntaggedManifests deletes OCI manifests older than olderThan that have
+// no tag, no OCI referrer (subject), and no parent manifest (index child).
+// Cascades package_files.
 func (db *DB) PruneUntaggedManifests(ctx context.Context, olderThan time.Duration, limit int) ([]UntaggedManifest, error) {
 	if limit <= 0 {
 		limit = 500
@@ -758,6 +759,10 @@ func (db *DB) PruneUntaggedManifests(ctx context.Context, olderThan time.Duratio
 		  AND NOT EXISTS (SELECT 1 FROM package_versions ref
 		                  WHERE ref.package_id = pv.package_id
 		                    AND ref.subject_digest = pv.version)
+		  AND NOT EXISTS (SELECT 1 FROM package_files pf
+		                  JOIN package_versions parent ON parent.id = pf.version_id
+		                  WHERE parent.package_id = pv.package_id
+		                    AND pf.blob_digest = pv.version)
 		ORDER BY pv.id
 		LIMIT ?
 	`, ociPackageType, cutoff, limit).Scan(ctx, &rows); err != nil {

@@ -470,36 +470,37 @@ func (h *InboxHandler) recordLayersAndReplicate(ctx context.Context, content []b
 }
 
 func extractLayerRefs(content []byte) []database.BlobRef {
+	type descriptor struct {
+		Digest    string `json:"digest"`
+		Size      int64  `json:"size"`
+		MediaType string `json:"mediaType"`
+	}
 	var parsed struct {
-		Config struct {
-			Digest    string `json:"digest"`
-			Size      int64  `json:"size"`
-			MediaType string `json:"mediaType"`
-		} `json:"config"`
-		Layers []struct {
-			Digest    string `json:"digest"`
-			Size      int64  `json:"size"`
-			MediaType string `json:"mediaType"`
-		} `json:"layers"`
+		Config    descriptor   `json:"config"`
+		Layers    []descriptor `json:"layers"`
+		Manifests []descriptor `json:"manifests"`
 	}
 	if err := json.Unmarshal(content, &parsed); err != nil {
 		return nil
 	}
 	var refs []database.BlobRef
-	addRef := func(digest, mediaType string, size int64) {
-		if digest == "" {
+	addRef := func(d descriptor) {
+		if d.Digest == "" {
 			return
 		}
 		var mt *string
-		if mediaType != "" {
-			s := mediaType
+		if d.MediaType != "" {
+			s := d.MediaType
 			mt = &s
 		}
-		refs = append(refs, database.BlobRef{Digest: digest, Size: size, MediaType: mt})
+		refs = append(refs, database.BlobRef{Digest: d.Digest, Size: d.Size, MediaType: mt})
 	}
-	addRef(parsed.Config.Digest, parsed.Config.MediaType, parsed.Config.Size)
+	addRef(parsed.Config)
 	for _, l := range parsed.Layers {
-		addRef(l.Digest, l.MediaType, l.Size)
+		addRef(l)
+	}
+	for _, m := range parsed.Manifests {
+		addRef(m)
 	}
 	return refs
 }

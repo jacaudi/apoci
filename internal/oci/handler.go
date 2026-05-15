@@ -497,7 +497,9 @@ func (r *Registry) fetchManifestFromUpstream(ctx context.Context, repo, referenc
 		return nil, fmt.Errorf("caching upstream manifest: %w", err)
 	}
 
-	if len(meta.layers) > 0 {
+	upstreamRefs := append([]database.BlobRef(nil), meta.layers...)
+	upstreamRefs = append(upstreamRefs, meta.children...)
+	if len(upstreamRefs) > 0 {
 		storedMan, err := r.db.GetManifestByDigest(ctx, repoObj.ID, computed)
 		if err != nil {
 			return nil, fmt.Errorf("loading cached manifest: %w", err)
@@ -505,8 +507,8 @@ func (r *Registry) fetchManifestFromUpstream(ctx context.Context, repo, referenc
 		if storedMan == nil {
 			return nil, fmt.Errorf("cached manifest not found after store")
 		}
-		if err := r.db.PutManifestLayers(ctx, storedMan.ID, meta.layers); err != nil {
-			return nil, fmt.Errorf("recording upstream manifest layers: %w", err)
+		if err := r.db.PutManifestLayers(ctx, storedMan.ID, upstreamRefs); err != nil {
+			return nil, fmt.Errorf("recording upstream manifest refs: %w", err)
 		}
 	}
 
@@ -637,6 +639,17 @@ func (r *Registry) getManifest(ctx context.Context, repo string, digest ociregis
 					}
 					if err := r.db.PutManifest(ctx, m); err != nil {
 						r.logger.Warn("failed to cache fetched manifest", "error", err)
+					} else {
+						peerMeta := parseManifestMeta(data, r.logger)
+						peerRefs := append([]database.BlobRef(nil), peerMeta.layers...)
+						peerRefs = append(peerRefs, peerMeta.children...)
+						if len(peerRefs) > 0 {
+							if stored, err := r.db.GetManifestByDigest(ctx, repoObj.ID, computed); err == nil && stored != nil {
+								if err := r.db.PutManifestLayers(ctx, stored.ID, peerRefs); err != nil {
+									r.logger.Warn("failed to record peer manifest refs", "digest", computed, "error", err)
+								}
+							}
+						}
 					}
 					metrics.RegistryManifestPullThru.Add(1)
 					desc := ociregistry.Descriptor{
@@ -1127,6 +1140,20 @@ func (r *Registry) pushManifest(ctx context.Context, repo string, tag string, co
 		}
 	}
 
+	// Children must already exist: accepting a dangling index leaves pulls broken.
+	for _, ref := range meta.children {
+		if validate.Digest(ref.Digest) != nil {
+			continue
+		}
+		child, err := r.db.GetManifestByDigest(ctx, repoObj.ID, ref.Digest)
+		if err != nil {
+			return ociregistry.Descriptor{}, fmt.Errorf("checking child manifest %s: %w", ref.Digest, err)
+		}
+		if child == nil {
+			return ociregistry.Descriptor{}, fmt.Errorf("%w: referenced manifest %s not found", ociregistry.ErrManifestUnknown, ref.Digest)
+		}
+	}
+
 	m := &database.Manifest{
 		RepositoryID:  repoObj.ID,
 		Digest:        digest,
@@ -1141,8 +1168,10 @@ func (r *Registry) pushManifest(ctx context.Context, repo string, tag string, co
 		return ociregistry.Descriptor{}, fmt.Errorf("storing manifest: %w", err)
 	}
 
-	// Layers before tag: a tag write may set immutable=true, blocking retry.
-	if len(meta.layers) > 0 {
+	// Refs before tag: a tag write may set immutable=true, blocking retry.
+	refs := append([]database.BlobRef(nil), meta.layers...)
+	refs = append(refs, meta.children...)
+	if len(refs) > 0 {
 		man, err := r.db.GetManifestByDigest(ctx, repoObj.ID, digest)
 		if err != nil {
 			return ociregistry.Descriptor{}, fmt.Errorf("loading stored manifest: %w", err)
@@ -1150,8 +1179,8 @@ func (r *Registry) pushManifest(ctx context.Context, repo string, tag string, co
 		if man == nil {
 			return ociregistry.Descriptor{}, fmt.Errorf("manifest not found after storing")
 		}
-		if err := r.db.PutManifestLayers(ctx, man.ID, meta.layers); err != nil {
-			return ociregistry.Descriptor{}, fmt.Errorf("recording manifest layers: %w", err)
+		if err := r.db.PutManifestLayers(ctx, man.ID, refs); err != nil {
+			return ociregistry.Descriptor{}, fmt.Errorf("recording manifest refs: %w", err)
 		}
 	}
 
@@ -1371,6 +1400,7 @@ func (r *Registry) referrers(ctx context.Context, repo string, digest ociregistr
 
 type manifestMeta struct {
 	layers        []database.BlobRef
+	children      []database.BlobRef
 	subjectDigest *string
 	artifactType  *string
 }
@@ -1379,6 +1409,7 @@ func parseManifestMeta(content []byte, logger *slog.Logger) manifestMeta {
 	var parsed struct {
 		Config       ocispec.Descriptor   `json:"config"`
 		Layers       []ocispec.Descriptor `json:"layers"`
+		Manifests    []ocispec.Descriptor `json:"manifests"`
 		Subject      *ocispec.Descriptor  `json:"subject,omitempty"`
 		ArtifactType string               `json:"artifactType,omitempty"`
 	}
@@ -1391,24 +1422,33 @@ func parseManifestMeta(content []byte, logger *slog.Logger) manifestMeta {
 
 	var meta manifestMeta
 
-	addRef := func(d ocispec.Descriptor) {
+	toRef := func(d ocispec.Descriptor) (database.BlobRef, bool) {
 		if d.Digest == "" {
-			return
+			return database.BlobRef{}, false
 		}
 		var mt *string
 		if d.MediaType != "" {
 			s := d.MediaType
 			mt = &s
 		}
-		meta.layers = append(meta.layers, database.BlobRef{
+		return database.BlobRef{
 			Digest:    string(d.Digest),
 			Size:      d.Size,
 			MediaType: mt,
-		})
+		}, true
 	}
-	addRef(parsed.Config)
+	if r, ok := toRef(parsed.Config); ok {
+		meta.layers = append(meta.layers, r)
+	}
 	for _, layer := range parsed.Layers {
-		addRef(layer)
+		if r, ok := toRef(layer); ok {
+			meta.layers = append(meta.layers, r)
+		}
+	}
+	for _, child := range parsed.Manifests {
+		if r, ok := toRef(child); ok {
+			meta.children = append(meta.children, r)
+		}
 	}
 
 	if parsed.Subject != nil && parsed.Subject.Digest != "" {

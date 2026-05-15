@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"cuelabs.dev/go/oci/ociregistry"
 	"github.com/stretchr/testify/require"
@@ -802,6 +803,69 @@ func TestMountBlobHTTPFlow(t *testing.T) {
 	_ = resp.Body.Close()
 
 	require.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+func TestPushIndexProtectsChildrenFromGC(t *testing.T) {
+	dir := t.TempDir()
+	db, err := database.OpenSQLite(dir, 0, 0, nopLog())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	blobs, err := blobstore.New(dir, nopLog())
+	require.NoError(t, err)
+	reg, err := NewRegistry(db, blobs, "https://test.example.com", "", "", config.DefaultMaxManifestSize, config.DefaultMaxBlobSize, nopLog())
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	repo := "test.example.com/multiarch"
+
+	pushPlatform := func(platform string) ociregistry.Descriptor {
+		cfg := []byte(`{"arch":"` + platform + `"}`)
+		cfgDesc, err := reg.PushBlob(ctx, repo, descriptorFor(cfg), strings.NewReader(string(cfg)))
+		require.NoError(t, err)
+		body := fmt.Sprintf(
+			`{"schemaVersion":2,"mediaType":"%s","config":{"digest":"%s","size":%d,"mediaType":"application/vnd.oci.image.config.v1+json"},"layers":[]}`,
+			testManifestMediaType, cfgDesc.Digest, cfgDesc.Size,
+		)
+		desc, err := reg.PushManifest(ctx, repo, "", []byte(body), testManifestMediaType)
+		require.NoError(t, err)
+		return desc
+	}
+
+	amd := pushPlatform("amd64")
+	arm := pushPlatform("arm64")
+
+	indexBody := fmt.Sprintf(
+		`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[`+
+			`{"mediaType":"%s","digest":"%s","size":%d,"platform":{"os":"linux","architecture":"amd64"}},`+
+			`{"mediaType":"%s","digest":"%s","size":%d,"platform":{"os":"linux","architecture":"arm64"}}]}`,
+		testManifestMediaType, amd.Digest, amd.Size,
+		testManifestMediaType, arm.Digest, arm.Size,
+	)
+	indexDesc, err := reg.PushManifest(ctx, repo, "v1", []byte(indexBody), "application/vnd.oci.image.index.v1+json")
+	require.NoError(t, err)
+
+	bogus := fmt.Sprintf(
+		`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":[`+
+			`{"mediaType":"%s","digest":"sha256:0000000000000000000000000000000000000000000000000000000000000000","size":1}]}`,
+		testManifestMediaType,
+	)
+	_, err = reg.PushManifest(ctx, repo, "broken", []byte(bogus), "application/vnd.oci.image.index.v1+json")
+	require.Error(t, err, "index with dangling child must be rejected")
+
+	_, err = db.ExecContext(ctx,
+		"UPDATE package_versions SET created_at = ?",
+		time.Now().Add(-2*time.Hour))
+	require.NoError(t, err)
+
+	rows, err := db.PruneUntaggedManifests(ctx, time.Hour, 100)
+	require.NoError(t, err)
+	require.Empty(t, rows, "tagged index + referenced children must survive prune")
+
+	for _, d := range []string{string(amd.Digest), string(arm.Digest), string(indexDesc.Digest)} {
+		reader, err := reg.GetManifest(ctx, repo, ociregistry.Digest(d))
+		require.NoError(t, err, "%s should still be pullable", d)
+		_ = reader.Close()
+	}
 }
 
 func descriptorFor(data []byte) ociregistry.Descriptor {
