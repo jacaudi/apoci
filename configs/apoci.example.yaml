@@ -45,6 +45,7 @@ endpoint: "https://registry.example.com"
 #   allowedDomains: []         # always auto-accept follows from these domains
 #   blockedDomains: []         # silently drop all activities from these domains
 #   blockedActors: []          # silently drop all activities from these actor URLs
+#   excludedRepos: []          # OCI repo path.Match globs that are never federated outbound
 
 # gc:
 #   enabled: true              # set to false to disable background garbage collection

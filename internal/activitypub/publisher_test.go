@@ -46,7 +46,7 @@ func TestPublishManifestRespectsFilter(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	id, _ := LoadOrCreateIdentity("https://test.example.com", "test.example.com", "", "", discardLogger())
-	pub := NewAPPublisher(id, db, "https://test.example.com", discardLogger())
+	pub := NewAPPublisher(id, db, "https://test.example.com", nil, discardLogger())
 	t.Cleanup(pub.Stop)
 
 	ctx := context.Background()
@@ -74,6 +74,55 @@ func TestPublishManifestRespectsFilter(t *testing.T) {
 	require.Equal(t, "v*", *c.FederationTagGlobs)
 }
 
+const excludedRepo = "eleboucher/agentmemory"
+
+func TestRepoExcluded(t *testing.T) {
+	pub := &APPublisher{excludedRepos: []string{excludedRepo, "user/glob-*"}}
+	cases := []struct {
+		repo string
+		want bool
+	}{
+		{excludedRepo, true},
+		{"user/glob-foo", true},
+		{"user/glob-bar", true},
+		{"user/other", false},
+		{"eleboucher/agentmemory-mcp", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		t.Run(c.repo, func(t *testing.T) {
+			require.Equal(t, c.want, pub.repoExcluded(c.repo))
+		})
+	}
+}
+
+func TestPublishManifestSkippedForExcludedRepo(t *testing.T) {
+	dir := t.TempDir()
+	db, err := database.OpenSQLite(dir, 0, 0, discardLogger())
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	id, _ := LoadOrCreateIdentity("https://test.example.com", "test.example.com", "", "", discardLogger())
+	pub := NewAPPublisher(id, db, "https://test.example.com", []string{excludedRepo}, discardLogger())
+	t.Cleanup(pub.Stop)
+
+	ctx := context.Background()
+	manifest := []byte(`{"schemaVersion":2}`)
+	require.NoError(t, pub.PublishManifest(ctx, excludedRepo, "latest", "sha256:abc", "application/vnd.oci.image.manifest.v1+json", int64(len(manifest)), manifest, nil))
+	require.NoError(t, pub.PublishTag(ctx, excludedRepo, "latest", "sha256:abc"))
+	require.NoError(t, pub.PublishManifestDelete(ctx, excludedRepo, "sha256:abc"))
+	require.NoError(t, pub.PublishTagDelete(ctx, excludedRepo, "latest"))
+
+	activities, err := db.ListActivitiesPage(ctx, id.ActorURL, 0, 10)
+	require.NoError(t, err)
+	require.Empty(t, activities, "excluded repo activities must not be persisted")
+
+	require.NoError(t, pub.PublishManifest(ctx, "eleboucher/other", "latest", "sha256:def", "application/vnd.oci.image.manifest.v1+json", int64(len(manifest)), manifest, nil))
+	activities, err = db.ListActivitiesPage(ctx, id.ActorURL, 0, 10)
+	require.NoError(t, err)
+	require.Len(t, activities, 1)
+}
+
 func TestPublishManifestCreatesActivity(t *testing.T) {
 	dir := t.TempDir()
 	db, err := database.OpenSQLite(dir, 0, 0, discardLogger())
@@ -81,7 +130,7 @@ func TestPublishManifestCreatesActivity(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	id, _ := LoadOrCreateIdentity("https://test.example.com", "test.example.com", "", "", discardLogger())
-	pub := NewAPPublisher(id, db, "https://test.example.com", discardLogger())
+	pub := NewAPPublisher(id, db, "https://test.example.com", nil, discardLogger())
 	t.Cleanup(pub.Stop)
 
 	ctx := context.Background()
@@ -111,7 +160,7 @@ func TestPublishTagCreatesUpdateActivity(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	id, _ := LoadOrCreateIdentity("https://test.example.com", "test.example.com", "", "", discardLogger())
-	pub := NewAPPublisher(id, db, "https://test.example.com", discardLogger())
+	pub := NewAPPublisher(id, db, "https://test.example.com", nil, discardLogger())
 	t.Cleanup(pub.Stop)
 
 	ctx := context.Background()
@@ -131,7 +180,7 @@ func TestPublishManifestDeleteCreatesDeleteActivity(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	id, _ := LoadOrCreateIdentity("https://test.example.com", "test.example.com", "", "", discardLogger())
-	pub := NewAPPublisher(id, db, "https://test.example.com", discardLogger())
+	pub := NewAPPublisher(id, db, "https://test.example.com", nil, discardLogger())
 	t.Cleanup(pub.Stop)
 
 	ctx := context.Background()
@@ -161,7 +210,7 @@ func TestPublishTagDeleteCreatesDeleteActivity(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	id, _ := LoadOrCreateIdentity("https://test.example.com", "test.example.com", "", "", discardLogger())
-	pub := NewAPPublisher(id, db, "https://test.example.com", discardLogger())
+	pub := NewAPPublisher(id, db, "https://test.example.com", nil, discardLogger())
 	t.Cleanup(pub.Stop)
 
 	ctx := context.Background()
@@ -189,7 +238,7 @@ func TestPublishBlobRefCreatesAnnounceActivity(t *testing.T) {
 	defer func() { _ = db.Close() }()
 
 	id, _ := LoadOrCreateIdentity("https://test.example.com", "test.example.com", "", "", discardLogger())
-	pub := NewAPPublisher(id, db, "https://test.example.com", discardLogger())
+	pub := NewAPPublisher(id, db, "https://test.example.com", nil, discardLogger())
 	t.Cleanup(pub.Stop)
 
 	ctx := context.Background()

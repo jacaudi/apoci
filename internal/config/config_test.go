@@ -402,6 +402,35 @@ federation:
 	require.Equal(t, 12*time.Hour, cfg.Federation.OutgoingFollowRejectedTTL)
 }
 
+func TestFederationExcludedRepos(t *testing.T) {
+	dir := t.TempDir()
+	path := writeConfig(t, fmt.Sprintf(`
+endpoint: "https://test.example.com"
+dataDir: %q
+federation:
+  excludedRepos:
+    - eleboucher/agentmemory
+    - user/glob-*
+`, dir))
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	require.Equal(t, []string{"eleboucher/agentmemory", "user/glob-*"}, cfg.Federation.ExcludedRepos)
+}
+
+func TestFederationExcludedReposInvalidGlob(t *testing.T) {
+	dir := t.TempDir()
+	path := writeConfig(t, fmt.Sprintf(`
+endpoint: "https://test.example.com"
+dataDir: %q
+federation:
+  excludedRepos:
+    - "[bad"
+`, dir))
+	_, err := Load(path)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "federation.excludedRepos")
+}
+
 const tagLatest = "latest"
 
 func TestRetentionPerRepoFromYAML(t *testing.T) {

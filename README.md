@@ -155,6 +155,8 @@ apoci follow filter bar.com --clear
 
 Globs use `path.Match` syntax. Blob announces, manifest deletes, and untagged manifest pushes always pass the filter so peers don't end up with dangling references.
 
+To silence federation for a repo across all followers, set `federation.excludedRepos` in the config (globs use `path.Match`). Matched repos skip outbound publish entirely — no activity row, no fan-out.
+
 ## Upstream proxy
 
 apoci can act as a pull-through cache for any external OCI registry. Pull through your node using the upstream hostname as the leading path segment:

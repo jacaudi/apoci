@@ -110,7 +110,7 @@ func New(cfg *config.Config, db *database.DB, blobs blobstore.BlobStore, identit
 
 	notifier := notify.New(cfg.Name, cfg.Notifications.URLs, cfg.Notifications.Events, logger)
 
-	apPublisher := activitypub.NewAPPublisher(identity, db, cfg.Endpoint, logger)
+	apPublisher := activitypub.NewAPPublisher(identity, db, cfg.Endpoint, cfg.Federation.ExcludedRepos, logger)
 	apResolver := activitypub.NewAPResolver(db, logger)
 	deliveryQueue := activitypub.NewDeliveryQueue(db, identity, logger)
 	fetcher := peering.NewFetcher(cfg.Peering.FetchTimeout, cfg.Limits.MaxBlobSize, cfg.Limits.MaxManifestSize, logger)

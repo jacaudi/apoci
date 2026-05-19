@@ -44,25 +44,27 @@ type PublisherRepository interface {
 }
 
 type APPublisher struct {
-	identity   *Identity
-	db         PublisherRepository
-	actorCache *ActorCache
-	endpoint   string
-	logger     *slog.Logger
-	onEnqueue  func()
+	identity      *Identity
+	db            PublisherRepository
+	actorCache    *ActorCache
+	endpoint      string
+	excludedRepos []string
+	logger        *slog.Logger
+	onEnqueue     func()
 }
 
 func (p *APPublisher) SetNotifyFunc(fn func()) {
 	p.onEnqueue = fn
 }
 
-func NewAPPublisher(identity *Identity, db PublisherRepository, endpoint string, logger *slog.Logger) *APPublisher {
+func NewAPPublisher(identity *Identity, db PublisherRepository, endpoint string, excludedRepos []string, logger *slog.Logger) *APPublisher {
 	return &APPublisher{
-		identity:   identity,
-		db:         db,
-		actorCache: NewActorCache(identity),
-		endpoint:   endpoint,
-		logger:     logger,
+		identity:      identity,
+		db:            db,
+		actorCache:    NewActorCache(identity),
+		endpoint:      endpoint,
+		excludedRepos: excludedRepos,
+		logger:        logger,
 	}
 }
 
@@ -170,6 +172,10 @@ func (p *APPublisher) ActorCache() *ActorCache {
 }
 
 func (p *APPublisher) createAndDeliver(ctx context.Context, activityType string, object any, pubCtx pubContext) error {
+	if p.repoExcluded(pubCtx.repo) {
+		p.logger.Debug("publisher: repo excluded from outbound federation", "repo", pubCtx.repo, "activityType", activityType)
+		return nil
+	}
 	metrics.OutboundActivities.WithLabelValues(activityType).Inc()
 	activityID := p.activityURL()
 	followersURL := p.endpoint + "/ap/followers"
@@ -195,6 +201,21 @@ func (p *APPublisher) createAndDeliver(ctx context.Context, activityType string,
 	}
 
 	return p.enqueueToFollowers(ctx, activityID, activityJSON, pubCtx)
+}
+
+// repoExcluded reports whether outbound federation should drop activities for repo.
+// Activities without a repo (npm/cargo/pypi via Publish, OCI blob announces) always
+// pass since the filter is repo-scoped.
+func (p *APPublisher) repoExcluded(repo string) bool {
+	if repo == "" {
+		return false
+	}
+	for _, g := range p.excludedRepos {
+		if ok, err := path.Match(g, repo); err == nil && ok {
+			return true
+		}
+	}
+	return false
 }
 
 // actorAcceptsActivity matches a follower's federation_tag_globs filter against

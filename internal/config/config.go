@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -102,6 +103,7 @@ type Federation struct {
 	AllowedDomains            []string      `yaml:"allowedDomains"         env:"ALLOWED_DOMAINS" envSeparator:","` // always auto-accept from these domains
 	BlockedDomains            []string      `yaml:"blockedDomains"         env:"BLOCKED_DOMAINS" envSeparator:","` // silently drop all activities from these domains
 	BlockedActors             []string      `yaml:"blockedActors"          env:"BLOCKED_ACTORS"  envSeparator:","` // silently drop all activities from these actor URLs
+	ExcludedRepos             []string      `yaml:"excludedRepos"          env:"EXCLUDED_REPOS"  envSeparator:","` // OCI repo path.Match globs that are never federated outbound
 	OutgoingFollowPendingTTL  time.Duration `yaml:"outgoingFollowPendingTTL"  env:"OUTGOING_FOLLOW_PENDING_TTL"`   // TTL for pending outgoing follows (default: 7 days)
 	OutgoingFollowRejectedTTL time.Duration `yaml:"outgoingFollowRejectedTTL" env:"OUTGOING_FOLLOW_REJECTED_TTL"`  // TTL for rejected outgoing follows (default: 24 hours)
 }
@@ -636,6 +638,11 @@ func validateFederation(cfg *Config) error {
 	validAutoAccept := map[string]bool{AutoAcceptNone: true, AutoAcceptMutual: true, AutoAcceptAll: true}
 	if !validAutoAccept[cfg.Federation.AutoAccept] {
 		return fmt.Errorf("federation.autoAccept must be 'none', 'mutual', or 'all'")
+	}
+	for i, g := range cfg.Federation.ExcludedRepos {
+		if _, err := pathpkg.Match(g, ""); err != nil {
+			return fmt.Errorf("federation.excludedRepos[%d]: invalid glob %q: %w", i, g, err)
+		}
 	}
 	return nil
 }
