@@ -291,21 +291,33 @@ func (s *Server) adminEvictMirror(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if digest != "" {
-		if err := s.db.DeleteManifest(r.Context(), repoObj.ID, digest); err != nil {
+		purged, err := s.db.DeletePackageVersionWithBlobs(r.Context(), repoObj.ID, digest)
+		if err != nil {
 			s.logger.Error("evicting mirror manifest", "repo", repo, "digest", digest, "error", err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
-		writeJSON(w, map[string]string{"evicted": repo, "digest": digest})
+		for _, d := range purged {
+			if err := s.blobs.Delete(r.Context(), d); err != nil {
+				s.logger.Warn("evict: failed to delete blob bytes", "digest", d, "error", err)
+			}
+		}
+		writeJSON(w, map[string]any{"evicted": repo, "digest": digest, "blobsPurged": len(purged)})
 		return
 	}
 
-	if err := s.db.DeleteRepository(r.Context(), repoObj.ID); err != nil {
+	purged, err := s.db.DeletePackageWithBlobs(r.Context(), repoObj.ID)
+	if err != nil {
 		s.logger.Error("evicting mirror repository", "repo", repo, "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, map[string]string{"evicted": repo})
+	for _, d := range purged {
+		if err := s.blobs.Delete(r.Context(), d); err != nil {
+			s.logger.Warn("evict: failed to delete blob bytes", "digest", d, "error", err)
+		}
+	}
+	writeJSON(w, map[string]any{"evicted": repo, "blobsPurged": len(purged)})
 }
 
 func (s *Server) adminRunGC(w http.ResponseWriter, r *http.Request) {

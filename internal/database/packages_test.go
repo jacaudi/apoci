@@ -719,3 +719,20 @@ func TestListLocallyHostedRepos(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, repos, 2)
 }
+
+func TestMarkPackageWithdrawn(t *testing.T) {
+	ctx := context.Background()
+	db := testDB(t)
+	pkg, err := db.GetOrCreatePackage(ctx, "oci", "example/repo", "actor-url")
+	require.NoError(t, err)
+
+	pending, err := db.ListPackagesPendingWithdrawal(ctx, "oci")
+	require.NoError(t, err)
+	require.Len(t, pending, 1)
+
+	require.NoError(t, db.MarkPackageWithdrawn(ctx, pkg.ID))
+
+	pending, err = db.ListPackagesPendingWithdrawal(ctx, "oci")
+	require.NoError(t, err)
+	require.Empty(t, pending)
+}

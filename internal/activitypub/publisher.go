@@ -145,6 +145,20 @@ func (p *APPublisher) PublishTagDelete(ctx context.Context, repo, tag string) er
 	return p.createAndDeliver(ctx, ActivityDelete, object, pubContext{kind: pubKindTagDelete, repo: repo, tag: tag})
 }
 
+func (p *APPublisher) WithdrawRepo(ctx context.Context, repo string, tags []string, manifestDigests []string) error {
+	for _, tag := range tags {
+		if err := p.PublishTagDelete(ctx, repo, tag); err != nil {
+			return fmt.Errorf("publishing tag delete %s:%s: %w", repo, tag, err)
+		}
+	}
+	for _, dgst := range manifestDigests {
+		if err := p.PublishManifestDelete(ctx, repo, dgst); err != nil {
+			return fmt.Errorf("publishing manifest delete %s@%s: %w", repo, dgst, err)
+		}
+	}
+	return nil
+}
+
 func (p *APPublisher) PublishBlobRef(ctx context.Context, digest string, size int64) error {
 	objectID := p.objectURL("blob", digest)
 
@@ -172,7 +186,9 @@ func (p *APPublisher) ActorCache() *ActorCache {
 }
 
 func (p *APPublisher) createAndDeliver(ctx context.Context, activityType string, object any, pubCtx pubContext) error {
-	if p.repoExcluded(pubCtx.repo) {
+	// Delete bypasses the exclusion filter so a repo added to excludedRepos
+	// can still be withdrawn from peers via WithdrawRepo.
+	if activityType != ActivityDelete && p.repoExcluded(pubCtx.repo) {
 		p.logger.Debug("publisher: repo excluded from outbound federation", "repo", pubCtx.repo, "activityType", activityType)
 		return nil
 	}

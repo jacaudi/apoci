@@ -18,12 +18,13 @@ const (
 type Package struct {
 	bun.BaseModel `bun:"table:packages"`
 
-	ID        int64     `bun:"id,pk,autoincrement"`
-	Type      string    `bun:"type,notnull"`
-	Name      string    `bun:"name,notnull"`
-	OwnerID   string    `bun:"owner_id,notnull"`
-	Private   bool      `bun:"private,notnull,default:false"`
-	CreatedAt time.Time `bun:"created_at,notnull,default:current_timestamp"`
+	ID                    int64      `bun:"id,pk,autoincrement"`
+	Type                  string     `bun:"type,notnull"`
+	Name                  string     `bun:"name,notnull"`
+	OwnerID               string     `bun:"owner_id,notnull"`
+	Private               bool       `bun:"private,notnull,default:false"`
+	CreatedAt             time.Time  `bun:"created_at,notnull,default:current_timestamp"`
+	FederationWithdrawnAt *time.Time `bun:"federation_withdrawn_at"`
 }
 
 // PackageVersion's Version is the backend's identifier (digest for OCI,

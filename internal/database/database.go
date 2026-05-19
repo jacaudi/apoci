@@ -217,6 +217,16 @@ func (db *DB) migrate(ctx context.Context) error {
 		}
 		version = 7
 	}
+
+	if version < 8 {
+		if err := db.migrateV8(ctx); err != nil {
+			return fmt.Errorf("migration v8: %w", err)
+		}
+		if _, err := db.bun.ExecContext(ctx, `UPDATE schema_version SET version = 8`); err != nil {
+			return fmt.Errorf("updating schema version to 8: %w", err)
+		}
+		version = 8
+	}
 	_ = version // used by future migrations
 
 	return nil
@@ -226,6 +236,10 @@ func (db *DB) migrate(ctx context.Context) error {
 // Idempotent: skips if the column already exists.
 func (db *DB) migrateV7(ctx context.Context) error {
 	return db.addColumnIfMissing(ctx, "actors", "federation_tag_globs", "TEXT")
+}
+
+func (db *DB) migrateV8(ctx context.Context) error {
+	return db.addColumnIfMissing(ctx, "packages", "federation_withdrawn_at", "TIMESTAMP")
 }
 
 func (db *DB) addColumnIfMissing(ctx context.Context, table, column, definition string) error {

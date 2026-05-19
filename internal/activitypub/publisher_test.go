@@ -110,17 +110,58 @@ func TestPublishManifestSkippedForExcludedRepo(t *testing.T) {
 	manifest := []byte(`{"schemaVersion":2}`)
 	require.NoError(t, pub.PublishManifest(ctx, excludedRepo, "latest", "sha256:abc", "application/vnd.oci.image.manifest.v1+json", int64(len(manifest)), manifest, nil))
 	require.NoError(t, pub.PublishTag(ctx, excludedRepo, "latest", "sha256:abc"))
-	require.NoError(t, pub.PublishManifestDelete(ctx, excludedRepo, "sha256:abc"))
-	require.NoError(t, pub.PublishTagDelete(ctx, excludedRepo, "latest"))
 
 	activities, err := db.ListActivitiesPage(ctx, id.ActorURL, 0, 10)
 	require.NoError(t, err)
-	require.Empty(t, activities, "excluded repo activities must not be persisted")
+	require.Empty(t, activities, "excluded repo non-Delete activities must not be persisted")
 
 	require.NoError(t, pub.PublishManifest(ctx, "eleboucher/other", "latest", "sha256:def", "application/vnd.oci.image.manifest.v1+json", int64(len(manifest)), manifest, nil))
 	activities, err = db.ListActivitiesPage(ctx, id.ActorURL, 0, 10)
 	require.NoError(t, err)
 	require.Len(t, activities, 1)
+}
+
+func TestPublishDeleteBypassesExcludedRepo(t *testing.T) {
+	dir := t.TempDir()
+	db, err := database.OpenSQLite(dir, 0, 0, discardLogger())
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	id, _ := LoadOrCreateIdentity("https://test.example.com", "test.example.com", "", "", discardLogger())
+	pub := NewAPPublisher(id, db, "https://test.example.com", []string{excludedRepo}, discardLogger())
+	t.Cleanup(pub.Stop)
+
+	ctx := context.Background()
+	require.NoError(t, pub.PublishManifestDelete(ctx, excludedRepo, "sha256:abc"))
+	require.NoError(t, pub.PublishTagDelete(ctx, excludedRepo, "latest"))
+
+	activities, err := db.ListActivitiesPage(ctx, id.ActorURL, 0, 10)
+	require.NoError(t, err)
+	require.Len(t, activities, 2, "Delete activities for excluded repo must still be persisted for withdrawal")
+	for _, a := range activities {
+		require.Equal(t, "Delete", a.Type)
+	}
+}
+
+func TestWithdrawRepoEmitsDeletesForExcludedRepo(t *testing.T) {
+	dir := t.TempDir()
+	db, err := database.OpenSQLite(dir, 0, 0, discardLogger())
+	require.NoError(t, err)
+	defer func() { _ = db.Close() }()
+
+	id, _ := LoadOrCreateIdentity("https://test.example.com", "test.example.com", "", "", discardLogger())
+	pub := NewAPPublisher(id, db, "https://test.example.com", []string{excludedRepo}, discardLogger())
+	t.Cleanup(pub.Stop)
+
+	ctx := context.Background()
+	require.NoError(t, pub.WithdrawRepo(ctx, excludedRepo, []string{"latest", "v1.0"}, []string{"sha256:abc", "sha256:def"}))
+
+	activities, err := db.ListActivitiesPage(ctx, id.ActorURL, 0, 10)
+	require.NoError(t, err)
+	require.Len(t, activities, 4)
+	for _, a := range activities {
+		require.Equal(t, "Delete", a.Type)
+	}
 }
 
 func TestPublishManifestCreatesActivity(t *testing.T) {

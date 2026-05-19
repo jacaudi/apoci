@@ -624,6 +624,168 @@ func (db *DB) DeleteRepository(ctx context.Context, repoID int64) error {
 	return db.DeletePackage(ctx, repoID)
 }
 
+func (db *DB) ListPackagesPendingWithdrawal(ctx context.Context, pkgType string) ([]Package, error) {
+	var pkgs []Package
+	err := db.bun.NewSelect().Model(&pkgs).
+		Where("type = ?", pkgType).
+		Where("federation_withdrawn_at IS NULL").
+		Scan(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing packages pending withdrawal: %w", err)
+	}
+	return pkgs, nil
+}
+
+func (db *DB) MarkPackageWithdrawn(ctx context.Context, packageID int64) error {
+	_, err := db.bun.NewRaw(
+		"UPDATE packages SET federation_withdrawn_at = current_timestamp WHERE id = ?",
+		packageID,
+	).Exec(ctx)
+	if err != nil {
+		return fmt.Errorf("marking package withdrawn: %w", err)
+	}
+	return nil
+}
+
+// DeletePackageWithBlobs returns digests whose blob rows it deleted; the caller
+// removes the bytes from storage. Unlike GC, peer_blobs does not gate purge.
+func (db *DB) DeletePackageWithBlobs(ctx context.Context, packageID int64) ([]string, error) {
+	tx, err := db.bun.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("beginning delete package transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var candidates []string
+	if err := tx.NewRaw(
+		`SELECT DISTINCT pf.blob_digest
+		 FROM package_files pf
+		 JOIN package_versions pv ON pv.id = pf.version_id
+		 JOIN blobs b ON b.digest = pf.blob_digest
+		 WHERE pv.package_id = ?`, packageID,
+	).Scan(ctx, &candidates); err != nil {
+		return nil, fmt.Errorf("collecting blob digests for package: %w", err)
+	}
+
+	if _, err := tx.NewRaw(
+		`DELETE FROM package_files
+		 WHERE version_id IN (SELECT id FROM package_versions WHERE package_id = ?)`,
+		packageID,
+	).Exec(ctx); err != nil {
+		return nil, fmt.Errorf("deleting package files: %w", err)
+	}
+	if _, err := tx.NewRaw(
+		"DELETE FROM package_tags WHERE package_id = ?", packageID,
+	).Exec(ctx); err != nil {
+		return nil, fmt.Errorf("deleting package tags: %w", err)
+	}
+	if _, err := tx.NewRaw(
+		"DELETE FROM package_versions WHERE package_id = ?", packageID,
+	).Exec(ctx); err != nil {
+		return nil, fmt.Errorf("deleting package versions: %w", err)
+	}
+	if _, err := tx.NewRaw(
+		"DELETE FROM packages WHERE id = ?", packageID,
+	).Exec(ctx); err != nil {
+		return nil, fmt.Errorf("deleting package: %w", err)
+	}
+
+	purged, err := purgeUnreferencedBlobs(ctx, tx, candidates)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("committing delete package transaction: %w", err)
+	}
+	return purged, nil
+}
+
+func (db *DB) DeletePackageVersionWithBlobs(ctx context.Context, packageID int64, version string) ([]string, error) {
+	tx, err := db.bun.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("beginning delete version transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	var versionID int64
+	if err := tx.NewRaw(
+		"SELECT id FROM package_versions WHERE package_id = ? AND version = ?",
+		packageID, version,
+	).Scan(ctx, &versionID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("looking up version: %w", err)
+	}
+
+	var candidates []string
+	if err := tx.NewRaw(
+		`SELECT DISTINCT pf.blob_digest
+		 FROM package_files pf
+		 JOIN blobs b ON b.digest = pf.blob_digest
+		 WHERE pf.version_id = ?`, versionID,
+	).Scan(ctx, &candidates); err != nil {
+		return nil, fmt.Errorf("collecting blob digests for version: %w", err)
+	}
+
+	if _, err := tx.NewRaw(
+		"DELETE FROM package_tags WHERE package_id = ? AND version = ? AND immutable = false",
+		packageID, version,
+	).Exec(ctx); err != nil {
+		return nil, fmt.Errorf("deleting tags for version: %w", err)
+	}
+	var immutableCount int
+	if err := tx.NewRaw(
+		"SELECT COUNT(*) FROM package_tags WHERE package_id = ? AND version = ? AND immutable = true",
+		packageID, version,
+	).Scan(ctx, &immutableCount); err != nil {
+		return nil, fmt.Errorf("checking immutable tags: %w", err)
+	}
+	if immutableCount > 0 {
+		return nil, fmt.Errorf("%w: version has immutable tags", ErrTagImmutable)
+	}
+
+	if _, err := tx.NewRaw(
+		"DELETE FROM package_files WHERE version_id = ?", versionID,
+	).Exec(ctx); err != nil {
+		return nil, fmt.Errorf("deleting files for version: %w", err)
+	}
+	if _, err := tx.NewRaw(
+		"DELETE FROM package_versions WHERE id = ?", versionID,
+	).Exec(ctx); err != nil {
+		return nil, fmt.Errorf("deleting version: %w", err)
+	}
+
+	purged, err := purgeUnreferencedBlobs(ctx, tx, candidates)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("committing delete version transaction: %w", err)
+	}
+	return purged, nil
+}
+
+func purgeUnreferencedBlobs(ctx context.Context, tx bun.Tx, candidates []string) ([]string, error) {
+	purged := make([]string, 0, len(candidates))
+	for _, d := range candidates {
+		var refs int
+		if err := tx.NewRaw(
+			"SELECT COUNT(*) FROM package_files WHERE blob_digest = ?", d,
+		).Scan(ctx, &refs); err != nil {
+			return nil, fmt.Errorf("counting remaining refs for %s: %w", d, err)
+		}
+		if refs > 0 {
+			continue
+		}
+		if _, err := tx.NewRaw("DELETE FROM blobs WHERE digest = ?", d).Exec(ctx); err != nil {
+			return nil, fmt.Errorf("deleting blob row %s: %w", d, err)
+		}
+		purged = append(purged, d)
+	}
+	return purged, nil
+}
+
 func (db *DB) PutManifestLayers(ctx context.Context, manifestID int64, refs []BlobRef) error {
 	return db.PutBlobReferences(ctx, manifestID, refs)
 }

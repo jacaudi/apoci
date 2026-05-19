@@ -1069,11 +1069,22 @@ func TestAdminEvictMirrorWholeRepo(t *testing.T) {
 	const remote = "https://remote.example.com/ap/actor"
 	repo, err := s.db.GetOrCreateRepository(ctx, "ghcr.io/user/mirrored", remote)
 	require.NoError(t, err)
+	manifestDigest := "sha256:" + strings.Repeat("a", 64)
 	require.NoError(t, s.db.PutManifest(ctx, &database.Manifest{
 		RepositoryID: repo.ID,
-		Digest:       "sha256:" + strings.Repeat("a", 64),
+		Digest:       manifestDigest,
 		MediaType:    "application/vnd.oci.image.manifest.v1+json",
 		Content:      []byte(`{}`),
+	}))
+
+	layerDigest, layerSize, err := s.blobs.Put(ctx, strings.NewReader("layerdata-whole"), "")
+	require.NoError(t, err)
+	require.NoError(t, s.db.PutBlob(ctx, layerDigest, layerSize, nil, true))
+	man, err := s.db.GetManifestByDigest(ctx, repo.ID, manifestDigest)
+	require.NoError(t, err)
+	require.NotNil(t, man)
+	require.NoError(t, s.db.PutManifestLayers(ctx, man.ID, []database.BlobRef{
+		{Digest: layerDigest, Size: layerSize},
 	}))
 
 	beforeActs, err := s.db.ListActivitiesPage(ctx, s.identity.ActorURL, 0, 50)
@@ -1092,6 +1103,11 @@ func TestAdminEvictMirrorWholeRepo(t *testing.T) {
 	gone, err := s.db.GetRepository(ctx, "ghcr.io/user/mirrored")
 	require.NoError(t, err)
 	require.Nil(t, gone, "mirror repo row should be gone")
+
+	exists, _ := s.blobs.Exists(ctx, layerDigest)
+	require.False(t, exists, "blob bytes should be gone")
+	b, _ := s.db.GetBlob(ctx, layerDigest)
+	require.Nil(t, b, "blob row should be gone")
 
 	afterActs, err := s.db.ListActivitiesPage(ctx, s.identity.ActorURL, 0, 50)
 	require.NoError(t, err)
@@ -1115,6 +1131,16 @@ func TestAdminEvictMirrorSingleManifest(t *testing.T) {
 		Content:      []byte(`{}`),
 	}))
 
+	layerDigest, layerSize, err := s.blobs.Put(ctx, strings.NewReader("layerdata-single"), "")
+	require.NoError(t, err)
+	require.NoError(t, s.db.PutBlob(ctx, layerDigest, layerSize, nil, true))
+	man, err := s.db.GetManifestByDigest(ctx, repo.ID, dgst)
+	require.NoError(t, err)
+	require.NotNil(t, man)
+	require.NoError(t, s.db.PutManifestLayers(ctx, man.ID, []database.BlobRef{
+		{Digest: layerDigest, Size: layerSize},
+	}))
+
 	srv := httptest.NewServer(s.routes())
 	defer srv.Close()
 
@@ -1131,6 +1157,11 @@ func TestAdminEvictMirrorSingleManifest(t *testing.T) {
 	stillThere, err := s.db.GetRepository(ctx, "ghcr.io/user/mirrored")
 	require.NoError(t, err)
 	require.NotNil(t, stillThere, "repo row should remain after per-manifest evict")
+
+	exists, _ := s.blobs.Exists(ctx, layerDigest)
+	require.False(t, exists, "blob bytes should be gone")
+	b, _ := s.db.GetBlob(ctx, layerDigest)
+	require.Nil(t, b, "blob row should be gone")
 }
 
 func TestAdminEvictMirrorRejectsLocallyOwned(t *testing.T) {

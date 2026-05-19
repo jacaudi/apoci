@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"path"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -33,7 +34,9 @@ import (
 type Server struct {
 	cfg                 *config.Config
 	db                  *database.DB
+	blobs               blobstore.BlobStore
 	identity            *activitypub.Identity
+	publisher           *activitypub.APPublisher
 	fedSvc              *federation.Service
 	registry            *oci.Registry
 	workers             *workers.Workers
@@ -284,7 +287,9 @@ func New(cfg *config.Config, db *database.DB, blobs blobstore.BlobStore, identit
 	s := &Server{
 		cfg:           cfg,
 		db:            db,
+		blobs:         blobs,
 		identity:      identity,
+		publisher:     apPublisher,
 		deliveryQueue: deliveryQueue,
 		fedSvc: &federation.Service{
 			Fed:      &federation.RealFederator{Identity: identity, Enqueue: enqueueFunc},
@@ -341,7 +346,8 @@ func (s *Server) Start(ctx context.Context) error {
 	s.workers.Start(ctx)
 
 	go s.deliveryQueue.PreWarmCircuit(ctx)
-	go s.fedSvc.RefreshActors(ctx) //nolint:gosec // initial refresh on startup before first periodic run
+	go s.fedSvc.RefreshActors(ctx)         //nolint:gosec // initial refresh on startup before first periodic run
+	go s.runFederationWithdrawalSweep(ctx) //nolint:gosec
 
 	if s.cfg.Metrics.Enabled {
 		metricsMux := http.NewServeMux()
@@ -412,4 +418,56 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 	<-shutdownDone
 	return serveErr
+}
+
+// Stamps federation_withdrawn_at so subsequent restarts don't re-emit.
+func (s *Server) runFederationWithdrawalSweep(ctx context.Context) {
+	globs := s.cfg.Federation.ExcludedRepos
+	if len(globs) == 0 {
+		return
+	}
+	pending, err := s.db.ListPackagesPendingWithdrawal(ctx, "oci")
+	if err != nil {
+		s.logger.Error("withdrawal sweep: listing pending packages", "error", err)
+		return
+	}
+	for _, pkg := range pending {
+		matched := false
+		for _, g := range globs {
+			if ok, err := path.Match(g, pkg.Name); err == nil && ok {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+		tags, err := s.db.ListPackageTags(ctx, pkg.ID)
+		if err != nil {
+			s.logger.Error("withdrawal sweep: listing tags", "repo", pkg.Name, "error", err)
+			continue
+		}
+		versions, err := s.db.ListPackageVersions(ctx, pkg.ID)
+		if err != nil {
+			s.logger.Error("withdrawal sweep: listing versions", "repo", pkg.Name, "error", err)
+			continue
+		}
+		tagNames := make([]string, len(tags))
+		for i, t := range tags {
+			tagNames[i] = t.Name
+		}
+		digests := make([]string, len(versions))
+		for i, v := range versions {
+			digests[i] = v.Version
+		}
+		if err := s.publisher.WithdrawRepo(ctx, pkg.Name, tagNames, digests); err != nil {
+			s.logger.Error("withdrawal sweep: emitting deletes", "repo", pkg.Name, "error", err)
+			continue
+		}
+		if err := s.db.MarkPackageWithdrawn(ctx, pkg.ID); err != nil {
+			s.logger.Error("withdrawal sweep: marking withdrawn", "repo", pkg.Name, "error", err)
+			continue
+		}
+		s.logger.Info("withdrawal sweep: retracted repo from peers", "repo", pkg.Name, "tags", len(tagNames), "manifests", len(digests))
+	}
 }

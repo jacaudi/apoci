@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,11 +20,12 @@ import (
 )
 
 const (
-	testRegistryToken = "test-token"
-	testDomain        = "test.example.com"
-	testGHCRRepo      = "ghcr.io/user/repo"
-	testFollowsAPI    = "/api/admin/follows"
-	testFollowBody    = `{"target":"https://x.example.com/ap/actor"}`
+	testRegistryToken        = "test-token"
+	testDomain               = "test.example.com"
+	testGHCRRepo             = "ghcr.io/user/repo"
+	testFollowsAPI           = "/api/admin/follows"
+	testFollowBody           = `{"target":"https://x.example.com/ap/actor"}`
+	testOCIManifestMediaType = "application/vnd.oci.image.manifest.v1+json"
 )
 
 func nopLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
@@ -574,4 +576,55 @@ func TestRegistryAuthFullFlow(t *testing.T) {
 	require.NoError(t, err)
 	_ = resp2.Body.Close()
 	require.NotEqual(t, http.StatusUnauthorized, resp2.StatusCode)
+}
+
+func TestFederationWithdrawalSweepEmitsDeletesAndStamps(t *testing.T) {
+	s := testServer(t)
+	ctx := context.Background()
+	s.cfg.Federation.ExcludedRepos = []string{"excluded/*"}
+
+	excluded, err := s.db.GetOrCreatePackage(ctx, "oci", "excluded/repo", s.identity.ActorURL)
+	require.NoError(t, err)
+	dgst := "sha256:" + strings.Repeat("a", 64)
+	require.NoError(t, s.db.PutPackageVersion(ctx, &database.PackageVersion{
+		PackageID: excluded.ID,
+		Version:   dgst,
+		MediaType: testOCIManifestMediaType,
+		Metadata:  []byte(`{}`),
+	}))
+	require.NoError(t, s.db.PutPackageTag(ctx, excluded.ID, "latest", dgst, false))
+
+	_, err = s.db.GetOrCreatePackage(ctx, "oci", "kept/repo", s.identity.ActorURL)
+	require.NoError(t, err)
+
+	before, err := s.db.ListActivitiesPage(ctx, s.identity.ActorURL, 0, 100)
+	require.NoError(t, err)
+
+	s.runFederationWithdrawalSweep(ctx)
+
+	after, err := s.db.ListActivitiesPage(ctx, s.identity.ActorURL, 0, 100)
+	require.NoError(t, err)
+	require.Len(t, after, len(before)+2, "expected 2 Delete activities (1 tag + 1 manifest)")
+
+	deletes := 0
+	for _, a := range after {
+		if a.Type == activitypub.ActivityDelete {
+			deletes++
+		}
+	}
+	require.Equal(t, 2, deletes)
+
+	excludedAfter, err := s.db.GetPackage(ctx, "oci", "excluded/repo")
+	require.NoError(t, err)
+	require.NotNil(t, excludedAfter.FederationWithdrawnAt, "excluded repo should be stamped withdrawn")
+
+	keptAfter, err := s.db.GetPackage(ctx, "oci", "kept/repo")
+	require.NoError(t, err)
+	require.Nil(t, keptAfter.FederationWithdrawnAt, "non-matching repo must remain pending")
+
+	// Idempotent: a second pass must emit nothing.
+	s.runFederationWithdrawalSweep(ctx)
+	final, err := s.db.ListActivitiesPage(ctx, s.identity.ActorURL, 0, 100)
+	require.NoError(t, err)
+	require.Len(t, final, len(after), "second sweep must not re-emit")
 }
