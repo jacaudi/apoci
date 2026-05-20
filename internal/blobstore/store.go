@@ -30,6 +30,8 @@ type BlobStore interface {
 	// Exists reports whether the blob is present in the store.
 	// Returns an error on storage failure; callers must not treat an error as "not found".
 	Exists(ctx context.Context, digest string) (bool, error)
+	// Size returns the blob size. ErrBlobNotFound if absent.
+	Size(ctx context.Context, digest string) (int64, error)
 	// Delete removes the blob. It is not an error if the blob does not exist.
 	Delete(ctx context.Context, digest string) error
 	ListDigests(ctx context.Context) ([]string, error)
@@ -135,6 +137,21 @@ func (s *Store) Exists(_ context.Context, digest string) (bool, error) {
 		return false, nil
 	}
 	return false, fmt.Errorf("checking blob existence: %w", err)
+}
+
+func (s *Store) Size(_ context.Context, digest string) (int64, error) {
+	path, err := s.pathForDigest(digest)
+	if err != nil {
+		return 0, err
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, ErrBlobNotFound
+		}
+		return 0, fmt.Errorf("statting blob: %w", err)
+	}
+	return fi.Size(), nil
 }
 
 func (s *Store) ModTime(_ context.Context, digest string) (time.Time, error) {

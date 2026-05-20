@@ -13,6 +13,8 @@ import (
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/notify"
 )
 
+const testManifestDigest = "sha256:m1"
+
 func testGCDeps(t *testing.T) (*database.DB, *blobstore.Store) {
 	t.Helper()
 
@@ -94,6 +96,40 @@ func TestOrphanedBlobs_LocallyStoredWithoutReferences(t *testing.T) {
 	require.Contains(t, digests, digest)
 }
 
+// Local bytes must not be pinned by peer_blobs: that row only records remote
+// locations and shouldn't survive after the last manifest reference goes away.
+func TestOrphanedBlobs_LocallyStoredIgnoresPeerBlobs(t *testing.T) {
+	db, _ := testGCDeps(t)
+	ctx := context.Background()
+
+	insertTestPeer(t, ctx, db, "https://peer.example.com/ap/actor", "https://peer.example.com")
+
+	digest := "sha256:00000000000000000000000000000000000000000000000000000000000000aa"
+	require.NoError(t, db.PutBlob(ctx, digest, 100, nil, true))
+	require.NoError(t, db.PutPeerBlob(ctx, "https://peer.example.com/ap/actor", digest, "https://peer.example.com"))
+
+	digests, err := db.OrphanedBlobs(ctx, 100, time.Time{})
+	require.NoError(t, err)
+	require.Contains(t, digests, digest)
+}
+
+// Federation-metadata rows (stored_locally=false + peer_blobs) are redirect
+// targets for OCI pulls — GC must leave them alone.
+func TestOrphanedBlobs_RemoteOnlyKeptForRedirect(t *testing.T) {
+	db, _ := testGCDeps(t)
+	ctx := context.Background()
+
+	insertTestPeer(t, ctx, db, "https://peer.example.com/ap/actor", "https://peer.example.com")
+
+	digest := "sha256:00000000000000000000000000000000000000000000000000000000000000bb"
+	require.NoError(t, db.PutBlob(ctx, digest, 100, nil, false))
+	require.NoError(t, db.PutPeerBlob(ctx, "https://peer.example.com/ap/actor", digest, "https://peer.example.com"))
+
+	digests, err := db.OrphanedBlobs(ctx, 100, time.Time{})
+	require.NoError(t, err)
+	require.NotContains(t, digests, digest)
+}
+
 func TestOrphanedBlobs_GracePeriod(t *testing.T) {
 	db, _ := testGCDeps(t)
 	ctx := context.Background()
@@ -159,7 +195,7 @@ func TestGCPreservesValidData(t *testing.T) {
 	// 2. Locally stored blob referenced by a manifest is NOT an orphan.
 	pkg, err := db.GetOrCreatePackage(ctx, "oci", "foo.com/img", "https://alice.example.com/ap/actor")
 	require.NoError(t, err)
-	v := &database.PackageVersion{PackageID: pkg.ID, Version: "sha256:m1", Metadata: []byte(`{}`)}
+	v := &database.PackageVersion{PackageID: pkg.ID, Version: testManifestDigest, Metadata: []byte(`{}`)}
 	require.NoError(t, db.PutPackageVersion(ctx, v))
 	localDigest := "sha256:2222222222222222222222222222222222222222222222222222222222222222"
 	require.NoError(t, db.PutBlob(ctx, localDigest, 200, nil, true))
@@ -183,6 +219,104 @@ func TestGCPreservesValidData(t *testing.T) {
 	diskExists, err := blobs.Exists(ctx, diskDigest)
 	require.NoError(t, err)
 	require.True(t, diskExists, "expected valid blob file to remain on disk")
+}
+
+func newReconcileGC(t *testing.T, db *database.DB, blobs *blobstore.Store) *GarbageCollector {
+	t.Helper()
+	return NewGarbageCollector(GCConfig{
+		Interval:         6 * time.Hour,
+		StalePeerBlobAge: 30 * 24 * time.Hour,
+		OrphanBatchSize:  500,
+	}, db, blobs, notify.New("test", nil, nil, nopLog()), nopLog())
+}
+
+func TestReconcile_DegradesWhenFileMissingAndPeerHasIt(t *testing.T) {
+	db, blobs := testGCDeps(t)
+	ctx := context.Background()
+	gc := newReconcileGC(t, db, blobs)
+
+	insertTestPeer(t, ctx, db, "https://peer.example.com/ap/actor", "https://peer.example.com")
+
+	digest := "sha256:00000000000000000000000000000000000000000000000000000000000000c1"
+	require.NoError(t, db.PutBlob(ctx, digest, 100, nil, true)) // claims local but file does not exist
+	require.NoError(t, db.PutPeerBlob(ctx, "https://peer.example.com/ap/actor", digest, "https://peer.example.com"))
+
+	gc.reconcileBlobStorageDrift(ctx)
+
+	got, err := db.GetBlob(ctx, digest)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.False(t, got.StoredLocally, "stored_locally should have been flipped to false")
+}
+
+func TestReconcile_PromotesWhenFilePresentAndRowSaysRemote(t *testing.T) {
+	db, blobs := testGCDeps(t)
+	ctx := context.Background()
+	gc := newReconcileGC(t, db, blobs)
+
+	digest, size, err := blobs.Put(ctx, strings.NewReader("recoverable bytes"), "")
+	require.NoError(t, err)
+	require.NoError(t, db.PutBlob(ctx, digest, size, nil, false))
+
+	gc.reconcileBlobStorageDrift(ctx)
+
+	got, err := db.GetBlob(ctx, digest)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+	require.True(t, got.StoredLocally, "stored_locally should have been flipped to true")
+}
+
+func TestReconcile_LeavesRowAloneWhenNoPeerAndFileMissing(t *testing.T) {
+	db, blobs := testGCDeps(t)
+	ctx := context.Background()
+	gc := newReconcileGC(t, db, blobs)
+
+	digest := "sha256:00000000000000000000000000000000000000000000000000000000000000c2"
+	require.NoError(t, db.PutBlob(ctx, digest, 100, nil, true))
+
+	gc.reconcileBlobStorageDrift(ctx)
+
+	got, err := db.GetBlob(ctx, digest)
+	require.NoError(t, err)
+	require.NotNil(t, got, "unrecoverable drift must not silently delete the row")
+	require.True(t, got.StoredLocally)
+}
+
+func TestOrphanedBlobFiles_RepairsRowWhenManifestStillReferences(t *testing.T) {
+	db, blobs := testGCDeps(t)
+	ctx := context.Background()
+	gc := newReconcileGC(t, db, blobs)
+
+	pkg, err := db.GetOrCreatePackage(ctx, "oci", "example/img", "https://alice.example.com/ap/actor")
+	require.NoError(t, err)
+	v := &database.PackageVersion{PackageID: pkg.ID, Version: testManifestDigest, Metadata: []byte(`{}`)}
+	require.NoError(t, db.PutPackageVersion(ctx, v))
+
+	// Write bytes to disk but leave the blobs row out — simulates a DB restore
+	// older than the on-disk store.
+	digest, size, err := blobs.Put(ctx, strings.NewReader("orphan but referenced"), "")
+	require.NoError(t, err)
+	require.NoError(t, db.PutBlobReferences(ctx, v.ID, []database.BlobRef{{Digest: digest, Size: size}}))
+
+	require.Nil(t, mustGetBlob(t, ctx, db, digest), "precondition: blobs row should not exist")
+
+	gc.cleanupOrphanedBlobFiles(ctx)
+
+	got := mustGetBlob(t, ctx, db, digest)
+	require.NotNil(t, got, "blobs row should have been repaired")
+	require.Equal(t, size, got.SizeBytes)
+	require.True(t, got.StoredLocally)
+
+	exists, err := blobs.Exists(ctx, digest)
+	require.NoError(t, err)
+	require.True(t, exists, "the file must not be deleted when repair was performed")
+}
+
+func mustGetBlob(t *testing.T, ctx context.Context, db *database.DB, digest string) *database.Blob {
+	t.Helper()
+	b, err := db.GetBlob(ctx, digest)
+	require.NoError(t, err)
+	return b
 }
 
 func TestGCStartStop(t *testing.T) {

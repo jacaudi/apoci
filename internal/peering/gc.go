@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -25,6 +26,11 @@ type GCRepository interface {
 	DeleteBlob(ctx context.Context, digest string) error
 	AllBlobDigests(ctx context.Context, pageSize int) (map[string]bool, error)
 	PruneDeletedManifests(ctx context.Context, olderThan time.Duration) (int64, error)
+	ListBlobsForReconcile(ctx context.Context, startAfter string, limit int) ([]database.BlobReconcileRow, error)
+	HasPeerBlob(ctx context.Context, digest string) (bool, error)
+	SetBlobStoredLocally(ctx context.Context, digest string, stored bool) error
+	IsBlobReferenced(ctx context.Context, digest string) (bool, error)
+	PutBlob(ctx context.Context, digest string, sizeBytes int64, mediaType *string, storedLocally bool) error
 
 	// Retention + untagged-manifest prune.
 	ListOCIPackagesForRetention(ctx context.Context, startAfter string, limit int) ([]database.PackageRetention, error)
@@ -191,6 +197,7 @@ func (gc *GarbageCollector) collect(ctx context.Context) {
 	gc.cleanupStalePeerBlobs(ctx)
 	gc.cleanupOrphanedBlobMetadata(ctx)
 	gc.cleanupOrphanedBlobFiles(ctx)
+	gc.reconcileBlobStorageDrift(ctx)
 	gc.pruneDeletedManifests(ctx)
 
 	metrics.GCCyclesCompleted.Add(1)
@@ -407,9 +414,8 @@ func (gc *GarbageCollector) cleanupOrphanedBlobMetadata(ctx context.Context) {
 	}
 }
 
-// cleanupOrphanedBlobFiles removes blob files on disk that have no DB record.
-// Files modified within BlobGCGracePeriod are skipped to dodge the upload race
-// (disk write landed, DB row not yet inserted).
+// Disk-side drift handling. DB-side lives in reconcileBlobStorageDrift.
+// Skips files within BlobGCGracePeriod to dodge in-flight-upload races.
 func (gc *GarbageCollector) cleanupOrphanedBlobFiles(ctx context.Context) {
 	diskDigests, err := gc.blobs.ListDigests(ctx)
 	if err != nil {
@@ -427,8 +433,29 @@ func (gc *GarbageCollector) cleanupOrphanedBlobFiles(ctx context.Context) {
 
 	graceCutoff := time.Now().Add(-gc.cfg.BlobGCGracePeriod)
 	removed := 0
+	repaired := 0
 	for _, digest := range diskDigests {
 		if knownDigests[digest] {
+			continue
+		}
+		// Repair before delete: a manifest may still reference this digest.
+		referenced, err := gc.db.IsBlobReferenced(ctx, digest)
+		if err != nil {
+			gc.logger.Warn("gc: failed to check blob reference", "digest", digest, "error", err)
+			continue
+		}
+		if referenced {
+			size, err := gc.blobs.Size(ctx, digest)
+			if err != nil {
+				gc.logger.Warn("gc: failed to stat blob for repair", "digest", digest, "error", err)
+				continue
+			}
+			if err := gc.db.PutBlob(ctx, digest, size, nil, true); err != nil {
+				gc.logger.Warn("gc: failed to repair blobs row", "digest", digest, "error", err)
+				continue
+			}
+			repaired++
+			gc.logger.Info("gc: repaired missing blobs row from disk", "digest", digest, "size", size)
 			continue
 		}
 		if gc.cfg.BlobGCGracePeriod > 0 {
@@ -453,5 +480,89 @@ func (gc *GarbageCollector) cleanupOrphanedBlobFiles(ctx context.Context) {
 	if removed > 0 {
 		metrics.GCOrphanedFiles.Add(float64(removed))
 		gc.logger.Info("gc: removed orphaned blob files from disk", "count", removed)
+	}
+	if repaired > 0 {
+		metrics.GCBlobRowsRepaired.Add(float64(repaired))
+		gc.logger.Info("gc: repaired blobs rows from disk-only state", "count", repaired)
+	}
+}
+
+const (
+	reconcileBlobBatchSize    = 500
+	unrecoverableSampleDigest = 5
+)
+
+// reconcileBlobStorageDrift is the DB-side leg of drift handling; the disk-side
+// leg lives in cleanupOrphanedBlobFiles.
+func (gc *GarbageCollector) reconcileBlobStorageDrift(ctx context.Context) {
+	var (
+		startAfter         string
+		degraded, promoted int
+		unrecoverable      []string
+	)
+	for {
+		rows, err := gc.db.ListBlobsForReconcile(ctx, startAfter, reconcileBlobBatchSize)
+		if err != nil {
+			gc.logger.Error("gc: drift reconcile: listing blobs", "error", err)
+			gc.notifier.Send(notify.EventGCError, fmt.Sprintf("GC: drift reconcile failed: %v", err))
+			return
+		}
+		if len(rows) == 0 {
+			break
+		}
+		for _, row := range rows {
+			exists, err := gc.blobs.Exists(ctx, row.Digest)
+			if err != nil {
+				gc.logger.Warn("gc: drift reconcile: stat failed", "digest", row.Digest, "error", err)
+				continue
+			}
+			switch {
+			case row.StoredLocally && !exists:
+				hasPeer, err := gc.db.HasPeerBlob(ctx, row.Digest)
+				if err != nil {
+					gc.logger.Warn("gc: drift reconcile: peer lookup failed", "digest", row.Digest, "error", err)
+					continue
+				}
+				if hasPeer {
+					if err := gc.db.SetBlobStoredLocally(ctx, row.Digest, false); err != nil {
+						gc.logger.Warn("gc: drift reconcile: degrade failed", "digest", row.Digest, "error", err)
+						continue
+					}
+					degraded++
+					gc.logger.Warn("gc: drift reconcile: file missing, degraded to peer redirect", "digest", row.Digest)
+					continue
+				}
+				unrecoverable = append(unrecoverable, row.Digest)
+				gc.logger.Error("gc: drift reconcile: file missing, no peer holds it", "digest", row.Digest)
+			case !row.StoredLocally && exists:
+				if err := gc.db.SetBlobStoredLocally(ctx, row.Digest, true); err != nil {
+					gc.logger.Warn("gc: drift reconcile: promote failed", "digest", row.Digest, "error", err)
+					continue
+				}
+				promoted++
+				gc.logger.Info("gc: drift reconcile: file present, promoted to stored_locally", "digest", row.Digest)
+			}
+		}
+		if len(rows) < reconcileBlobBatchSize {
+			break
+		}
+		startAfter = rows[len(rows)-1].Digest
+	}
+	if degraded > 0 {
+		metrics.GCBlobDriftDegraded.Add(float64(degraded))
+	}
+	if promoted > 0 {
+		metrics.GCBlobDriftPromoted.Add(float64(promoted))
+	}
+	if n := len(unrecoverable); n > 0 {
+		metrics.GCBlobDriftUnrecoverable.Add(float64(n))
+		// Coalesced to one notification per cycle: a disk-wipe scenario could
+		// otherwise fan out thousands of per-digest pages.
+		sample := unrecoverable
+		if n > unrecoverableSampleDigest {
+			sample = sample[:unrecoverableSampleDigest]
+		}
+		gc.notifier.Send(notify.EventGCError,
+			fmt.Sprintf("GC: %d blob(s) have file missing and no peer holds them; sample: %s", n, strings.Join(sample, ", ")))
 	}
 }

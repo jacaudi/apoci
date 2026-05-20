@@ -71,6 +71,52 @@ func (db *DB) FindRepoForBlob(ctx context.Context, digest string) (string, error
 	return name, nil
 }
 
+func (db *DB) ListBlobsForReconcile(ctx context.Context, startAfter string, limit int) ([]BlobReconcileRow, error) {
+	var rows []BlobReconcileRow
+	err := db.bun.NewRaw(
+		"SELECT digest, stored_locally FROM blobs WHERE digest > ? ORDER BY digest LIMIT ?",
+		startAfter, limit,
+	).Scan(ctx, &rows)
+	if err != nil {
+		return nil, fmt.Errorf("listing blobs for reconcile: %w", err)
+	}
+	return rows, nil
+}
+
+type BlobReconcileRow struct {
+	Digest        string `bun:"digest"`
+	StoredLocally bool   `bun:"stored_locally"`
+}
+
+func (db *DB) IsBlobReferenced(ctx context.Context, digest string) (bool, error) {
+	var exists bool
+	if err := db.bun.NewRaw(
+		"SELECT EXISTS(SELECT 1 FROM package_files WHERE blob_digest = ?)", digest,
+	).Scan(ctx, &exists); err != nil {
+		return false, fmt.Errorf("checking blob reference: %w", err)
+	}
+	return exists, nil
+}
+
+func (db *DB) HasPeerBlob(ctx context.Context, digest string) (bool, error) {
+	var exists bool
+	if err := db.bun.NewRaw(
+		"SELECT EXISTS(SELECT 1 FROM peer_blobs WHERE blob_digest = ?)", digest,
+	).Scan(ctx, &exists); err != nil {
+		return false, fmt.Errorf("checking peer blob: %w", err)
+	}
+	return exists, nil
+}
+
+func (db *DB) SetBlobStoredLocally(ctx context.Context, digest string, stored bool) error {
+	if _, err := db.bun.NewRaw(
+		"UPDATE blobs SET stored_locally = ? WHERE digest = ?", stored, digest,
+	).Exec(ctx); err != nil {
+		return fmt.Errorf("updating stored_locally for %s: %w", digest, err)
+	}
+	return nil
+}
+
 func (db *DB) DeleteBlob(ctx context.Context, digest string) error {
 	_, err := db.bun.NewRaw("DELETE FROM blobs WHERE digest = ?", digest).Exec(ctx)
 	if err != nil {
@@ -79,14 +125,15 @@ func (db *DB) DeleteBlob(ctx context.Context, digest string) error {
 	return nil
 }
 
-// OrphanedBlobs returns digests of blobs with no manifest or peer reference.
-// A non-zero createdBefore protects in-flight uploads (PutBlob committed,
-// manifest commit not yet) by excluding rows newer than the cutoff.
+// peer_blobs gates only stored_locally=false rows (federation-redirect targets).
+// Local bytes must not be pinned by remote-location hints. createdBefore
+// protects in-flight uploads (row written, manifest commit not yet).
 func (db *DB) OrphanedBlobs(ctx context.Context, limit int, createdBefore time.Time) ([]string, error) {
 	var digests []string
 	q := `SELECT b.digest FROM blobs b
 	      WHERE NOT EXISTS (SELECT 1 FROM package_files pf WHERE pf.blob_digest = b.digest)
-	        AND NOT EXISTS (SELECT 1 FROM peer_blobs pb WHERE pb.blob_digest = b.digest)`
+	        AND (b.stored_locally = true
+	             OR NOT EXISTS (SELECT 1 FROM peer_blobs pb WHERE pb.blob_digest = b.digest))`
 	args := []any{}
 	if !createdBefore.IsZero() {
 		q += " AND b.created_at < ?"

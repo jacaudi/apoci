@@ -153,6 +153,30 @@ var (
 		Name:      "disk_triggered_total",
 		Help:      "Total GC cycles triggered by disk usage threshold.",
 	})
+	GCBlobDriftDegraded = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: namespace,
+		Subsystem: "gc",
+		Name:      "blob_drift_degraded_total",
+		Help:      "Blobs flipped to stored_locally=false because the file vanished and a peer has it.",
+	})
+	GCBlobDriftPromoted = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: namespace,
+		Subsystem: "gc",
+		Name:      "blob_drift_promoted_total",
+		Help:      "Blobs flipped to stored_locally=true after the file was found on disk.",
+	})
+	GCBlobDriftUnrecoverable = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: namespace,
+		Subsystem: "gc",
+		Name:      "blob_drift_unrecoverable_total",
+		Help:      "Blobs whose file is missing and no peer is known to hold a copy.",
+	})
+	GCBlobRowsRepaired = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: namespace,
+		Subsystem: "gc",
+		Name:      "blob_rows_repaired_total",
+		Help:      "Blob rows reinserted from disk because a manifest still referenced the digest.",
+	})
 
 	// OCI registry operations.
 	RegistryManifestPushes = prometheus.NewCounter(prometheus.CounterOpts{
@@ -295,6 +319,10 @@ func init() {
 		GCUntaggedManifestsPruned,
 		GCDiskUsedPercent,
 		GCDiskTriggered,
+		GCBlobDriftDegraded,
+		GCBlobDriftPromoted,
+		GCBlobDriftUnrecoverable,
+		GCBlobRowsRepaired,
 		RegistryManifestPushes,
 		RegistryManifestPulls,
 		RegistryBlobPushes,

@@ -180,6 +180,26 @@ func (s *S3Store) Exists(ctx context.Context, digest string) (bool, error) {
 	return false, fmt.Errorf("checking blob existence: %w", err)
 }
 
+func (s *S3Store) Size(ctx context.Context, digest string) (int64, error) {
+	if err := validate.Digest(digest); err != nil {
+		return 0, err
+	}
+	out, err := s.client.HeadObject(ctx, &s3.HeadObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(s.keyForDigest(digest)),
+	})
+	if err != nil {
+		if isS3NotFound(err) {
+			return 0, ErrBlobNotFound
+		}
+		return 0, fmt.Errorf("headobject for blob: %w", err)
+	}
+	if out.ContentLength == nil {
+		return 0, nil
+	}
+	return *out.ContentLength, nil
+}
+
 func (s *S3Store) ModTime(ctx context.Context, digest string) (time.Time, error) {
 	if err := validate.Digest(digest); err != nil {
 		return time.Time{}, err
