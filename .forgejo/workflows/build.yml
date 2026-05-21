@@ -12,6 +12,9 @@ jobs:
     steps:
       - uses: https://data.forgejo.org/actions/checkout@v6
       - uses: https://data.forgejo.org/docker/setup-buildx-action@v4
+      - name: Compute build timestamp
+        id: build-meta
+        run: echo "created=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
       - name: Login to git.erwanleboucher.dev
         uses: https://data.forgejo.org/docker/login-action@v4
         with:
@@ -29,6 +32,12 @@ jobs:
             type=sha,format=long
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
+          labels: |
+            org.opencontainers.image.title=apoci
+            org.opencontainers.image.description=apoci — federated, self-hostable multi-format (OCI, npm, Cargo, PyPI) registry that publishes artifacts as an ActivityPub actor
+            org.opencontainers.image.documentation=https://git.erwanleboucher.dev/eleboucher/apoci/src/branch/main/README.md
+            org.opencontainers.image.authors=Erwan Leboucher <erwanleboucher@gmail.com>
+            org.opencontainers.image.vendor=Erwan Leboucher
       - name: Build and push
         uses: https://data.forgejo.org/docker/build-push-action@v7
         with:
@@ -37,3 +46,7 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ steps.meta.outputs.version }}
+            REVISION=${{ github.sha }}
+            CREATED=${{ steps.build-meta.outputs.created }}

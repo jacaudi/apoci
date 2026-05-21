@@ -18,6 +18,21 @@ RUN CGO_ENABLED=1 go build \
 
 FROM public.ecr.aws/docker/library/debian:bookworm-slim
 
+ARG VERSION=dev
+ARG REVISION=unknown
+ARG CREATED=
+LABEL org.opencontainers.image.title="apoci" \
+      org.opencontainers.image.description="apoci — federated, self-hostable multi-format (OCI, npm, Cargo, PyPI) registry that publishes artifacts as an ActivityPub actor" \
+      org.opencontainers.image.source="https://git.erwanleboucher.dev/eleboucher/apoci" \
+      org.opencontainers.image.url="https://git.erwanleboucher.dev/eleboucher/apoci" \
+      org.opencontainers.image.documentation="https://git.erwanleboucher.dev/eleboucher/apoci/src/branch/main/README.md" \
+      org.opencontainers.image.licenses="MIT" \
+      org.opencontainers.image.authors="Erwan Leboucher <erwanleboucher@gmail.com>" \
+      org.opencontainers.image.vendor="Erwan Leboucher" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${REVISION}" \
+      org.opencontainers.image.created="${CREATED}"
+
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates wget && \
     rm -rf /var/lib/apt/lists/*
