@@ -32,6 +32,7 @@ func (s *Server) adminRouter() http.Handler {
 	r.Delete("/follows", s.adminRemoveFollow)
 	r.Patch("/follows", s.adminUpdateFollowFilter)
 	r.Delete("/mirrors/*", s.adminEvictMirror)
+	r.Get("/gc", s.adminGCStatus)
 	r.Post("/gc", s.adminRunGC)
 
 	return r
@@ -318,6 +319,11 @@ func (s *Server) adminEvictMirror(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, map[string]any{"evicted": repo, "blobsPurged": len(purged)})
+}
+
+func (s *Server) adminGCStatus(w http.ResponseWriter, r *http.Request) {
+	s.logger.Debug("admin: GET /gc")
+	writeJSON(w, s.gc.Status())
 }
 
 func (s *Server) adminRunGC(w http.ResponseWriter, r *http.Request) {

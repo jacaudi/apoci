@@ -333,3 +333,27 @@ func TestGCStartStop(t *testing.T) {
 	// Stop should return promptly without panic.
 	gc.Stop()
 }
+
+func TestGCStatus(t *testing.T) {
+	db, blobs := testGCDeps(t)
+	ctx := context.Background()
+
+	gc := NewGarbageCollector(GCConfig{
+		Interval:         6 * time.Hour,
+		StalePeerBlobAge: 30 * 24 * time.Hour,
+		OrphanBatchSize:  500,
+	}, db, blobs, notify.New("test", nil, nil, nopLog()), nopLog())
+
+	st := gc.Status()
+	require.False(t, st.Running)
+	require.Nil(t, st.LastRun)
+	require.Equal(t, (6 * time.Hour).Milliseconds(), st.IntervalMs)
+
+	gc.RunOnce(ctx)
+
+	st = gc.Status()
+	require.False(t, st.Running)
+	require.NotNil(t, st.LastRun)
+	require.NotNil(t, st.NextRunEstimate)
+	require.Equal(t, st.LastRun.Add(6*time.Hour), *st.NextRunEstimate)
+}

@@ -87,7 +87,36 @@ type GarbageCollector struct {
 	service   runners.Service
 	mu        sync.Mutex
 	lastRunNS atomic.Int64
+	lastDurNS atomic.Int64
+	running   atomic.Bool
 	diskUsage func(path string) (int, error)
+}
+
+// GCStatus is a snapshot of the collector's last-run timing and current state.
+// Per-phase counts live in Prometheus metrics.
+type GCStatus struct {
+	Running         bool       `json:"running"`
+	LastRun         *time.Time `json:"lastRun,omitempty"`
+	LastDurationMs  int64      `json:"lastDurationMs"`
+	IntervalMs      int64      `json:"intervalMs"`
+	NextRunEstimate *time.Time `json:"nextRunEstimate,omitempty"`
+}
+
+func (gc *GarbageCollector) Status() GCStatus {
+	st := GCStatus{
+		Running:    gc.running.Load(),
+		IntervalMs: gc.cfg.Interval.Milliseconds(),
+	}
+	if ns := gc.lastRunNS.Load(); ns > 0 {
+		last := time.Unix(0, ns)
+		st.LastRun = &last
+		st.LastDurationMs = time.Duration(gc.lastDurNS.Load()).Milliseconds()
+		if gc.cfg.Interval > 0 {
+			next := last.Add(gc.cfg.Interval)
+			st.NextRunEstimate = &next
+		}
+	}
+	return st
 }
 
 func NewGarbageCollector(cfg GCConfig, db GCRepository, blobs blobstore.BlobStore, notifier Notifier, logger *slog.Logger) *GarbageCollector {
@@ -119,7 +148,6 @@ func (gc *GarbageCollector) Stop() {
 
 func (gc *GarbageCollector) RunOnce(ctx context.Context) {
 	gc.collect(ctx)
-	gc.lastRunNS.Store(time.Now().UnixNano())
 }
 
 func (gc *GarbageCollector) run(parentCtx, svcCtx context.Context) {
@@ -147,7 +175,6 @@ func (gc *GarbageCollector) run(parentCtx, svcCtx context.Context) {
 			return
 		case <-startup.C:
 			gc.collect(parentCtx)
-			gc.lastRunNS.Store(time.Now().UnixNano())
 			ticker = time.NewTicker(tick)
 			tickerC = ticker.C
 		case <-tickerC:
@@ -163,7 +190,6 @@ func (gc *GarbageCollector) diskTriggerEnabled() bool {
 func (gc *GarbageCollector) maybeCollect(ctx context.Context) {
 	if time.Since(time.Unix(0, gc.lastRunNS.Load())) >= gc.cfg.Interval {
 		gc.collect(ctx)
-		gc.lastRunNS.Store(time.Now().UnixNano())
 		return
 	}
 	if !gc.diskTriggerEnabled() {
@@ -181,7 +207,6 @@ func (gc *GarbageCollector) maybeCollect(ctx context.Context) {
 	gc.logger.Info("gc: disk usage threshold reached, triggering cycle", "used_percent", pct, "threshold", gc.cfg.DiskUsageThreshold)
 	metrics.GCDiskTriggered.Add(1)
 	gc.collect(ctx)
-	gc.lastRunNS.Store(time.Now().UnixNano())
 }
 
 const deletedManifestRetention = 30 * 24 * time.Hour
@@ -189,6 +214,15 @@ const deletedManifestRetention = 30 * 24 * time.Hour
 func (gc *GarbageCollector) collect(ctx context.Context) {
 	gc.mu.Lock()
 	defer gc.mu.Unlock()
+
+	start := time.Now()
+	gc.running.Store(true)
+	defer func() {
+		end := time.Now()
+		gc.lastRunNS.Store(end.UnixNano())
+		gc.lastDurNS.Store(end.Sub(start).Nanoseconds())
+		gc.running.Store(false)
+	}()
 
 	gc.logger.Info("starting garbage collection cycle")
 
