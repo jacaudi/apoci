@@ -11,3 +11,10 @@ func TestMain(m *testing.M) {
 	validate.AllowPrivateIPs.Store(true)
 	m.Run()
 }
+
+const testV2Root = "/v2/"
+
+const (
+	testUser = "user"
+	testPass = "pass"
+)

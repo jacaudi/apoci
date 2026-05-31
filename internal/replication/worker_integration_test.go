@@ -78,10 +78,10 @@ func newTargetRegistry() *targetRegistry {
 
 func (tr *targetRegistry) handler() http.Handler {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/v2/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc(testV2Root, func(w http.ResponseWriter, r *http.Request) {
 		p := r.URL.Path
 		switch {
-		case p == "/v2/":
+		case p == testV2Root:
 			w.WriteHeader(http.StatusOK)
 		case r.Method == http.MethodHead && strings.Contains(p, "/blobs/"):
 			dgst := p[strings.LastIndex(p, "/")+1:]
@@ -103,7 +103,7 @@ func (tr *targetRegistry) handler() http.Handler {
 			w.WriteHeader(http.StatusCreated)
 		case r.Method == http.MethodPut && strings.Contains(p, "/manifests/"):
 			body, _ := io.ReadAll(r.Body)
-			key := strings.TrimPrefix(p, "/v2/")
+			key := strings.TrimPrefix(p, testV2Root)
 			tr.mu.Lock()
 			tr.manifests[key] = body
 			tr.mu.Unlock()
