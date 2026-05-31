@@ -26,6 +26,7 @@ import (
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/registry/cargo"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/registry/npm"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/registry/pypi"
+	"git.erwanleboucher.dev/eleboucher/apoci/internal/scanner"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/upstream"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/validate"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/workers"
@@ -274,6 +275,24 @@ func New(cfg *config.Config, db *database.DB, blobs blobstore.BlobStore, identit
 	services := []workers.Service{healthChecker, scheduler}
 	if *cfg.GC.Enabled {
 		services = append(services, gc)
+	}
+
+	if cfg.Scanner.Enabled {
+		scanWorker := scanner.NewWorker(scanner.Config{
+			Scanner: scanner.NewTrivy(scanner.TrivyConfig{
+				BinaryPath: cfg.Scanner.Trivy.BinaryPath,
+				Insecure:   cfg.Scanner.Trivy.Insecure,
+				Username:   "apoci",
+				Password:   cfg.RegistryToken,
+			}, logger),
+			Registry:  registry,
+			Host:      stripScheme(cfg.Endpoint),
+			Timeout:   cfg.Scanner.Timeout,
+			QueueSize: cfg.Scanner.QueueSize,
+		}, logger)
+		registry.SetManifestObserver(scanWorker)
+		services = append(services, scanWorker)
+		logger.Info("inline vulnerability scanning enabled", "scanner", "trivy")
 	}
 
 	w := &workers.Workers{

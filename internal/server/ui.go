@@ -2,6 +2,7 @@ package server
 
 import (
 	"cmp"
+	"context"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/database"
+	"git.erwanleboucher.dev/eleboucher/apoci/internal/scanner"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/server/ui"
 )
 
@@ -35,6 +37,18 @@ type TagView struct {
 	UpdatedAgo  string
 	IsOCI       bool   // true if artifact_type is set (use oras pull)
 	Platform    string // e.g., "linux/amd64" or "linux/amd64, linux/arm64"
+	Scan        *ScanView
+}
+
+// ScanView is the vulnerability summary for a tag, read from an attached scan
+// referrer. Nil when no scan report exists.
+type ScanView struct {
+	Critical int
+	High     int
+	Medium   int
+	Low      int
+	Unknown  int
+	Total    int
 }
 
 type RepoTagsData struct {
@@ -206,6 +220,7 @@ func (s *Server) handleUIRepoTags(w http.ResponseWriter, r *http.Request) {
 			UpdatedAgo:  humanizeTime(t.UpdatedAt),
 			IsOCI:       t.ArtifactType != nil,
 			Platform:    extractPlatforms(t.ManifestContent, t.MediaType),
+			Scan:        s.scanSummary(ctx, repo.ID, t.Digest),
 		}
 	}
 
@@ -223,6 +238,43 @@ func (s *Server) handleUIRepoTags(w http.ResponseWriter, r *http.Request) {
 		HasNext:      tagsPage.Page < tagsPage.TotalPages,
 	}
 	s.renderTemplate(w, "repo_tags.html.tmpl", data)
+}
+
+// scanSummary returns the vulnerability summary for a tag from its attached
+// scan referrer, or nil if none exists.
+func (s *Server) scanSummary(ctx context.Context, repoID int64, digest string) *ScanView {
+	manifests, err := s.db.ListManifestsBySubject(ctx, repoID, digest)
+	if err != nil {
+		s.logger.Warn("failed to list scan referrers for UI", "error", err, "digest", digest)
+		return nil
+	}
+	for _, m := range manifests {
+		if m.ArtifactType == nil || *m.ArtifactType != scanner.ArtifactType {
+			continue
+		}
+		var parsed struct {
+			Annotations map[string]string `json:"annotations"`
+		}
+		if err := json.Unmarshal(m.Content, &parsed); err != nil {
+			continue
+		}
+		a := parsed.Annotations
+		sv := &ScanView{
+			Critical: atoiOr0(a[scanner.AnnCritical]),
+			High:     atoiOr0(a[scanner.AnnHigh]),
+			Medium:   atoiOr0(a[scanner.AnnMedium]),
+			Low:      atoiOr0(a[scanner.AnnLow]),
+			Unknown:  atoiOr0(a[scanner.AnnUnknown]),
+		}
+		sv.Total = sv.Critical + sv.High + sv.Medium + sv.Low + sv.Unknown
+		return sv
+	}
+	return nil
+}
+
+func atoiOr0(s string) int {
+	n, _ := strconv.Atoi(s)
+	return n
 }
 
 func (s *Server) buildIndexData(reposPage *database.ReposPage, query string, followerCount, followingCount int) IndexData {

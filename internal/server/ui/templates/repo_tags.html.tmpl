@@ -19,6 +19,12 @@
         .digest { font-family: monospace; font-size: 0.8em; color: var(--pico-muted-color); display: flex; align-items: center; gap: 0.5rem; }
         .copy-btn-small { padding: 0.2rem 0.4rem; font-size: 0.7em; }
         .platform { font-size: 0.8em; color: var(--pico-primary); margin-top: 0.25rem; }
+        .scan-badge { display: inline-block; padding: 0.1rem 0.4rem; margin-right: 0.3rem; border-radius: var(--pico-border-radius); font-size: 0.75em; font-weight: 600; color: white; }
+        .scan-clean { background: var(--pico-ins-color); }
+        .scan-critical { background: #b91c1c; }
+        .scan-high { background: #ea580c; }
+        .scan-medium { background: #ca8a04; }
+        .scan-low { background: #65a30d; }
         .empty-state { text-align: center; padding: 3rem; color: var(--pico-muted-color); }
         .cmd-label { font-size: 0.75em; color: var(--pico-muted-color); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.25rem; }
         .pagination { display: flex; justify-content: center; align-items: center; gap: 1rem; margin-top: 2rem; }
@@ -47,7 +53,19 @@
             <article class="tag-row">
                 <div class="tag-header">
                     <span class="tag-name">{{.Name}}</span>
-                    <span class="tag-meta">{{.SizeHuman}} &bull; {{.UpdatedAgo}}</span>
+                    <span class="tag-meta">
+                        {{if .Scan}}
+                            {{if eq .Scan.Total 0}}
+                            <span class="scan-badge scan-clean" title="No known vulnerabilities">✓ clean</span>
+                            {{else}}
+                            {{if gt .Scan.Critical 0}}<span class="scan-badge scan-critical" title="Critical">C {{.Scan.Critical}}</span>{{end}}
+                            {{if gt .Scan.High 0}}<span class="scan-badge scan-high" title="High">H {{.Scan.High}}</span>{{end}}
+                            {{if gt .Scan.Medium 0}}<span class="scan-badge scan-medium" title="Medium">M {{.Scan.Medium}}</span>{{end}}
+                            {{if gt .Scan.Low 0}}<span class="scan-badge scan-low" title="Low">L {{.Scan.Low}}</span>{{end}}
+                            {{end}}
+                        {{end}}
+                        {{.SizeHuman}} &bull; {{.UpdatedAgo}}
+                    </span>
                 </div>
                 <div class="digest">
                     <span>{{.DigestShort}}</span>

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	godigest "github.com/opencontainers/go-digest"
+	specs "github.com/opencontainers/image-spec/specs-go"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"cuelabs.dev/go/oci/ociregistry"
@@ -71,6 +72,12 @@ type Publisher interface {
 	PublishTagDelete(ctx context.Context, repo, tag string) error
 }
 
+// ManifestObserver is notified inline after a manifest is pushed, so
+// implementations must return quickly. subjectDigest is non-nil for referrers.
+type ManifestObserver interface {
+	OnManifestPushed(repo, digest, mediaType string, subjectDigest *string)
+}
+
 type BlobPeer struct {
 	PeerEndpoint string
 }
@@ -100,6 +107,7 @@ type Registry struct {
 	namespace       string
 	immutableTagRe  *regexp.Regexp
 	publisher       Publisher
+	observer        ManifestObserver
 	resolver        ContentResolver
 	fetcher         BlobFetcher
 	upstreamFetcher UpstreamFetcher
@@ -177,6 +185,10 @@ func (r *Registry) SetFederation(resolver ContentResolver, fetcher BlobFetcher) 
 
 func (r *Registry) SetUpstreamFetcher(f UpstreamFetcher) {
 	r.upstreamFetcher = f
+}
+
+func (r *Registry) SetManifestObserver(o ManifestObserver) {
+	r.observer = o
 }
 
 func (r *Registry) Handler() http.Handler {
@@ -1212,11 +1224,114 @@ func (r *Registry) pushManifest(ctx context.Context, repo string, tag string, co
 		}
 	}
 
+	if r.observer != nil {
+		r.observer.OnManifestPushed(repo, digest, mediaType, meta.subjectDigest)
+	}
+
 	return ociregistry.Descriptor{
 		MediaType: mediaType,
 		Digest:    ociregistry.Digest(digest),
 		Size:      int64(len(contents)),
 	}, nil
+}
+
+var emptyConfig = []byte("{}")
+
+const emptyConfigMediaType = "application/vnd.oci.empty.v1+json"
+
+// AttachReferrer stores payload as a layer and writes an OCI artifact manifest
+// with the given subject, so it federates like any other manifest. Returns the
+// referrer digest.
+func (r *Registry) AttachReferrer(ctx context.Context, repo, subjectDigest, artifactType string, annotations map[string]string, payload []byte, payloadMediaType string) (string, error) {
+	repoW, err := r.normalizeRepoForWrite(repo)
+	if err != nil {
+		return "", err
+	}
+	repoObj, err := r.db.GetRepository(ctx, repoW)
+	if err != nil {
+		return "", fmt.Errorf("getting repository: %w", err)
+	}
+	if repoObj == nil {
+		return "", fmt.Errorf("%w: %s", ociregistry.ErrNameUnknown, repoW)
+	}
+	subject, err := r.db.GetManifestByDigest(ctx, repoObj.ID, subjectDigest)
+	if err != nil {
+		return "", fmt.Errorf("loading subject manifest: %w", err)
+	}
+	if subject == nil {
+		return "", fmt.Errorf("%w: subject %s", ociregistry.ErrManifestUnknown, subjectDigest)
+	}
+
+	cfgDigest := godigest.FromBytes(emptyConfig)
+	if _, err := r.pushBlob(ctx, repoW, ociregistry.Descriptor{
+		MediaType: emptyConfigMediaType,
+		Digest:    cfgDigest,
+		Size:      int64(len(emptyConfig)),
+	}, bytes.NewReader(emptyConfig)); err != nil {
+		return "", fmt.Errorf("storing referrer config: %w", err)
+	}
+
+	payloadDigest := godigest.FromBytes(payload)
+	if _, err := r.pushBlob(ctx, repoW, ociregistry.Descriptor{
+		MediaType: payloadMediaType,
+		Digest:    payloadDigest,
+		Size:      int64(len(payload)),
+	}, bytes.NewReader(payload)); err != nil {
+		return "", fmt.Errorf("storing referrer payload: %w", err)
+	}
+
+	manifest := ocispec.Manifest{
+		Versioned:    specs.Versioned{SchemaVersion: 2},
+		MediaType:    ocispec.MediaTypeImageManifest,
+		ArtifactType: artifactType,
+		Config: ocispec.Descriptor{
+			MediaType: emptyConfigMediaType,
+			Digest:    cfgDigest,
+			Size:      int64(len(emptyConfig)),
+		},
+		Layers: []ocispec.Descriptor{{
+			MediaType: payloadMediaType,
+			Digest:    payloadDigest,
+			Size:      int64(len(payload)),
+		}},
+		Subject: &ocispec.Descriptor{
+			MediaType: subject.MediaType,
+			Digest:    godigest.Digest(subjectDigest),
+			Size:      subject.SizeBytes,
+		},
+		Annotations: annotations,
+	}
+	content, err := json.Marshal(manifest)
+	if err != nil {
+		return "", fmt.Errorf("marshaling referrer manifest: %w", err)
+	}
+
+	desc, err := r.pushManifest(ctx, repoW, "", content, ocispec.MediaTypeImageManifest)
+	if err != nil {
+		return "", err
+	}
+	return string(desc.Digest), nil
+}
+
+// HasReferrer reports whether a referrer of artifactType already points at subjectDigest.
+func (r *Registry) HasReferrer(ctx context.Context, repo, subjectDigest, artifactType string) (bool, error) {
+	repoObj, err := r.db.GetRepository(ctx, r.normalizeRepo(repo))
+	if err != nil {
+		return false, fmt.Errorf("getting repository: %w", err)
+	}
+	if repoObj == nil {
+		return false, nil
+	}
+	manifests, err := r.db.ListManifestsBySubject(ctx, repoObj.ID, subjectDigest)
+	if err != nil {
+		return false, fmt.Errorf("listing referrers: %w", err)
+	}
+	for _, m := range manifests {
+		if m.ArtifactType != nil && *m.ArtifactType == artifactType {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // getOwnedRepo looks up the repository and verifies the caller owns it.

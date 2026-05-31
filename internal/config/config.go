@@ -55,6 +55,7 @@ type Config struct {
 	Upstreams     Upstreams     `yaml:"upstreams"     envPrefix:"APOCI_UPSTREAMS_"`
 	UI            UI            `yaml:"ui"            envPrefix:"APOCI_UI_"`
 	Backends      Backends      `yaml:"backends"      envPrefix:"APOCI_BACKENDS_"`
+	Scanner       Scanner       `yaml:"scanner"       envPrefix:"APOCI_SCANNER_"`
 
 	Domain string `yaml:"-" env:"-"`
 }
@@ -125,6 +126,20 @@ type Metrics struct {
 	Enabled bool   `yaml:"enabled" env:"ENABLED"`
 	Listen  string `yaml:"listen"  env:"LISTEN"`
 	Token   string `yaml:"token"   env:"TOKEN"`
+}
+
+// Scanner controls inline vulnerability scanning. When enabled, pushed images
+// are scanned and the report is attached as an OCI referrer.
+type Scanner struct {
+	Enabled   bool          `yaml:"enabled"   env:"ENABLED"`
+	Timeout   time.Duration `yaml:"timeout"   env:"TIMEOUT"`    // per-scan timeout (default 5m)
+	QueueSize int           `yaml:"queueSize" env:"QUEUE_SIZE"` // max pending scans before new pushes are dropped (default 1000)
+	Trivy     TrivyScanner  `yaml:"trivy"     envPrefix:"TRIVY_"`
+}
+
+type TrivyScanner struct {
+	BinaryPath string `yaml:"binaryPath" env:"BINARY_PATH"` // path to the trivy binary (default "trivy")
+	Insecure   bool   `yaml:"insecure"   env:"INSECURE"`    // skip TLS verification when pulling from this registry
 }
 
 type Notifications struct {
@@ -341,7 +356,20 @@ func applyDefaults(cfg *Config) error {
 	applyUpstreamDefaults(cfg)
 	applyFederationDefaults(cfg)
 	applyBackendsDefaults(cfg)
+	applyScannerDefaults(cfg)
 	return applyTokenDefaults(cfg)
+}
+
+func applyScannerDefaults(cfg *Config) {
+	if cfg.Scanner.Timeout == 0 {
+		cfg.Scanner.Timeout = 5 * time.Minute
+	}
+	if cfg.Scanner.QueueSize == 0 {
+		cfg.Scanner.QueueSize = 1000
+	}
+	if cfg.Scanner.Trivy.BinaryPath == "" {
+		cfg.Scanner.Trivy.BinaryPath = "trivy"
+	}
 }
 
 func applyServerDefaults(cfg *Config) error {
