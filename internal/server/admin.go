@@ -34,6 +34,9 @@ func (s *Server) adminRouter() http.Handler {
 	r.Delete("/mirrors/*", s.adminEvictMirror)
 	r.Get("/gc", s.adminGCStatus)
 	r.Post("/gc", s.adminRunGC)
+	r.Get("/peers/blocked", s.adminListBlocked)
+	r.Post("/peers/pause", s.adminPausePeer)
+	r.Post("/peers/resume", s.adminResumePeer)
 
 	return r
 }
@@ -319,6 +322,61 @@ func (s *Server) adminEvictMirror(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, map[string]any{"evicted": repo, "blobsPurged": len(purged)})
+}
+
+type adminPeerBlockRequest struct {
+	Domain string `json:"domain,omitempty"`
+	Actor  string `json:"actor,omitempty"`
+}
+
+func decodePeerBlock(w http.ResponseWriter, r *http.Request) (adminPeerBlockRequest, bool) {
+	var req adminPeerBlockRequest
+	r.Body = http.MaxBytesReader(w, r.Body, adminMaxBody)
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || (req.Domain == "" && req.Actor == "") {
+		http.Error(w, "missing domain or actor", http.StatusBadRequest)
+		return adminPeerBlockRequest{}, false
+	}
+	return req, true
+}
+
+// adminPausePeer blocks inbound federation from a domain or actor without a
+// restart. The block is in-memory and does not survive a config reload.
+func (s *Server) adminPausePeer(w http.ResponseWriter, r *http.Request) {
+	req, ok := decodePeerBlock(w, r)
+	if !ok {
+		return
+	}
+	s.logger.Debug("admin: POST /peers/pause", "domain", req.Domain, "actor", req.Actor)
+	if req.Domain != "" {
+		s.inboxHandler.PauseDomain(req.Domain)
+	}
+	if req.Actor != "" {
+		s.inboxHandler.PauseActor(req.Actor)
+	}
+	writeJSON(w, map[string]any{"paused": req})
+}
+
+func (s *Server) adminResumePeer(w http.ResponseWriter, r *http.Request) {
+	req, ok := decodePeerBlock(w, r)
+	if !ok {
+		return
+	}
+	s.logger.Debug("admin: POST /peers/resume", "domain", req.Domain, "actor", req.Actor)
+	if req.Domain != "" {
+		s.inboxHandler.ResumeDomain(req.Domain)
+	}
+	if req.Actor != "" {
+		s.inboxHandler.ResumeActor(req.Actor)
+	}
+	writeJSON(w, map[string]any{"resumed": req})
+}
+
+func (s *Server) adminListBlocked(w http.ResponseWriter, r *http.Request) {
+	s.logger.Debug("admin: GET /peers/blocked")
+	writeJSON(w, map[string][]string{
+		"domains": s.inboxHandler.BlockedDomains(),
+		"actors":  s.inboxHandler.BlockedActors(),
+	})
 }
 
 func (s *Server) adminGCStatus(w http.ResponseWriter, r *http.Request) {

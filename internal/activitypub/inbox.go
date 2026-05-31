@@ -6,9 +6,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jellydator/ttlcache/v3"
@@ -79,8 +83,8 @@ type InboxHandler struct {
 
 	autoAccept     string
 	allowedDomains []string
-	blockedDomains map[string]struct{}
-	blockedActors  map[string]struct{}
+	blocked        atomic.Pointer[blockSets]
+	blockedMu      sync.Mutex // serializes blocklist writers
 	actorLimiters  *ttlcache.Cache[string, *rate.Limiter]
 	domainLimiters *ttlcache.Cache[string, *rate.Limiter]
 	fetchFailures  *ttlcache.Cache[string, struct{}]
@@ -106,16 +110,22 @@ type InboxConfig struct {
 	BlockedActors   []string
 }
 
-func NewInboxHandler(identity *Identity, db InboxRepository, cfg InboxConfig, logger *slog.Logger) *InboxHandler {
-	blockedDomainSet := make(map[string]struct{}, len(cfg.BlockedDomains))
-	for _, d := range cfg.BlockedDomains {
-		blockedDomainSet[d] = struct{}{}
-	}
-	blockedActorSet := make(map[string]struct{}, len(cfg.BlockedActors))
-	for _, a := range cfg.BlockedActors {
-		blockedActorSet[a] = struct{}{}
-	}
+// blockSets is the immutable set of blocked domains and actors. It is swapped
+// atomically so the inbox hot path reads it without locking.
+type blockSets struct {
+	domains map[string]struct{}
+	actors  map[string]struct{}
+}
 
+func toSet(items []string) map[string]struct{} {
+	s := make(map[string]struct{}, len(items))
+	for _, i := range items {
+		s[i] = struct{}{}
+	}
+	return s
+}
+
+func NewInboxHandler(identity *Identity, db InboxRepository, cfg InboxConfig, logger *slog.Logger) *InboxHandler {
 	actorLimiters := ttlcache.New[string, *rate.Limiter](
 		ttlcache.WithTTL[string, *rate.Limiter](10 * time.Minute),
 	)
@@ -136,15 +146,13 @@ func NewInboxHandler(identity *Identity, db InboxRepository, cfg InboxConfig, lo
 	)
 	go nsCache.Start()
 
-	return &InboxHandler{
+	h := &InboxHandler{
 		identity:        identity,
 		db:              db,
 		maxManifestSize: cfg.MaxManifestSize,
 		maxBlobSize:     cfg.MaxBlobSize,
 		autoAccept:      cfg.AutoAccept,
 		allowedDomains:  cfg.AllowedDomains,
-		blockedDomains:  blockedDomainSet,
-		blockedActors:   blockedActorSet,
 		actorLimiters:   actorLimiters,
 		domainLimiters:  domainLimiters,
 		fetchFailures:   fetchFailures,
@@ -152,6 +160,11 @@ func NewInboxHandler(identity *Identity, db InboxRepository, cfg InboxConfig, lo
 		sigCache:        NewSignatureCache(),
 		logger:          logger,
 	}
+	h.blocked.Store(&blockSets{
+		domains: toSet(cfg.BlockedDomains),
+		actors:  toSet(cfg.BlockedActors),
+	})
+	return h
 }
 
 func (h *InboxHandler) Stop() {
@@ -504,7 +517,8 @@ func (h *InboxHandler) isFollowed(ctx context.Context, actorURL string) bool {
 }
 
 func (h *InboxHandler) isBlocked(actorURL string) bool {
-	if _, ok := h.blockedActors[actorURL]; ok {
+	bs := h.blocked.Load()
+	if _, ok := bs.actors[actorURL]; ok {
 		return true
 	}
 	u, err := url.Parse(actorURL)
@@ -512,12 +526,65 @@ func (h *InboxHandler) isBlocked(actorURL string) bool {
 		return false
 	}
 	host := u.Hostname()
-	for blocked := range h.blockedDomains {
+	for blocked := range bs.domains {
 		if matchesDomain(host, blocked) {
 			return true
 		}
 	}
 	return false
+}
+
+// update swaps the blocklist under blockedMu using mutate to produce the new
+// domain and actor sets from copies of the current ones.
+func (h *InboxHandler) update(mutate func(domains, actors map[string]struct{})) {
+	h.blockedMu.Lock()
+	defer h.blockedMu.Unlock()
+	cur := h.blocked.Load()
+	domains := maps.Clone(cur.domains)
+	actors := maps.Clone(cur.actors)
+	mutate(domains, actors)
+	h.blocked.Store(&blockSets{domains: domains, actors: actors})
+}
+
+// PauseDomain blocks all inbound activities from domain and its subdomains
+// without a restart. Resume with ResumeDomain.
+func (h *InboxHandler) PauseDomain(domain string) {
+	h.update(func(domains, _ map[string]struct{}) { domains[domain] = struct{}{} })
+}
+
+// ResumeDomain lifts a PauseDomain block. It has no effect on domains blocked
+// via static config once that config is reloaded.
+func (h *InboxHandler) ResumeDomain(domain string) {
+	h.update(func(domains, _ map[string]struct{}) { delete(domains, domain) })
+}
+
+// PauseActor blocks all inbound activities from a single actor URL.
+func (h *InboxHandler) PauseActor(actorURL string) {
+	h.update(func(_, actors map[string]struct{}) { actors[actorURL] = struct{}{} })
+}
+
+// ResumeActor lifts a PauseActor block.
+func (h *InboxHandler) ResumeActor(actorURL string) {
+	h.update(func(_, actors map[string]struct{}) { delete(actors, actorURL) })
+}
+
+// BlockedDomains returns the currently blocked domains, sorted.
+func (h *InboxHandler) BlockedDomains() []string {
+	return sortedKeys(h.blocked.Load().domains)
+}
+
+// BlockedActors returns the currently blocked actor URLs, sorted.
+func (h *InboxHandler) BlockedActors() []string {
+	return sortedKeys(h.blocked.Load().actors)
+}
+
+func sortedKeys(m map[string]struct{}) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	slices.Sort(out)
+	return out
 }
 
 func (h *InboxHandler) actorAllowed(actorURL string) bool {
