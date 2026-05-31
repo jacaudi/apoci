@@ -116,6 +116,39 @@ func TestAdminGetIdentityFields(t *testing.T) {
 	require.Contains(t, info["publicKey"], "-----BEGIN PUBLIC KEY-----")
 }
 
+func TestAdminPauseNormalizesDomain(t *testing.T) {
+	s := testServerWithMock(t, &mockAPFederator{})
+	s.cfg.RegistryToken = testToken
+	s.cfg.AdminToken = testToken
+	srv := httptest.NewServer(s.routes())
+	defer srv.Close()
+
+	post := func(path, body string) int {
+		req, _ := http.NewRequest("POST", srv.URL+path, strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer test-token")
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer func() { _ = resp.Body.Close() }()
+		return resp.StatusCode
+	}
+
+	// Mixed-case + whitespace is normalized to the bare lowercase host that
+	// isBlocked compares against.
+	require.Equal(t, http.StatusOK, post("/api/admin/peers/pause", `{"domain":"  Peer.Example.com  "}`))
+
+	// A scheme/path is rejected rather than silently stored as a non-matching key.
+	require.Equal(t, http.StatusBadRequest, post("/api/admin/peers/pause", `{"domain":"https://evil.example.com"}`))
+
+	req, _ := http.NewRequest("GET", srv.URL+"/api/admin/peers/blocked", nil)
+	req.Header.Set("Authorization", "Bearer test-token")
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	var blocked map[string][]string
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&blocked))
+	require.Equal(t, []string{"peer.example.com"}, blocked["domains"])
+}
+
 func TestAdminListFollowsEmpty(t *testing.T) {
 	s := testServerWithMock(t, &mockAPFederator{})
 	s.cfg.RegistryToken = testToken

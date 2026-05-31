@@ -337,6 +337,15 @@ func decodePeerBlock(w http.ResponseWriter, r *http.Request) (adminPeerBlockRequ
 		http.Error(w, "missing domain or actor", http.StatusBadRequest)
 		return adminPeerBlockRequest{}, false
 	}
+	// Normalize the domain to match how isBlocked compares against url.Hostname()
+	// (lowercased, bare host); otherwise a pause silently no-ops. Actor URLs are
+	// matched exactly, so they are only trimmed.
+	req.Domain = strings.ToLower(strings.TrimSpace(req.Domain))
+	req.Actor = strings.TrimSpace(req.Actor)
+	if req.Domain != "" && (strings.ContainsAny(req.Domain, "/:")) {
+		http.Error(w, "domain must be a bare hostname (no scheme or path)", http.StatusBadRequest)
+		return adminPeerBlockRequest{}, false
+	}
 	return req, true
 }
 

@@ -98,7 +98,7 @@ livenessProbe:
   periodSeconds: 30
 readinessProbe:
   httpGet:
-    path: /healthz
+    path: /readyz
     port: registry
   initialDelaySeconds: 5
   periodSeconds: 10

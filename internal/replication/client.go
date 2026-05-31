@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"git.erwanleboucher.dev/eleboucher/apoci/internal/validate"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/version"
 )
 
@@ -59,6 +60,9 @@ type challenge struct {
 
 func NewClient(t Target, timeout time.Duration) *Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
+	// Block dials to private/link-local IPs (incl. the remote-supplied token
+	// realm), matching the upstream fetcher. Honors validate.AllowPrivateIPs.
+	transport.DialContext = validate.SafeDialContext
 	if t.Insecure {
 		transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true} //nolint:gosec // operator opted in via target.insecure
 	}
