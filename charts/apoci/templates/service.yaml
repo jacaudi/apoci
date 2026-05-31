@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "apoci.fullname" . }}
+  labels:
+    {{- include "apoci.labels" . | nindent 4 }}
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "apoci.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: registry
+      port: {{ .Values.service.registryPort }}
+      targetPort: registry
+    {{- if .Values.config.metrics.enabled }}
+    - name: metrics
+      port: {{ .Values.service.metricsPort }}
+      targetPort: metrics
+    {{- end }}

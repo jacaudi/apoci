@@ -1,0 +1,17 @@
+apiVersion: v2
+name: apoci
+description: Federated, self-hostable multi-format (OCI, npm, Cargo, PyPI) registry that publishes artifacts as an ActivityPub actor
+type: application
+version: 0.1.0
+appVersion: "0.0.38"
+home: https://git.erwanleboucher.dev/eleboucher/apoci
+sources:
+  - https://git.erwanleboucher.dev/eleboucher/apoci
+keywords:
+  - oci
+  - registry
+  - activitypub
+  - federation
+maintainers:
+  - name: Erwan Leboucher
+    email: erwanleboucher@gmail.com

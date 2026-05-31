@@ -1,0 +1,101 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "apoci.fullname" . }}
+  labels:
+    {{- include "apoci.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  # Single-writer (SQLite + local blobs): never run two pods against one volume.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "apoci.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "apoci.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: apoci
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["serve", "-c", "/apoci/config/apoci.yaml"]
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          ports:
+            - name: registry
+              containerPort: 5000
+            {{- if .Values.config.metrics.enabled }}
+            - name: metrics
+              containerPort: 9090
+            {{- end }}
+          {{- if or .Values.auth.existingSecret .Values.auth.registryToken .Values.auth.adminToken .Values.extraEnv }}
+          env:
+            {{- if or .Values.auth.existingSecret .Values.auth.registryToken }}
+            - name: APOCI_REGISTRY_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "apoci.secretName" . }}
+                  key: registryToken
+                  optional: true
+            {{- end }}
+            {{- if or .Values.auth.existingSecret .Values.auth.adminToken }}
+            - name: APOCI_ADMIN_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "apoci.secretName" . }}
+                  key: adminToken
+                  optional: true
+            {{- end }}
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- end }}
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: config
+              mountPath: /apoci/config
+              readOnly: true
+            {{- if .Values.persistence.enabled }}
+            - name: data
+              mountPath: {{ .Values.persistence.mountPath }}
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "apoci.fullname" . }}
+        {{- if .Values.persistence.enabled }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "apoci.pvcName" . }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

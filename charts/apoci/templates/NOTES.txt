@@ -1,0 +1,22 @@
+apoci has been deployed as {{ include "apoci.fullname" . }}.
+
+Registry endpoint (in-cluster):
+  http://{{ include "apoci.fullname" . }}.{{ .Release.Namespace }}.svc:{{ .Values.service.registryPort }}
+
+{{- if .Values.ingress.enabled }}
+
+External (ingress):
+  {{- range .Values.ingress.hosts }}
+  https://{{ .host }}
+  {{- end }}
+{{- end }}
+
+{{- if and (not .Values.auth.existingSecret) (not .Values.auth.registryToken) (not .Values.auth.adminToken) }}
+
+No tokens were provided, so apoci generated them on first start. Read them with:
+  kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "apoci.fullname" . }} -- cat /apoci/storage/registry.token
+  kubectl -n {{ .Release.Namespace }} exec deploy/{{ include "apoci.fullname" . }} -- cat /apoci/storage/admin.token
+{{- end }}
+
+Reminder: apoci is single-node. Do not scale this Deployment above 1 replica
+while using SQLite and/or the local blob store.

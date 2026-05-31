@@ -1,0 +1,21 @@
+{{- if .Values.serviceMonitor.enabled }}
+{{- if not .Values.config.metrics.enabled }}
+{{- fail "serviceMonitor.enabled requires config.metrics.enabled" }}
+{{- end }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "apoci.fullname" . }}
+  labels:
+    {{- include "apoci.labels" . | nindent 4 }}
+    {{- with .Values.serviceMonitor.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "apoci.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: metrics
+      interval: {{ .Values.serviceMonitor.interval }}
+{{- end }}

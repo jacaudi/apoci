@@ -1,0 +1,114 @@
+# Default values for apoci.
+
+image:
+  repository: git.erwanleboucher.dev/eleboucher/apoci
+  pullPolicy: IfNotPresent
+  # Overrides the image tag. Defaults to the chart appVersion.
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+# apoci is single-node: SQLite + in-process queues + a local blob store assume
+# one writer. Keep replicaCount at 1 unless you have moved both the database
+# (postgres) AND blob storage (s3) off-node — even then HA is not yet supported.
+replicaCount: 1
+
+# config is rendered verbatim into /apoci/config/apoci.yaml. Provide the full
+# apoci configuration here. Secrets (tokens) are better set via `auth` below so
+# they land in a Secret and are injected as env vars (which override the file).
+config:
+  endpoint: "https://registry.example.com"
+  name: "apoci"
+  listen: ":5000"
+  # dataDir is fixed by the volume mount below; do not change unless you also
+  # change persistence.mountPath.
+  dataDir: "/apoci/storage"
+  metrics:
+    enabled: true
+    listen: ":9090"
+  # database:
+  #   driver: postgres
+  #   dsn: "postgres://apoci:pass@postgres:5432/apoci?sslmode=disable"
+  # storage:
+  #   type: s3
+  #   s3: { bucket: apoci, region: us-east-1, accessKey: "", secretKey: "" }
+
+# Authentication tokens. When left empty, apoci auto-generates them on first
+# start and persists them in the data volume.
+auth:
+  # Plaintext token values; rendered into a Secret when non-empty.
+  registryToken: ""
+  adminToken: ""
+  # Use an existing Secret instead. Keys: registryToken, adminToken.
+  existingSecret: ""
+
+# Extra environment variables (e.g. APOCI_DB_DSN from another secret).
+extraEnv: []
+# - name: APOCI_DB_DSN
+#   valueFrom:
+#     secretKeyRef: { name: pg, key: dsn }
+
+service:
+  type: ClusterIP
+  registryPort: 5000
+  metricsPort: 9090
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: registry.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+persistence:
+  enabled: true
+  mountPath: /apoci/storage
+  storageClass: ""
+  accessMode: ReadWriteOnce
+  size: 50Gi
+  # Bind an existing claim instead of creating one.
+  existingClaim: ""
+
+# matches the image's USER 1000:1000; fsGroup lets the pod write the volume.
+podSecurityContext:
+  fsGroup: 1000
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: false
+  capabilities:
+    drop: ["ALL"]
+
+resources: {}
+
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: registry
+  initialDelaySeconds: 10
+  periodSeconds: 30
+readinessProbe:
+  httpGet:
+    path: /healthz
+    port: registry
+  initialDelaySeconds: 5
+  periodSeconds: 10
+
+serviceMonitor:
+  enabled: false
+  interval: 30s
+  labels: {}
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
