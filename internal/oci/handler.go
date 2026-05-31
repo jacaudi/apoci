@@ -73,9 +73,10 @@ type Publisher interface {
 }
 
 // ManifestObserver is notified inline after a manifest is pushed, so
-// implementations must return quickly. subjectDigest is non-nil for referrers.
+// implementations must return quickly. tag is empty for digest-only pushes;
+// subjectDigest is non-nil for referrers.
 type ManifestObserver interface {
-	OnManifestPushed(repo, digest, mediaType string, subjectDigest *string)
+	OnManifestPushed(repo, tag, digest, mediaType string, subjectDigest *string)
 }
 
 type BlobPeer struct {
@@ -107,7 +108,7 @@ type Registry struct {
 	namespace       string
 	immutableTagRe  *regexp.Regexp
 	publisher       Publisher
-	observer        ManifestObserver
+	observers       []ManifestObserver
 	resolver        ContentResolver
 	fetcher         BlobFetcher
 	upstreamFetcher UpstreamFetcher
@@ -187,8 +188,8 @@ func (r *Registry) SetUpstreamFetcher(f UpstreamFetcher) {
 	r.upstreamFetcher = f
 }
 
-func (r *Registry) SetManifestObserver(o ManifestObserver) {
-	r.observer = o
+func (r *Registry) AddManifestObserver(o ManifestObserver) {
+	r.observers = append(r.observers, o)
 }
 
 func (r *Registry) Handler() http.Handler {
@@ -1224,8 +1225,8 @@ func (r *Registry) pushManifest(ctx context.Context, repo string, tag string, co
 		}
 	}
 
-	if r.observer != nil {
-		r.observer.OnManifestPushed(repo, digest, mediaType, meta.subjectDigest)
+	for _, o := range r.observers {
+		o.OnManifestPushed(repo, tag, digest, mediaType, meta.subjectDigest)
 	}
 
 	return ociregistry.Descriptor{

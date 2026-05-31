@@ -65,6 +65,21 @@ endpoint: "https://registry.example.com"
 #     binaryPath: trivy          # path to the trivy binary (must be on PATH or absolute)
 #     insecure: false            # skip TLS verification when trivy pulls from this registry
 
+# replication:
+#   enabled: false               # push locally-pushed images out to external OCI registries as they arrive
+#   timeout: 5m                  # per-manifest replication timeout
+#   targets:
+#     - name: ghcr
+#       endpoint: "https://ghcr.io"
+#       auth: token              # none, basic, or token (default: token)
+#       username: myuser
+#       password: "ghp_yourtoken"
+#       insecure: false          # skip TLS verification for this target
+#       repoGlobs:               # path.Match globs; empty = replicate all repos
+#         - "registry.example.com/team/*"
+#       stripPrefix: "registry.example.com/"   # removed from the front of the local repo path
+#       destNamespace: "myorg"                 # prepended to the destination repo path
+
 # notifications:
 #   urls:                              # shoutrrr notification URLs (see https://nicholas-fedor.github.io/shoutrrr)
 #     - "discord://token@id"

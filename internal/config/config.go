@@ -26,6 +26,10 @@ const (
 
 	StorageTypeLocal = "local"
 	StorageTypeS3    = "s3"
+
+	authTypeNone  = "none"
+	authTypeBasic = "basic"
+	authTypeToken = "token"
 )
 
 type Config struct {
@@ -56,6 +60,7 @@ type Config struct {
 	UI            UI            `yaml:"ui"            envPrefix:"APOCI_UI_"`
 	Backends      Backends      `yaml:"backends"      envPrefix:"APOCI_BACKENDS_"`
 	Scanner       Scanner       `yaml:"scanner"       envPrefix:"APOCI_SCANNER_"`
+	Replication   Replication   `yaml:"replication"   envPrefix:"APOCI_REPLICATION_"`
 
 	Domain string `yaml:"-" env:"-"`
 }
@@ -262,6 +267,34 @@ type Upstreams struct {
 	Registries   UpstreamList  `yaml:"registries"   env:"REGISTRIES"`
 }
 
+// Replication pushes locally-pushed artifacts out to non-apoci OCI registries
+// (GHCR, Quay, etc.) as they are pushed. It is the outbound counterpart to
+// upstream proxying.
+type Replication struct {
+	Enabled bool                  `yaml:"enabled" env:"ENABLED"`
+	Timeout time.Duration         `yaml:"timeout" env:"TIMEOUT"` // per-manifest replication timeout (default 5m)
+	Targets ReplicationTargetList `yaml:"targets" env:"TARGETS"`
+}
+
+type ReplicationTarget struct {
+	Name          string   `yaml:"name"          json:"name"`          // identifier for logs/status
+	Endpoint      string   `yaml:"endpoint"      json:"endpoint"`      // e.g. "https://ghcr.io"
+	Auth          string   `yaml:"auth"          json:"auth"`          // "none", "basic", or "token" (default: "token")
+	Username      string   `yaml:"username"      json:"username"`      //
+	Password      string   `yaml:"password"      json:"password"`      //
+	Insecure      bool     `yaml:"insecure"      json:"insecure"`      // skip TLS verification
+	RepoGlobs     []string `yaml:"repoGlobs"     json:"repoGlobs"`     // path.Match globs; empty = replicate all repos
+	StripPrefix   string   `yaml:"stripPrefix"   json:"stripPrefix"`   // removed from the front of the local repo path
+	DestNamespace string   `yaml:"destNamespace" json:"destNamespace"` // prepended to the destination repo path
+}
+
+// ReplicationTargetList is a slice of ReplicationTarget parseable from a JSON env var.
+type ReplicationTargetList []ReplicationTarget
+
+func (l *ReplicationTargetList) UnmarshalText(text []byte) error {
+	return json.Unmarshal(text, l)
+}
+
 // UI holds configuration for the web UI.
 type UI struct {
 	Enabled bool `yaml:"enabled" env:"ENABLED"`
@@ -357,7 +390,19 @@ func applyDefaults(cfg *Config) error {
 	applyFederationDefaults(cfg)
 	applyBackendsDefaults(cfg)
 	applyScannerDefaults(cfg)
+	applyReplicationDefaults(cfg)
 	return applyTokenDefaults(cfg)
+}
+
+func applyReplicationDefaults(cfg *Config) {
+	if cfg.Replication.Timeout == 0 {
+		cfg.Replication.Timeout = 5 * time.Minute
+	}
+	for i := range cfg.Replication.Targets {
+		if cfg.Replication.Targets[i].Auth == "" {
+			cfg.Replication.Targets[i].Auth = authTypeToken
+		}
+	}
 }
 
 func applyScannerDefaults(cfg *Config) {
@@ -601,6 +646,9 @@ func validate(cfg *Config) error {
 	if err := validateUpstreams(cfg); err != nil {
 		return err
 	}
+	if err := validateReplication(cfg); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -785,11 +833,41 @@ func validateNotificationEvents(cfg *Config) error {
 	return nil
 }
 
+var validRegistryAuthTypes = map[string]bool{authTypeNone: true, authTypeBasic: true, authTypeToken: true}
+
+func validateReplication(cfg *Config) error {
+	if !cfg.Replication.Enabled {
+		return nil
+	}
+	seen := make(map[string]bool)
+	for i, target := range cfg.Replication.Targets {
+		if target.Name == "" {
+			return fmt.Errorf("replication.targets[%d].name is required", i)
+		}
+		if target.Endpoint == "" {
+			return fmt.Errorf("replication.targets[%d].endpoint is required", i)
+		}
+		if _, err := url.ParseRequestURI(target.Endpoint); err != nil {
+			return fmt.Errorf("replication.targets[%d].endpoint is not a valid URL: %w", i, err)
+		}
+		if !validRegistryAuthTypes[target.Auth] {
+			return fmt.Errorf("replication.targets[%d].auth must be 'none', 'basic', or 'token'", i)
+		}
+		if target.Auth == authTypeBasic && (target.Username == "" || target.Password == "") {
+			return fmt.Errorf("replication.targets[%d] requires username and password for basic auth", i)
+		}
+		if seen[target.Name] {
+			return fmt.Errorf("replication.targets: duplicate target name %q", target.Name)
+		}
+		seen[target.Name] = true
+	}
+	return nil
+}
+
 func validateUpstreams(cfg *Config) error {
 	if !cfg.Upstreams.Enabled {
 		return nil
 	}
-	validAuthTypes := map[string]bool{"none": true, "basic": true, "token": true}
 	seen := make(map[string]bool)
 	for i, u := range cfg.Upstreams.Registries {
 		if u.Name == "" {
@@ -801,10 +879,10 @@ func validateUpstreams(cfg *Config) error {
 		if _, err := url.ParseRequestURI(u.Endpoint); err != nil {
 			return fmt.Errorf("upstreams.registries[%d].endpoint is not a valid URL: %w", i, err)
 		}
-		if !validAuthTypes[u.Auth] {
+		if !validRegistryAuthTypes[u.Auth] {
 			return fmt.Errorf("upstreams.registries[%d].auth must be 'none', 'basic', or 'token'", i)
 		}
-		if u.Auth == "basic" && (u.Username == "" || u.Password == "") {
+		if u.Auth == authTypeBasic && (u.Username == "" || u.Password == "") {
 			return fmt.Errorf("upstreams.registries[%d] requires username and password for basic auth", i)
 		}
 		if seen[u.Name] {

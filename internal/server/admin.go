@@ -37,6 +37,7 @@ func (s *Server) adminRouter() http.Handler {
 	r.Get("/peers/blocked", s.adminListBlocked)
 	r.Post("/peers/pause", s.adminPausePeer)
 	r.Post("/peers/resume", s.adminResumePeer)
+	r.Get("/replication", s.adminReplicationStatus)
 
 	return r
 }
@@ -377,6 +378,15 @@ func (s *Server) adminListBlocked(w http.ResponseWriter, r *http.Request) {
 		"domains": s.inboxHandler.BlockedDomains(),
 		"actors":  s.inboxHandler.BlockedActors(),
 	})
+}
+
+func (s *Server) adminReplicationStatus(w http.ResponseWriter, r *http.Request) {
+	s.logger.Debug("admin: GET /replication")
+	if s.replication == nil {
+		writeJSON(w, map[string]any{"enabled": false, "targets": []any{}})
+		return
+	}
+	writeJSON(w, map[string]any{"enabled": true, "targets": s.replication.Status()})
 }
 
 func (s *Server) adminGCStatus(w http.ResponseWriter, r *http.Request) {

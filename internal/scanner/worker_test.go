@@ -65,15 +65,15 @@ func TestOnManifestPushedFilters(t *testing.T) {
 
 	// Referrer (subject set) -> skipped.
 	subj := "sha256:subject"
-	w.OnManifestPushed("repo", "sha256:a", "application/vnd.oci.image.manifest.v1+json", &subj)
+	w.OnManifestPushed("repo", "v1", "sha256:a", "application/vnd.oci.image.manifest.v1+json", &subj)
 	require.Equal(t, 0, w.queue.Len())
 
 	// Non-image media type -> skipped.
-	w.OnManifestPushed("repo", "sha256:b", "application/vnd.oci.image.config.v1+json", nil)
+	w.OnManifestPushed("repo", "v1", "sha256:b", "application/vnd.oci.image.config.v1+json", nil)
 	require.Equal(t, 0, w.queue.Len())
 
 	// Image manifest -> enqueued.
-	w.OnManifestPushed("repo", "sha256:c", "application/vnd.oci.image.manifest.v1+json", nil)
+	w.OnManifestPushed("repo", "v1", "sha256:c", "application/vnd.oci.image.manifest.v1+json", nil)
 	require.Equal(t, 1, w.queue.Len())
 }
 

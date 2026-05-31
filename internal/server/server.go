@@ -26,6 +26,7 @@ import (
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/registry/cargo"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/registry/npm"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/registry/pypi"
+	"git.erwanleboucher.dev/eleboucher/apoci/internal/replication"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/scanner"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/upstream"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/validate"
@@ -43,6 +44,7 @@ type Server struct {
 	workers             *workers.Workers
 	deliveryQueue       *activitypub.DeliveryQueue
 	gc                  *peering.GarbageCollector
+	replication         *replication.Worker
 	ociHandler          http.Handler
 	actorHandler        http.Handler
 	webfingerHandler    http.Handler
@@ -290,9 +292,36 @@ func New(cfg *config.Config, db *database.DB, blobs blobstore.BlobStore, identit
 			Timeout:   cfg.Scanner.Timeout,
 			QueueSize: cfg.Scanner.QueueSize,
 		}, logger)
-		registry.SetManifestObserver(scanWorker)
+		registry.AddManifestObserver(scanWorker)
 		services = append(services, scanWorker)
 		logger.Info("inline vulnerability scanning enabled", "scanner", "trivy")
+	}
+
+	var replWorker *replication.Worker
+	if cfg.Replication.Enabled && len(cfg.Replication.Targets) > 0 {
+		targets := make([]replication.Target, len(cfg.Replication.Targets))
+		for i, t := range cfg.Replication.Targets {
+			targets[i] = replication.Target{
+				Name:          t.Name,
+				Endpoint:      t.Endpoint,
+				Auth:          t.Auth,
+				Username:      t.Username,
+				Password:      t.Password,
+				Insecure:      t.Insecure,
+				RepoGlobs:     t.RepoGlobs,
+				StripPrefix:   t.StripPrefix,
+				DestNamespace: t.DestNamespace,
+			}
+		}
+		replWorker = replication.NewWorker(replication.Config{
+			Targets:   targets,
+			Source:    registry,
+			Timeout:   cfg.Replication.Timeout,
+			QueueSize: 1000,
+		}, logger)
+		registry.AddManifestObserver(replWorker)
+		services = append(services, replWorker)
+		logger.Info("outbound replication enabled", "targets", len(targets))
 	}
 
 	w := &workers.Workers{
@@ -318,6 +347,7 @@ func New(cfg *config.Config, db *database.DB, blobs blobstore.BlobStore, identit
 		},
 		registry:            registry,
 		gc:                  gc,
+		replication:         replWorker,
 		packageBackends:     packageBackends,
 		workers:             w,
 		ociHandler:          registry.Handler(),

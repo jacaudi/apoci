@@ -110,8 +110,9 @@ var scannableMediaTypes = map[string]bool{
 }
 
 // OnManifestPushed enqueues image manifests for scanning. Referrers
-// (subjectDigest != nil) and non-image media types are skipped.
-func (w *Worker) OnManifestPushed(repo, digest, mediaType string, subjectDigest *string) {
+// (subjectDigest != nil) and non-image media types are skipped. tag is unused;
+// scanning keys on the digest.
+func (w *Worker) OnManifestPushed(repo, _, digest, mediaType string, subjectDigest *string) {
 	if subjectDigest != nil || !scannableMediaTypes[mediaType] {
 		return
 	}
