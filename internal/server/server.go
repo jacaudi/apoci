@@ -7,7 +7,9 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
 	"path"
+	"path/filepath"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -111,6 +113,22 @@ func New(cfg *config.Config, db *database.DB, blobs blobstore.BlobStore, identit
 
 	registry, err := oci.NewRegistry(db, blobs, identity.ActorURL, cfg.AccountDomain, cfg.ImmutableTags, cfg.Limits.MaxManifestSize, cfg.Limits.MaxBlobSize, logger)
 	if err != nil {
+		return nil, err
+	}
+
+	// Stage in-progress chunked uploads on the data volume (local backend) or
+	// the configured S3 temp dir, falling back to the OS temp dir. Either way
+	// uploads stream to disk rather than the heap; operators on S3 should set
+	// storage.s3.tempDir to a large volume so big pushes don't fill the
+	// container's ephemeral storage.
+	uploadDir := os.TempDir()
+	switch {
+	case cfg.BlobDiskPath() != "":
+		uploadDir = filepath.Join(cfg.DataDir, "uploads")
+	case cfg.Storage.S3.TempDir != "":
+		uploadDir = cfg.Storage.S3.TempDir
+	}
+	if err := registry.SetUploadDir(uploadDir); err != nil {
 		return nil, err
 	}
 

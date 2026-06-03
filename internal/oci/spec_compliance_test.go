@@ -58,6 +58,91 @@ func TestSpecBlobUploadReturnsLocationHeader(t *testing.T) {
 	require.NotEmpty(t, location, "missing Location header on blob upload start")
 }
 
+func TestSpecChunkedBlobUploadMultipleChunks(t *testing.T) {
+	reg, srv := testRegistry(t)
+	repo := "test.example.com/test/multichunk"
+
+	// Step 1: POST to initiate the chunked upload.
+	req, _ := http.NewRequest("POST", srv.URL+"/v2/"+repo+"/blobs/uploads/", nil)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	require.Equal(t, http.StatusAccepted, resp.StatusCode)
+	uploadURL := srv.URL + resp.Header.Get("Location")
+
+	// Step 2: PATCH several chunks, the way a docker client streams a layer.
+	chunks := [][]byte{
+		[]byte("the quick brown fox "),
+		[]byte("jumps over "),
+		[]byte("the lazy dog"),
+	}
+	var full []byte
+	var offset int64
+	for _, chunk := range chunks {
+		req, _ = http.NewRequest("PATCH", uploadURL, strings.NewReader(string(chunk)))
+		req.Header.Set("Content-Type", "application/octet-stream")
+		req.Header.Set("Content-Length", fmt.Sprintf("%d", len(chunk)))
+		req.Header.Set("Content-Range", fmt.Sprintf("%d-%d", offset, offset+int64(len(chunk))-1))
+		resp, err = http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		_ = resp.Body.Close()
+		require.Equal(t, http.StatusAccepted, resp.StatusCode, "PATCH chunk should return 202")
+		uploadURL = srv.URL + resp.Header.Get("Location")
+		full = append(full, chunk...)
+		offset += int64(len(chunk))
+	}
+
+	// Step 3: PUT with the digest of the assembled content.
+	dig := digest.FromBytes(full)
+	req, _ = http.NewRequest("PUT", uploadURL+"?digest="+dig.String(), nil)
+	req.ContentLength = 0
+	resp, err = http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	require.Equal(t, http.StatusCreated, resp.StatusCode, "PUT should return 201")
+
+	// Step 4: read the stored blob back and verify the bytes are exactly what
+	// we streamed across the separate PATCH requests.
+	rd, size, err := reg.blobs.Open(context.Background(), dig.String())
+	require.NoError(t, err)
+	defer func() { _ = rd.Close() }()
+	require.Equal(t, int64(len(full)), size)
+	got, err := io.ReadAll(rd)
+	require.NoError(t, err)
+	require.Equal(t, full, got, "stored blob should match the assembled chunks")
+}
+
+func TestSpecChunkedBlobUploadDigestMismatch(t *testing.T) {
+	_, srv := testRegistry(t)
+	repo := "test.example.com/test/badchunk"
+
+	req, _ := http.NewRequest("POST", srv.URL+"/v2/"+repo+"/blobs/uploads/", nil)
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	require.Equal(t, http.StatusAccepted, resp.StatusCode)
+	uploadURL := srv.URL + resp.Header.Get("Location")
+
+	chunk := []byte("real content")
+	req, _ = http.NewRequest("PATCH", uploadURL, strings.NewReader(string(chunk)))
+	req.Header.Set("Content-Type", "application/octet-stream")
+	req.Header.Set("Content-Length", fmt.Sprintf("%d", len(chunk)))
+	resp, err = http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	require.Equal(t, http.StatusAccepted, resp.StatusCode)
+	uploadURL = srv.URL + resp.Header.Get("Location")
+
+	// Finalize with a digest that does not match the uploaded bytes.
+	wrong := digest.FromBytes([]byte("different content"))
+	req, _ = http.NewRequest("PUT", uploadURL+"?digest="+wrong.String(), nil)
+	req.ContentLength = 0
+	resp, err = http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode, "digest mismatch should be a 400")
+}
+
 func TestSpecChunkedBlobUpload(t *testing.T) {
 	_, srv := testRegistry(t)
 

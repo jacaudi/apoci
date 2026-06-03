@@ -11,6 +11,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -115,8 +117,9 @@ type Registry struct {
 	maxManifestSize int64
 	maxBlobSize     int64
 
+	uploadDir string // staging directory for in-progress chunked uploads
 	uploadsMu sync.Mutex
-	uploads   map[string]*ocimem.Buffer
+	uploads   map[string]*diskBlobWriter
 }
 
 func NewRegistry(db *database.DB, blobs blobstore.BlobStore, localID, namespace, immutableTagPattern string, maxManifestSize, maxBlobSize int64, logger *slog.Logger) (*Registry, error) {
@@ -146,7 +149,11 @@ func NewRegistry(db *database.DB, blobs blobstore.BlobStore, localID, namespace,
 		immutableTagRe:  immutableRe,
 		maxManifestSize: maxManifestSize,
 		maxBlobSize:     maxBlobSize,
-		uploads:         make(map[string]*ocimem.Buffer),
+		// Default staging directory for chunked uploads. The operator should
+		// override this via SetUploadDir to keep large uploads on the data
+		// volume rather than the OS temp dir.
+		uploadDir: os.TempDir(),
+		uploads:   make(map[string]*diskBlobWriter),
 	}
 	r.Funcs = &ociregistry.Funcs{
 		GetBlob_:               r.getBlob,
@@ -188,6 +195,20 @@ func (r *Registry) SetUpstreamFetcher(f UpstreamFetcher) {
 	r.upstreamFetcher = f
 }
 
+// SetUploadDir sets the staging directory for in-progress chunked uploads and
+// removes any staging files left over from a previous run.
+func (r *Registry) SetUploadDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("creating upload staging dir: %w", err)
+	}
+	matches, _ := filepath.Glob(filepath.Join(dir, "upload-*"))
+	for _, m := range matches {
+		_ = os.Remove(m)
+	}
+	r.uploadDir = dir
+	return nil
+}
+
 func (r *Registry) AddManifestObserver(o ManifestObserver) {
 	r.observers = append(r.observers, o)
 }
@@ -206,8 +227,13 @@ func (r *Registry) CleanExpiredUploads(ctx context.Context) (int, error) {
 
 	for _, uuid := range expired {
 		r.uploadsMu.Lock()
+		w := r.uploads[uuid]
 		delete(r.uploads, uuid)
 		r.uploadsMu.Unlock()
+
+		if w != nil {
+			w.cleanup()
+		}
 
 		if err := r.db.DeleteUploadSession(ctx, uuid); err != nil {
 			r.logger.Warn("failed to delete expired upload session", "uuid", uuid, "error", err)
@@ -1011,25 +1037,16 @@ func (r *Registry) pushBlobChunked(ctx context.Context, repo string, chunkSize i
 		return nil, fmt.Errorf("getting repository: %w", err)
 	}
 
-	buf := r.newUploadBuffer(repo, "")
-
-	if _, err := r.db.CreateUploadSession(ctx, buf.ID(), repoObj.ID, uploadSessionTTL); err != nil {
-		r.logger.Warn("failed to persist upload session", "uuid", buf.ID(), "error", err)
+	w, err := r.newUploadWriter(repo, "")
+	if err != nil {
+		return nil, err
 	}
 
-	return &limitedBlobWriter{BlobWriter: buf, maxSize: r.maxBlobSize}, nil
-}
-
-type limitedBlobWriter struct {
-	ociregistry.BlobWriter
-	maxSize int64
-}
-
-func (l *limitedBlobWriter) Write(p []byte) (int, error) {
-	if l.Size()+int64(len(p)) > l.maxSize {
-		return 0, fmt.Errorf("%w: blob exceeds maximum size (%d bytes)", ociregistry.ErrBlobUploadInvalid, l.maxSize)
+	if _, err := r.db.CreateUploadSession(ctx, w.ID(), repoObj.ID, uploadSessionTTL); err != nil {
+		r.logger.Warn("failed to persist upload session", "uuid", w.ID(), "error", err)
 	}
-	return l.BlobWriter.Write(p)
+
+	return w, nil
 }
 
 func (r *Registry) pushBlobChunkedResume(ctx context.Context, repo, id string, offset int64, chunkSize int) (ociregistry.BlobWriter, error) {
@@ -1047,72 +1064,69 @@ func (r *Registry) pushBlobChunkedResume(ctx context.Context, repo, id string, o
 	}
 
 	r.uploadsMu.Lock()
-	buf, ok := r.uploads[id]
+	w, ok := r.uploads[id]
 	r.uploadsMu.Unlock()
 
 	if !ok {
-		// Session exists in DB but buffer was lost (e.g. server restart).
-		// Clean up the stale DB record.
+		// Session exists in DB but the staged upload was lost (e.g. server
+		// restart). Clean up the stale DB record.
 		_ = r.db.DeleteUploadSession(ctx, id)
 		return nil, fmt.Errorf("%w: upload %q session expired (server restarted)", ociregistry.ErrBlobUploadUnknown, id)
 	}
 
-	return &limitedBlobWriter{BlobWriter: buf, maxSize: r.maxBlobSize}, nil
+	return w, nil
 }
 
-func (r *Registry) newUploadBuffer(repo, uuid string) *ocimem.Buffer {
-	buf := ocimem.NewBuffer(func(b *ocimem.Buffer) error {
+// newUploadWriter creates a disk-backed blob writer for a chunked upload and
+// registers it so subsequent PATCH/PUT requests can resume it by ID.
+func (r *Registry) newUploadWriter(repo, uuid string) (*diskBlobWriter, error) {
+	w, err := newDiskBlobWriter(r.uploadDir, uuid, r.maxBlobSize, nil)
+	if err != nil {
+		return nil, err
+	}
+	id := w.ID()
+
+	w.commit = func(dig ociregistry.Digest, data io.Reader) (ociregistry.Descriptor, error) {
 		r.uploadsMu.Lock()
-		delete(r.uploads, b.ID())
+		delete(r.uploads, id)
 		r.uploadsMu.Unlock()
 
-		desc, data, err := b.GetBlob()
-		if err != nil {
-			return fmt.Errorf("getting blob from buffer: %w", err)
-		}
-		if int64(len(data)) > r.maxBlobSize {
-			return fmt.Errorf("%w: blob exceeds maximum size (%d bytes)", ociregistry.ErrBlobUploadInvalid, r.maxBlobSize)
-		}
 		// This callback runs after the HTTP request context has been released,
 		// so we use a fresh timeout context for storage and DB operations.
 		commitCtx, commitCancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer commitCancel()
 
-		_, _, err = r.blobs.Put(commitCtx, bytes.NewReader(data), string(desc.Digest))
+		digestStr, size, err := r.blobs.Put(commitCtx, data, string(dig))
 		if err != nil {
-			return fmt.Errorf("storing chunked blob: %w", err)
+			return ociregistry.Descriptor{}, fmt.Errorf("storing chunked blob: %w", err)
 		}
 
-		mt := desc.MediaType
-		if err := r.db.PutBlob(commitCtx, string(desc.Digest), desc.Size, &mt, true); err != nil {
-			return fmt.Errorf("recording chunked blob: %w", err)
+		mt := "application/octet-stream"
+		if err := r.db.PutBlob(commitCtx, digestStr, size, &mt, true); err != nil {
+			return ociregistry.Descriptor{}, fmt.Errorf("recording chunked blob: %w", err)
 		}
 
-		// Clean up the upload session from DB.
-		if err := r.db.DeleteUploadSession(commitCtx, b.ID()); err != nil {
-			r.logger.Warn("failed to delete upload session", "uuid", b.ID(), "error", err)
+		if err := r.db.DeleteUploadSession(commitCtx, id); err != nil {
+			r.logger.Warn("failed to delete upload session", "uuid", id, "error", err)
 		}
 
 		metrics.RegistryBlobPushes.Add(1)
-		r.logger.Info("chunked blob committed",
-			"repo", repo,
-			"digest", string(desc.Digest),
-			"size", desc.Size)
+		r.logger.Info("chunked blob committed", "repo", repo, "digest", digestStr, "size", size)
 
 		if r.publisher != nil {
-			if err := r.publisher.PublishBlobRef(commitCtx, string(desc.Digest), desc.Size); err != nil {
+			if err := r.publisher.PublishBlobRef(commitCtx, digestStr, size); err != nil {
 				r.logger.Warn("failed to publish chunked blob ref to federation", "error", err)
 			}
 		}
 
-		return nil
-	}, uuid)
+		return ociregistry.Descriptor{MediaType: mt, Digest: ociregistry.Digest(digestStr), Size: size}, nil
+	}
 
 	r.uploadsMu.Lock()
-	r.uploads[buf.ID()] = buf
+	r.uploads[id] = w
 	r.uploadsMu.Unlock()
 
-	return buf
+	return w, nil
 }
 
 func (r *Registry) pushManifest(ctx context.Context, repo string, tag string, contents []byte, mediaType string) (ociregistry.Descriptor, error) {
