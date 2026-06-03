@@ -132,39 +132,22 @@ func TestE2ECosignReferrersViaHTTP(t *testing.T) {
 	require.Equal(t, "application/vnd.dev.cosign.simplesigning.v1+json", index.Manifests[0].ArtifactType)
 }
 
-func TestE2ETagImmutabilityViaHTTP(t *testing.T) {
+func TestE2ETagOverwriteViaHTTP(t *testing.T) {
 	s := testServer(t)
 	srv := httptest.NewServer(s.routes())
 	defer srv.Close()
 
-	manifest1 := `{"schemaVersion":2}`
-	manifest2 := `{"schemaVersion":2,"new":true}`
-
-	// First push to v1.0 succeeds
-	req := authReq(mustNewRequest(t, "PUT", srv.URL+"/v2/test.example.com/immutable/manifests/v1.0", strings.NewReader(manifest1)))
-	req.Header.Set("Content-Type", "application/vnd.oci.image.manifest.v1+json")
-	resp, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
-	_ = resp.Body.Close()
-	require.Equal(t, http.StatusCreated, resp.StatusCode, "first push")
-
-	// Owner re-push over v1.0 succeeds
-	req = authReq(mustNewRequest(t, "PUT", srv.URL+"/v2/test.example.com/immutable/manifests/v1.0", strings.NewReader(manifest2)))
-	req.Header.Set("Content-Type", "application/vnd.oci.image.manifest.v1+json")
-	resp, err = http.DefaultClient.Do(req)
-	require.NoError(t, err)
-	_ = resp.Body.Close()
-	require.Equal(t, http.StatusCreated, resp.StatusCode, "owner re-push over immutable tag should succeed")
-
-	// Push to 'latest' succeeds twice (not semver)
-	for i := range 2 {
-		body := fmt.Sprintf(`{"schemaVersion":2,"iteration":%d}`, i)
-		req = authReq(mustNewRequest(t, "PUT", srv.URL+"/v2/test.example.com/immutable/manifests/latest", strings.NewReader(body)))
-		req.Header.Set("Content-Type", "application/vnd.oci.image.manifest.v1+json")
-		resp, err = http.DefaultClient.Do(req)
-		require.NoError(t, err)
-		_ = resp.Body.Close()
-		require.Equal(t, http.StatusCreated, resp.StatusCode, "push %d to latest", i)
+	// Any tag can be re-pushed to a new manifest.
+	for _, tag := range []string{"v1.0", testTagLatest} {
+		for i := range 2 {
+			body := fmt.Sprintf(`{"schemaVersion":2,"iteration":%d}`, i)
+			req := authReq(mustNewRequest(t, "PUT", srv.URL+"/v2/test.example.com/overwrite/manifests/"+tag, strings.NewReader(body)))
+			req.Header.Set("Content-Type", "application/vnd.oci.image.manifest.v1+json")
+			resp, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+			_ = resp.Body.Close()
+			require.Equal(t, http.StatusCreated, resp.StatusCode, "push %d to %s", i, tag)
+		}
 	}
 }
 
@@ -334,7 +317,7 @@ func TestE2EDeleteTagPublishesActivity(t *testing.T) {
 		if !ok {
 			continue
 		}
-		if obj["type"] == "OCITag" && obj["ociTag"] == "latest" && obj["ociRepository"] == "test.example.com/deltag" {
+		if obj["type"] == "OCITag" && obj["ociTag"] == testTagLatest && obj["ociRepository"] == "test.example.com/deltag" {
 			foundDeleteTag = true
 			break
 		}

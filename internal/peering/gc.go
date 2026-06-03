@@ -46,8 +46,8 @@ type FederationPublisher interface {
 }
 
 // RetentionPolicy applies to OCI packages. Zero KeepLastN/MaxAge disables that knob.
-// KeepLastN counts only mutable, non-pinned tags — pinned and immutable tags are
-// always kept and don't consume a slot.
+// KeepLastN counts only non-pinned tags — pinned tags are always kept and don't
+// consume a slot.
 type RetentionPolicy struct {
 	KeepLastN   int
 	MaxAge      time.Duration
@@ -268,7 +268,7 @@ func tagPinned(name string, globs []string) bool {
 }
 
 // retentionSweep deletes tags exceeding KeepLastN or older than MaxAge, then
-// federates each delete. Pinned and immutable tags are always kept.
+// federates each delete. Pinned tags are always kept.
 func (gc *GarbageCollector) retentionSweep(ctx context.Context) {
 	budget := gc.cfg.RetentionTagsPerCycle
 	if budget <= 0 {
@@ -321,7 +321,7 @@ func (gc *GarbageCollector) applyRetentionToPackage(ctx context.Context, pkg dat
 	candidates := make([]database.TagForRetention, 0, len(tags))
 	kept := 0
 	for _, t := range tags {
-		if t.Immutable || tagPinned(t.Name, policy.PinnedGlobs) {
+		if tagPinned(t.Name, policy.PinnedGlobs) {
 			continue
 		}
 		drop := false

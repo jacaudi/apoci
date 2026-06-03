@@ -156,7 +156,7 @@ func TestDeletePackageVersion(t *testing.T) {
 		BlobDigest: "sha256:aaa",
 		SizeBytes:  100,
 	}))
-	require.NoError(t, db.PutPackageTag(ctx, pkg.ID, "latest", "3.0.0", false, false))
+	require.NoError(t, db.PutPackageTag(ctx, pkg.ID, "latest", "3.0.0"))
 
 	require.NoError(t, db.DeletePackageVersion(ctx, pkg.ID, "3.0.0"))
 
@@ -200,8 +200,8 @@ func TestDeletePackageCascade(t *testing.T) {
 		SizeBytes:  200,
 	}))
 
-	require.NoError(t, db.PutPackageTag(ctx, pkg.ID, "v1", dgstA, true, false))
-	require.NoError(t, db.PutPackageTag(ctx, pkg.ID, "latest", dgstB, false, false))
+	require.NoError(t, db.PutPackageTag(ctx, pkg.ID, "v1", dgstA))
+	require.NoError(t, db.PutPackageTag(ctx, pkg.ID, "latest", dgstB))
 
 	require.NoError(t, db.DeletePackage(ctx, pkg.ID))
 
@@ -311,19 +311,18 @@ func TestPackageTagPutGet(t *testing.T) {
 	v2 := &PackageVersion{PackageID: pkg.ID, Version: "5.0.0", Metadata: []byte(`{}`)}
 	require.NoError(t, db.PutPackageVersion(ctx, v2))
 
-	require.NoError(t, db.PutPackageTag(ctx, pkg.ID, "latest", v1.Version, false, false))
+	require.NoError(t, db.PutPackageTag(ctx, pkg.ID, "latest", v1.Version))
 	got, err := db.GetPackageTag(ctx, pkg.ID, "latest")
 	require.NoError(t, err)
 	require.Equal(t, v1.Version, got.Version)
-	require.False(t, got.Immutable)
 
 	// Upsert moves the tag.
-	require.NoError(t, db.PutPackageTag(ctx, pkg.ID, "latest", v2.Version, false, false))
+	require.NoError(t, db.PutPackageTag(ctx, pkg.ID, "latest", v2.Version))
 	got, err = db.GetPackageTag(ctx, pkg.ID, "latest")
 	require.NoError(t, err)
 	require.Equal(t, v2.Version, got.Version)
 
-	require.NoError(t, db.PutPackageTag(ctx, pkg.ID, "stable", v1.Version, false, false))
+	require.NoError(t, db.PutPackageTag(ctx, pkg.ID, "stable", v1.Version))
 	tags, err := db.ListPackageTags(ctx, pkg.ID)
 	require.NoError(t, err)
 	require.Len(t, tags, 2)
@@ -334,57 +333,6 @@ func TestPackageTagPutGet(t *testing.T) {
 	tags, err = db.ListPackageTags(ctx, pkg.ID)
 	require.NoError(t, err)
 	require.Len(t, tags, 1)
-}
-
-func TestPutPackageTagImmutable(t *testing.T) {
-	db := testDB(t)
-	ctx := context.Background()
-
-	pkg, err := db.GetOrCreatePackage(ctx, "oci", "foo.com/app", testAliceActor)
-	require.NoError(t, err)
-	v := &PackageVersion{PackageID: pkg.ID, Version: "sha256:aaa", Metadata: []byte(`{}`)}
-	require.NoError(t, db.PutPackageVersion(ctx, v))
-
-	require.NoError(t, db.PutPackageTag(ctx, pkg.ID, "v1.0", v.Version, true, false))
-	got, err := db.GetPackageTag(ctx, pkg.ID, "v1.0")
-	require.NoError(t, err)
-	require.True(t, got.Immutable)
-
-	// Subsequent put on immutable tag is rejected for a non-owner write.
-	err = db.PutPackageTag(ctx, pkg.ID, "v1.0", v.Version, false, false)
-	require.ErrorIs(t, err, ErrTagImmutable)
-
-	// Owner overwrite succeeds; the immutable flag is sticky.
-	v2 := &PackageVersion{PackageID: pkg.ID, Version: "sha256:ccc", Metadata: []byte(`{}`)}
-	require.NoError(t, db.PutPackageVersion(ctx, v2))
-	require.NoError(t, db.PutPackageTag(ctx, pkg.ID, "v1.0", v2.Version, false, true))
-	got, err = db.GetPackageTag(ctx, pkg.ID, "v1.0")
-	require.NoError(t, err)
-	require.Equal(t, v2.Version, got.Version)
-	require.True(t, got.Immutable)
-
-	// Delete on immutable is still rejected.
-	err = db.DeletePackageTag(ctx, pkg.ID, "v1.0")
-	require.ErrorIs(t, err, ErrTagImmutable)
-}
-
-func TestDeletePackageVersionImmutableBlocks(t *testing.T) {
-	db := testDB(t)
-	ctx := context.Background()
-
-	pkg, err := db.GetOrCreatePackage(ctx, "oci", "foo.com/protected", testAliceActor)
-	require.NoError(t, err)
-	v := &PackageVersion{PackageID: pkg.ID, Version: "sha256:bbb", Metadata: []byte(`{}`)}
-	require.NoError(t, db.PutPackageVersion(ctx, v))
-	require.NoError(t, db.PutPackageTag(ctx, pkg.ID, "release", v.Version, true, false))
-
-	err = db.DeletePackageVersion(ctx, pkg.ID, v.Version)
-	require.ErrorIs(t, err, ErrTagImmutable)
-
-	// The version is still there.
-	got, err := db.GetPackageVersion(ctx, pkg.ID, v.Version)
-	require.NoError(t, err)
-	require.NotNil(t, got)
 }
 
 func TestListPackageVersionsBySubject(t *testing.T) {
@@ -621,25 +569,6 @@ func TestLegacyManifestLayers(t *testing.T) {
 	require.Len(t, files, 2)
 }
 
-func TestLegacyTagImmutableTranslation(t *testing.T) {
-	db := testDB(t)
-	ctx := context.Background()
-
-	repo, err := db.GetOrCreateRepository(ctx, "foo.com/locked", testAliceActor)
-	require.NoError(t, err)
-	require.NoError(t, db.PutManifest(ctx, &Manifest{
-		RepositoryID: repo.ID,
-		Digest:       "sha256:zzz",
-		MediaType:    testManifestMediaType,
-		SizeBytes:    1,
-		Content:      []byte(`{}`),
-	}))
-
-	require.NoError(t, db.PutTagWithImmutable(ctx, repo.ID, "v1.0", "sha256:zzz", true, false))
-	require.ErrorIs(t, db.PutTag(ctx, repo.ID, "v1.0", "sha256:zzz"), ErrTagImmutable)
-	require.ErrorIs(t, db.DeleteTag(ctx, repo.ID, "v1.0"), ErrTagImmutable)
-}
-
 func TestLegacyDeletedManifestTranslation(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()
@@ -683,7 +612,7 @@ func TestListLocallyHostedRepos(t *testing.T) {
 	require.NoError(t, db.PutPackageVersion(ctx, v))
 	require.NoError(t, db.PutBlob(ctx, testLayerDigest, 2048, &mt, true))
 	require.NoError(t, db.PutBlobReferences(ctx, v.ID, []BlobRef{{Digest: testLayerDigest, Size: 2048, MediaType: &mt}}))
-	require.NoError(t, db.PutPackageTag(ctx, repo.ID, testTagLatest, v.Version, false, false))
+	require.NoError(t, db.PutPackageTag(ctx, repo.ID, testTagLatest, v.Version))
 
 	repos, err := db.ListLocallyHostedRepos(ctx)
 	require.NoError(t, err)

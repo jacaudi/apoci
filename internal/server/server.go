@@ -111,7 +111,7 @@ func New(cfg *config.Config, db *database.DB, blobs blobstore.BlobStore, identit
 		logger.Warn("insecure HTTP federation enabled")
 	}
 
-	registry, err := oci.NewRegistry(db, blobs, identity.ActorURL, cfg.AccountDomain, cfg.ImmutableTags, cfg.Limits.MaxManifestSize, cfg.Limits.MaxBlobSize, logger)
+	registry, err := oci.NewRegistry(db, blobs, identity.ActorURL, cfg.AccountDomain, cfg.Limits.MaxManifestSize, cfg.Limits.MaxBlobSize, logger)
 	if err != nil {
 		return nil, err
 	}

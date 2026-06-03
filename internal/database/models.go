@@ -68,7 +68,6 @@ type PackageTag struct {
 	PackageID int64     `bun:"package_id,notnull"`
 	Name      string    `bun:"name,notnull"`
 	Version   string    `bun:"version,notnull"`
-	Immutable bool      `bun:"immutable,notnull,default:false"`
 	UpdatedAt time.Time `bun:"updated_at,notnull,default:current_timestamp"`
 }
 
@@ -115,7 +114,6 @@ type Tag struct {
 	RepositoryID   int64
 	Name           string
 	ManifestDigest string
-	Immutable      bool
 	UpdatedAt      time.Time
 }
 

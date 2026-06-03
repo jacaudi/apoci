@@ -168,7 +168,7 @@ func (a *federationAdapter) upsertTag(ctx context.Context, obj map[string]any, a
 	if err != nil || dbPkg == nil {
 		return err
 	}
-	return a.backend.db.PutPackageTag(ctx, dbPkg.ID, tag, version, false, false)
+	return a.backend.db.PutPackageTag(ctx, dbPkg.ID, tag, version)
 }
 
 func (a *federationAdapter) deleteTag(ctx context.Context, obj map[string]any, actorURL string) error {

@@ -34,6 +34,36 @@ func testDB(t *testing.T) *DB {
 	return db
 }
 
+func TestMigrateV9DropsImmutableColumn(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+
+	// Simulate a pre-v9 database that still carries the immutable column.
+	_, err := db.bun.ExecContext(ctx, "ALTER TABLE package_tags ADD COLUMN immutable BOOLEAN NOT NULL DEFAULT FALSE")
+	require.NoError(t, err)
+	exists, err := db.columnExists(ctx, "package_tags", "immutable")
+	require.NoError(t, err)
+	require.True(t, exists)
+
+	pkg, err := db.GetOrCreatePackage(ctx, "oci", "foo.com/keep", testAliceActor)
+	require.NoError(t, err)
+	require.NoError(t, db.PutPackageTag(ctx, pkg.ID, "v1.0", "sha256:keep"))
+
+	require.NoError(t, db.migrateV9(ctx))
+
+	exists, err = db.columnExists(ctx, "package_tags", "immutable")
+	require.NoError(t, err)
+	require.False(t, exists, "immutable column should be dropped")
+
+	// The tag row survives the column drop.
+	got, err := db.GetPackageTag(ctx, pkg.ID, "v1.0")
+	require.NoError(t, err)
+	require.Equal(t, "sha256:keep", got.Version)
+
+	// Idempotent: running again on a table without the column is a no-op.
+	require.NoError(t, db.migrateV9(ctx))
+}
+
 func TestMigrateV6FromV5Data(t *testing.T) {
 	db := testDB(t)
 	ctx := context.Background()
@@ -105,7 +135,6 @@ func TestMigrateV6FromV5Data(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, tag)
 	require.Equal(t, "sha256:legacy", tag.ManifestDigest)
-	require.True(t, tag.Immutable)
 
 	deleted, err := db.IsManifestDeleted(ctx, "sha256:tombstoned")
 	require.NoError(t, err)
@@ -141,7 +170,7 @@ func TestMigrateV6PartialReRun(t *testing.T) {
 		[]byte(`{}`))
 	require.NoError(t, err)
 	_, err = db.bun.ExecContext(ctx,
-		`INSERT INTO package_tags (id, package_id, name, version, immutable) VALUES (997, 999, 'latest', 'sha256:already', false)`)
+		`INSERT INTO package_tags (id, package_id, name, version) VALUES (997, 999, 'latest', 'sha256:already')`)
 	require.NoError(t, err)
 
 	require.NoError(t, db.migrateV6(ctx))

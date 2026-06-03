@@ -38,7 +38,7 @@ func testRegistry(t *testing.T) (*Registry, *httptest.Server) {
 	blobs, err := blobstore.New(dir, nopLog())
 	require.NoError(t, err)
 
-	reg, err := NewRegistry(db, blobs, "https://test.example.com", "", "", config.DefaultMaxManifestSize, config.DefaultMaxBlobSize, nopLog())
+	reg, err := NewRegistry(db, blobs, "https://test.example.com", "", config.DefaultMaxManifestSize, config.DefaultMaxBlobSize, nopLog())
 	require.NoError(t, err)
 	srv := httptest.NewServer(reg.Handler())
 	t.Cleanup(srv.Close)
@@ -149,7 +149,7 @@ func TestOwnershipEnforcement(t *testing.T) {
 	blobs, _ := blobstore.New(dir, nopLog())
 
 	// Alice creates the repo
-	alice, err := NewRegistry(db, blobs, "https://alice.example.com", "", "", config.DefaultMaxManifestSize, config.DefaultMaxBlobSize, nopLog())
+	alice, err := NewRegistry(db, blobs, "https://alice.example.com", "", config.DefaultMaxManifestSize, config.DefaultMaxBlobSize, nopLog())
 	require.NoError(t, err)
 	ctx := context.Background()
 
@@ -159,7 +159,7 @@ func TestOwnershipEnforcement(t *testing.T) {
 
 	// Bob tries to push to Alice's repo — rejected because alice.example.com
 	// is domain-scoped and doesn't match Bob's namespace.
-	bob, err := NewRegistry(db, blobs, "https://bob.example.com", "", "", config.DefaultMaxManifestSize, config.DefaultMaxBlobSize, nopLog())
+	bob, err := NewRegistry(db, blobs, "https://bob.example.com", "", config.DefaultMaxManifestSize, config.DefaultMaxBlobSize, nopLog())
 	require.NoError(t, err)
 	_, err = bob.PushManifest(ctx, "alice.example.com/shared/repo", "v2", manifest, "application/vnd.oci.image.manifest.v1+json")
 	require.Error(t, err, "push to foreign domain namespace must be rejected")
@@ -300,36 +300,27 @@ func TestReferrersFilterByArtifactType(t *testing.T) {
 	require.Equal(t, 1, count)
 }
 
-func TestTagImmutability(t *testing.T) {
-	dir := t.TempDir()
-	db, _ := database.OpenSQLite(dir, 0, 0, nopLog())
-	defer func() { _ = db.Close() }()
-	blobs, _ := blobstore.New(dir, nopLog())
-
-	reg, err := NewRegistry(db, blobs, "https://test.example.com", "", `^v[0-9]`, config.DefaultMaxManifestSize, config.DefaultMaxBlobSize, nopLog())
-	require.NoError(t, err)
+func TestTagOverwrite(t *testing.T) {
+	reg, _ := testRegistry(t)
 	ctx := context.Background()
 
-	manifest := []byte(`{"schemaVersion":2}`)
+	repo := "test.example.com/test/overwrite"
+	m1 := []byte(`{"schemaVersion":2}`)
+	m2 := []byte(`{"schemaVersion":2,"new":true}`)
 
-	// First push to v1.0 succeeds and marks the tag immutable.
-	_, err = reg.PushManifest(ctx, "test.example.com/test/immutable", "v1.0", manifest, "application/vnd.oci.image.manifest.v1+json")
-	require.NoError(t, err, "first push to v1.0 should succeed")
-
-	// Owner may re-push over an immutable tag; it stays immutable.
-	_, err = reg.PushManifest(ctx, "test.example.com/test/immutable", "v1.0", []byte(`{"schemaVersion":2,"new":true}`), "application/vnd.oci.image.manifest.v1+json")
-	require.NoError(t, err, "owner re-push over immutable tag should succeed")
-	repo, err := db.GetRepository(ctx, "test.example.com/test/immutable")
+	d1, err := reg.PushManifest(ctx, repo, "v1.0", m1, testManifestMediaType)
 	require.NoError(t, err)
-	tag, err := db.GetPackageTag(ctx, repo.ID, "v1.0")
-	require.NoError(t, err)
-	require.True(t, tag.Immutable)
 
-	// Push to 'latest' succeeds twice (not matching ^v[0-9])
-	_, err = reg.PushManifest(ctx, "test.example.com/test/immutable", "latest", manifest, "application/vnd.oci.image.manifest.v1+json")
-	require.NoError(t, err, "first push to latest should succeed")
-	_, err = reg.PushManifest(ctx, "test.example.com/test/immutable", "latest", []byte(`{"schemaVersion":2,"new":true}`), "application/vnd.oci.image.manifest.v1+json")
-	require.NoError(t, err, "second push to latest should succeed")
+	// Any tag can be re-pushed to a new digest.
+	d2, err := reg.PushManifest(ctx, repo, "v1.0", m2, testManifestMediaType)
+	require.NoError(t, err)
+	require.NotEqual(t, d1.Digest, d2.Digest)
+
+	rdr, err := reg.GetTag(ctx, repo, "v1.0")
+	require.NoError(t, err)
+	got, _ := io.ReadAll(rdr)
+	_ = rdr.Close()
+	require.Equal(t, string(m2), string(got))
 }
 
 func TestNamespaceNormalization(t *testing.T) {
@@ -338,7 +329,7 @@ func TestNamespaceNormalization(t *testing.T) {
 	defer func() { _ = db.Close() }()
 	blobs, _ := blobstore.New(dir, nopLog())
 
-	reg, err := NewRegistry(db, blobs, "https://alice.example.com", "alice", "", config.DefaultMaxManifestSize, config.DefaultMaxBlobSize, nopLog())
+	reg, err := NewRegistry(db, blobs, "https://alice.example.com", "alice", config.DefaultMaxManifestSize, config.DefaultMaxBlobSize, nopLog())
 	require.NoError(t, err)
 	ctx := context.Background()
 
@@ -406,7 +397,7 @@ func TestNamespaceTypoRejected(t *testing.T) {
 	blobs, err := blobstore.New(dir, nopLog())
 	require.NoError(t, err)
 
-	reg, err := NewRegistry(db, blobs, "https://registry.mortebrume.eu", testHostDomain, "", config.DefaultMaxManifestSize, config.DefaultMaxBlobSize, nopLog())
+	reg, err := NewRegistry(db, blobs, "https://registry.mortebrume.eu", testHostDomain, config.DefaultMaxManifestSize, config.DefaultMaxBlobSize, nopLog())
 	require.NoError(t, err)
 	ctx := context.Background()
 
@@ -581,7 +572,7 @@ func TestBlobSizeLimitEnforced(t *testing.T) {
 	blobs, _ := blobstore.New(dir, nopLog())
 
 	// Create registry with a tiny 100-byte blob limit.
-	reg, err := NewRegistry(db, blobs, "https://test.example.com", "", "", config.DefaultMaxManifestSize, 100, nopLog())
+	reg, err := NewRegistry(db, blobs, "https://test.example.com", "", config.DefaultMaxManifestSize, 100, nopLog())
 	require.NoError(t, err)
 	ctx := context.Background()
 
@@ -603,7 +594,7 @@ func TestBlobSizeLimitBoundary(t *testing.T) {
 	blobs, _ := blobstore.New(dir, nopLog())
 
 	limit := int64(100)
-	reg, err := NewRegistry(db, blobs, "https://test.example.com", "", "", config.DefaultMaxManifestSize, limit, nopLog())
+	reg, err := NewRegistry(db, blobs, "https://test.example.com", "", config.DefaultMaxManifestSize, limit, nopLog())
 	require.NoError(t, err)
 	ctx := context.Background()
 
@@ -625,7 +616,7 @@ func TestManifestSizeLimitEnforced(t *testing.T) {
 	blobs, _ := blobstore.New(dir, nopLog())
 
 	// Create registry with a tiny 200-byte manifest limit.
-	reg, err := NewRegistry(db, blobs, "https://test.example.com", "", "", 200, config.DefaultMaxBlobSize, nopLog())
+	reg, err := NewRegistry(db, blobs, "https://test.example.com", "", 200, config.DefaultMaxBlobSize, nopLog())
 	require.NoError(t, err)
 	ctx := context.Background()
 
@@ -685,29 +676,19 @@ func TestDeleteManifestCascadesTags(t *testing.T) {
 	require.Error(t, err, "tag should be gone after manifest delete")
 }
 
-func TestDeleteManifestBlockedByImmutableTag(t *testing.T) {
-	dir := t.TempDir()
-	db, _ := database.OpenSQLite(dir, 0, 0, nopLog())
-	defer func() { _ = db.Close() }()
-	blobs, _ := blobstore.New(dir, nopLog())
-
-	reg, err := NewRegistry(db, blobs, "https://test.example.com", "", `^v[0-9]`, config.DefaultMaxManifestSize, config.DefaultMaxBlobSize, nopLog())
-	require.NoError(t, err)
+func TestDeleteManifestWithTag(t *testing.T) {
+	reg, _ := testRegistry(t)
 	ctx := context.Background()
 
 	manifest := []byte(`{"schemaVersion":2}`)
-	desc, err := reg.PushManifest(ctx, "test.example.com/test/immudel", "v1.0", manifest, testManifestMediaType)
+	desc, err := reg.PushManifest(ctx, "test.example.com/test/tagdel", "v1.0", manifest, testManifestMediaType)
 	require.NoError(t, err)
 
-	// Deleting a manifest that has an immutable tag should fail.
-	err = reg.DeleteManifest(ctx, "test.example.com/test/immudel", desc.Digest)
-	require.Error(t, err, "should not delete manifest with immutable tags")
-	require.Contains(t, err.Error(), "immutable")
+	// A manifest can be deleted even while a tag still points at it.
+	require.NoError(t, reg.DeleteManifest(ctx, "test.example.com/test/tagdel", desc.Digest))
 
-	// Manifest should still be accessible.
-	reader, err := reg.GetManifest(ctx, "test.example.com/test/immudel", desc.Digest)
-	require.NoError(t, err)
-	_ = reader.Close()
+	_, err = reg.GetManifest(ctx, "test.example.com/test/tagdel", desc.Digest)
+	require.Error(t, err, "manifest should be gone after delete")
 }
 
 func TestUploadSessionDBWiring(t *testing.T) {
@@ -817,7 +798,7 @@ func TestPushIndexProtectsChildrenFromGC(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 	blobs, err := blobstore.New(dir, nopLog())
 	require.NoError(t, err)
-	reg, err := NewRegistry(db, blobs, "https://test.example.com", "", "", config.DefaultMaxManifestSize, config.DefaultMaxBlobSize, nopLog())
+	reg, err := NewRegistry(db, blobs, "https://test.example.com", "", config.DefaultMaxManifestSize, config.DefaultMaxBlobSize, nopLog())
 	require.NoError(t, err)
 	ctx := context.Background()
 
@@ -910,7 +891,7 @@ func TestGetManifestReturns410ForTombstoned(t *testing.T) {
 	blobs, err := blobstore.New(dir, nopLog())
 	require.NoError(t, err)
 
-	reg, err := NewRegistry(db, blobs, "https://test.example.com", "", "", config.DefaultMaxManifestSize, config.DefaultMaxBlobSize, nopLog())
+	reg, err := NewRegistry(db, blobs, "https://test.example.com", "", config.DefaultMaxManifestSize, config.DefaultMaxBlobSize, nopLog())
 	require.NoError(t, err)
 	srv := httptest.NewServer(reg.Handler())
 	t.Cleanup(srv.Close)
@@ -1000,7 +981,7 @@ func TestUpstreamBlobPullThrough(t *testing.T) {
 	blobs, err := blobstore.New(dir, nopLog())
 	require.NoError(t, err)
 
-	reg, err := NewRegistry(db, blobs, "https://test.example.com", "", "", config.DefaultMaxManifestSize, config.DefaultMaxBlobSize, nopLog())
+	reg, err := NewRegistry(db, blobs, "https://test.example.com", "", config.DefaultMaxManifestSize, config.DefaultMaxBlobSize, nopLog())
 	require.NoError(t, err)
 
 	// Setup mock upstream
@@ -1047,7 +1028,7 @@ func TestUpstreamManifestPullThrough(t *testing.T) {
 	blobs, err := blobstore.New(dir, nopLog())
 	require.NoError(t, err)
 
-	reg, err := NewRegistry(db, blobs, "https://test.example.com", "", "", config.DefaultMaxManifestSize, config.DefaultMaxBlobSize, nopLog())
+	reg, err := NewRegistry(db, blobs, "https://test.example.com", "", config.DefaultMaxManifestSize, config.DefaultMaxBlobSize, nopLog())
 	require.NoError(t, err)
 
 	// Setup mock upstream
@@ -1100,7 +1081,7 @@ func TestUpstreamTagPullThrough(t *testing.T) {
 	blobs, err := blobstore.New(dir, nopLog())
 	require.NoError(t, err)
 
-	reg, err := NewRegistry(db, blobs, "https://test.example.com", "", "", config.DefaultMaxManifestSize, config.DefaultMaxBlobSize, nopLog())
+	reg, err := NewRegistry(db, blobs, "https://test.example.com", "", config.DefaultMaxManifestSize, config.DefaultMaxBlobSize, nopLog())
 	require.NoError(t, err)
 
 	// Setup mock upstream
@@ -1149,7 +1130,7 @@ func TestNonUpstreamRepoDoesNotTriggerUpstream(t *testing.T) {
 	blobs, err := blobstore.New(dir, nopLog())
 	require.NoError(t, err)
 
-	reg, err := NewRegistry(db, blobs, "https://test.example.com", "", "", config.DefaultMaxManifestSize, config.DefaultMaxBlobSize, nopLog())
+	reg, err := NewRegistry(db, blobs, "https://test.example.com", "", config.DefaultMaxManifestSize, config.DefaultMaxBlobSize, nopLog())
 	require.NoError(t, err)
 
 	// Setup mock upstream that would fail if called
@@ -1183,7 +1164,7 @@ func TestUpstreamManifestHEADPullThrough(t *testing.T) {
 	blobs, err := blobstore.New(dir, nopLog())
 	require.NoError(t, err)
 
-	reg, err := NewRegistry(db, blobs, "https://test.example.com", "", "", config.DefaultMaxManifestSize, config.DefaultMaxBlobSize, nopLog())
+	reg, err := NewRegistry(db, blobs, "https://test.example.com", "", config.DefaultMaxManifestSize, config.DefaultMaxBlobSize, nopLog())
 	require.NoError(t, err)
 
 	upstream := newMockUpstreamFetcher()
@@ -1231,7 +1212,7 @@ func TestUpstreamTagHEADPullThrough(t *testing.T) {
 	blobs, err := blobstore.New(dir, nopLog())
 	require.NoError(t, err)
 
-	reg, err := NewRegistry(db, blobs, "https://test.example.com", "", "", config.DefaultMaxManifestSize, config.DefaultMaxBlobSize, nopLog())
+	reg, err := NewRegistry(db, blobs, "https://test.example.com", "", config.DefaultMaxManifestSize, config.DefaultMaxBlobSize, nopLog())
 	require.NoError(t, err)
 
 	upstream := newMockUpstreamFetcher()

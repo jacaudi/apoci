@@ -11,7 +11,6 @@ import (
 	"os"
 	pathpkg "path"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
@@ -40,7 +39,6 @@ type Config struct {
 	KeyPath       string `yaml:"keyPath"       env:"APOCI_KEY_PATH"`
 	LogLevel      string `yaml:"logLevel"      env:"APOCI_LOG_LEVEL"`
 	LogFormat     string `yaml:"logFormat"     env:"APOCI_LOG_FORMAT"`
-	ImmutableTags string `yaml:"immutableTags" env:"APOCI_IMMUTABLE_TAGS"`
 	RegistryToken string `yaml:"registryToken" env:"APOCI_REGISTRY_TOKEN"`
 	AdminToken    string `yaml:"adminToken"    env:"APOCI_ADMIN_TOKEN"`
 	AccountDomain string `yaml:"accountDomain" env:"APOCI_ACCOUNT_DOMAIN"`
@@ -462,9 +460,6 @@ func applyServerDefaults(cfg *Config) error {
 	if cfg.AccountDomain == "" {
 		cfg.AccountDomain = cfg.Domain
 	}
-	if cfg.ImmutableTags == "" {
-		cfg.ImmutableTags = `^v[0-9]`
-	}
 	return nil
 }
 
@@ -631,9 +626,6 @@ func validate(cfg *Config) error {
 	if err := validateRateLimits(cfg); err != nil {
 		return err
 	}
-	if err := validateRegex(cfg); err != nil {
-		return err
-	}
 	if err := validateAccountDomain(cfg); err != nil {
 		return err
 	}
@@ -718,15 +710,6 @@ func validateFederation(cfg *Config) error {
 	for i, g := range cfg.Federation.ExcludedRepos {
 		if _, err := pathpkg.Match(g, ""); err != nil {
 			return fmt.Errorf("federation.excludedRepos[%d]: invalid glob %q: %w", i, g, err)
-		}
-	}
-	return nil
-}
-
-func validateRegex(cfg *Config) error {
-	if cfg.ImmutableTags != "" {
-		if _, err := regexp.Compile(cfg.ImmutableTags); err != nil {
-			return fmt.Errorf("invalid immutableTags regex: %w", err)
 		}
 	}
 	return nil

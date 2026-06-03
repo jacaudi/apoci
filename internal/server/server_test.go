@@ -26,6 +26,7 @@ const (
 	testFollowsAPI           = "/api/admin/follows"
 	testFollowBody           = `{"target":"https://x.example.com/ap/actor"}`
 	testOCIManifestMediaType = "application/vnd.oci.image.manifest.v1+json"
+	testTagLatest            = "latest"
 )
 
 func nopLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
@@ -51,7 +52,6 @@ func testServer(t *testing.T) *Server {
 		AccountDomain: testDomain,
 		Listen:        ":0",
 		RegistryToken: testRegistryToken,
-		ImmutableTags: `^v[0-9]`,
 		Peering: config.Peering{
 			HealthCheckInterval: 30 * time.Second,
 			FetchTimeout:        10 * time.Second,
@@ -592,7 +592,7 @@ func TestFederationWithdrawalSweepEmitsDeletesAndStamps(t *testing.T) {
 		MediaType: testOCIManifestMediaType,
 		Metadata:  []byte(`{}`),
 	}))
-	require.NoError(t, s.db.PutPackageTag(ctx, excluded.ID, "latest", dgst, false, false))
+	require.NoError(t, s.db.PutPackageTag(ctx, excluded.ID, testTagLatest, dgst))
 
 	_, err = s.db.GetOrCreatePackage(ctx, "oci", "kept/repo", s.identity.ActorURL)
 	require.NoError(t, err)

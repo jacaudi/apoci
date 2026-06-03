@@ -9,7 +9,6 @@ endpoint: "https://registry.example.com"
 # registryToken: ""              # auto-generated to {dataDir}/registry.token if empty
 # adminToken: ""                 # auto-generated to {dataDir}/admin.token if empty (separate from registryToken)
 # accountDomain: "example.com"  # vanity domain for WebFinger (defaults to endpoint domain)
-# immutableTags: "^v[0-9]"      # regex over tag names; matches are pinned against GC and can't be deleted (the owner can still re-push). Empty falls back to this default.
 
 # storage:
 #   type: local        # local (default) or s3

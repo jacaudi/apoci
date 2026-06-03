@@ -148,86 +148,23 @@ func (db *DB) migrate(ctx context.Context) error {
 		}
 	}
 
-	if version < 1 {
-		if err := db.migrateV1(ctx); err != nil {
-			return fmt.Errorf("migration v1: %w", err)
-		}
-		if _, err := db.bun.ExecContext(ctx, `UPDATE schema_version SET version = 1`); err != nil {
-			return fmt.Errorf("updating schema version to 1: %w", err)
-		}
-		version = 1
+	steps := []func(context.Context) error{
+		db.migrateV1, db.migrateV2, db.migrateV3, db.migrateV4, db.migrateV5,
+		db.migrateV6, db.migrateV7, db.migrateV8, db.migrateV9,
 	}
-
-	if version < 2 {
-		if err := db.migrateV2(ctx); err != nil {
-			return fmt.Errorf("migration v2: %w", err)
+	for i, step := range steps {
+		v := i + 1
+		if version >= v {
+			continue
 		}
-		if _, err := db.bun.ExecContext(ctx, `UPDATE schema_version SET version = 2`); err != nil {
-			return fmt.Errorf("updating schema version to 2: %w", err)
+		if err := step(ctx); err != nil {
+			return fmt.Errorf("migration v%d: %w", v, err)
 		}
-		version = 2
+		if _, err := db.bun.ExecContext(ctx, `UPDATE schema_version SET version = ?`, v); err != nil {
+			return fmt.Errorf("updating schema version to %d: %w", v, err)
+		}
+		version = v
 	}
-
-	if version < 3 {
-		if err := db.migrateV3(ctx); err != nil {
-			return fmt.Errorf("migration v3: %w", err)
-		}
-		if _, err := db.bun.ExecContext(ctx, `UPDATE schema_version SET version = 3`); err != nil {
-			return fmt.Errorf("updating schema version to 3: %w", err)
-		}
-		version = 3
-	}
-
-	if version < 4 {
-		if err := db.migrateV4(ctx); err != nil {
-			return fmt.Errorf("migration v4: %w", err)
-		}
-		if _, err := db.bun.ExecContext(ctx, `UPDATE schema_version SET version = 4`); err != nil {
-			return fmt.Errorf("updating schema version to 4: %w", err)
-		}
-		version = 4
-	}
-
-	if version < 5 {
-		if err := db.migrateV5(ctx); err != nil {
-			return fmt.Errorf("migration v5: %w", err)
-		}
-		if _, err := db.bun.ExecContext(ctx, `UPDATE schema_version SET version = 5`); err != nil {
-			return fmt.Errorf("updating schema version to 5: %w", err)
-		}
-		version = 5
-	}
-
-	if version < 6 {
-		if err := db.migrateV6(ctx); err != nil {
-			return fmt.Errorf("migration v6: %w", err)
-		}
-		if _, err := db.bun.ExecContext(ctx, `UPDATE schema_version SET version = 6`); err != nil {
-			return fmt.Errorf("updating schema version to 6: %w", err)
-		}
-		version = 6
-	}
-
-	if version < 7 {
-		if err := db.migrateV7(ctx); err != nil {
-			return fmt.Errorf("migration v7: %w", err)
-		}
-		if _, err := db.bun.ExecContext(ctx, `UPDATE schema_version SET version = 7`); err != nil {
-			return fmt.Errorf("updating schema version to 7: %w", err)
-		}
-		version = 7
-	}
-
-	if version < 8 {
-		if err := db.migrateV8(ctx); err != nil {
-			return fmt.Errorf("migration v8: %w", err)
-		}
-		if _, err := db.bun.ExecContext(ctx, `UPDATE schema_version SET version = 8`); err != nil {
-			return fmt.Errorf("updating schema version to 8: %w", err)
-		}
-		version = 8
-	}
-	_ = version // used by future migrations
 
 	return nil
 }
@@ -242,6 +179,11 @@ func (db *DB) migrateV8(ctx context.Context) error {
 	return db.addColumnIfMissing(ctx, "packages", "federation_withdrawn_at", "TIMESTAMP")
 }
 
+// migrateV9 drops the now-unused immutable column from package_tags.
+func (db *DB) migrateV9(ctx context.Context) error {
+	return db.dropColumnIfExists(ctx, "package_tags", "immutable")
+}
+
 func (db *DB) addColumnIfMissing(ctx context.Context, table, column, definition string) error {
 	exists, err := db.columnExists(ctx, table, column)
 	if err != nil {
@@ -251,6 +193,18 @@ func (db *DB) addColumnIfMissing(ctx context.Context, table, column, definition 
 		return nil
 	}
 	_, err = db.bun.ExecContext(ctx, fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", table, column, definition))
+	return err
+}
+
+func (db *DB) dropColumnIfExists(ctx context.Context, table, column string) error {
+	exists, err := db.columnExists(ctx, table, column)
+	if err != nil {
+		return err
+	}
+	if !exists {
+		return nil
+	}
+	_, err = db.bun.ExecContext(ctx, fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", table, column))
 	return err
 }
 
@@ -376,8 +330,8 @@ func (db *DB) copyV5DataToV6(ctx context.Context) error {
 		},
 		{
 			"package_tags from tags",
-			`INSERT INTO package_tags (id, package_id, name, version, immutable, updated_at)
-			 SELECT t.id, t.repository_id, t.name, t.manifest_digest, t.immutable, t.updated_at FROM tags t
+			`INSERT INTO package_tags (id, package_id, name, version, updated_at)
+			 SELECT t.id, t.repository_id, t.name, t.manifest_digest, t.updated_at FROM tags t
 			 WHERE NOT EXISTS (SELECT 1 FROM package_tags pt WHERE pt.package_id = t.repository_id AND pt.name = t.name)`,
 		},
 		{

@@ -13,7 +13,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -54,7 +53,7 @@ type RegistryRepository interface {
 	ListManifestsBySubject(ctx context.Context, repoID int64, subjectDigest string) ([]database.Manifest, error)
 	PutManifestLayers(ctx context.Context, manifestID int64, refs []database.BlobRef) error
 
-	PutTagWithImmutable(ctx context.Context, repoID int64, tag, digest string, immutable, ownerOverwrite bool) error
+	PutTag(ctx context.Context, repoID int64, tag, digest string) error
 	DeleteTag(ctx context.Context, repoID int64, tag string) error
 	ListTagsAfter(ctx context.Context, repoID int64, startAfter string, limit int) ([]string, error)
 
@@ -108,7 +107,6 @@ type Registry struct {
 	logger          *slog.Logger
 	localID         string
 	namespace       string
-	immutableTagRe  *regexp.Regexp
 	publisher       Publisher
 	observers       []ManifestObserver
 	resolver        ContentResolver
@@ -122,16 +120,7 @@ type Registry struct {
 	uploads   map[string]*diskBlobWriter
 }
 
-func NewRegistry(db *database.DB, blobs blobstore.BlobStore, localID, namespace, immutableTagPattern string, maxManifestSize, maxBlobSize int64, logger *slog.Logger) (*Registry, error) {
-	var immutableRe *regexp.Regexp
-	if immutableTagPattern != "" {
-		var err error
-		immutableRe, err = regexp.Compile(immutableTagPattern)
-		if err != nil {
-			return nil, fmt.Errorf("invalid immutable tag pattern %q: %w", immutableTagPattern, err)
-		}
-	}
-
+func NewRegistry(db *database.DB, blobs blobstore.BlobStore, localID, namespace string, maxManifestSize, maxBlobSize int64, logger *slog.Logger) (*Registry, error) {
 	// When no explicit namespace is given, derive it from the localID (actor URL)
 	// so that writes are always namespace-enforced.
 	if namespace == "" && localID != "" {
@@ -146,7 +135,6 @@ func NewRegistry(db *database.DB, blobs blobstore.BlobStore, localID, namespace,
 		logger:          logger,
 		localID:         localID,
 		namespace:       namespace,
-		immutableTagRe:  immutableRe,
 		maxManifestSize: maxManifestSize,
 		maxBlobSize:     maxBlobSize,
 		// Default staging directory for chunked uploads. The operator should
@@ -552,7 +540,7 @@ func (r *Registry) fetchManifestFromUpstream(ctx context.Context, repo, referenc
 	}
 
 	if !refIsDigest {
-		if err := r.db.PutTagWithImmutable(ctx, repoObj.ID, reference, computed, false, false); err != nil {
+		if err := r.db.PutTag(ctx, repoObj.ID, reference, computed); err != nil {
 			r.logger.Warn("failed to cache upstream tag", "tag", reference, "error", err)
 		}
 	}
@@ -1211,9 +1199,7 @@ func (r *Registry) pushManifest(ctx context.Context, repo string, tag string, co
 	}
 
 	if tag != "" {
-		// ownerOverwrite: the local pusher owns the repo and may re-push an immutable tag.
-		immutable := r.immutableTagRe != nil && r.immutableTagRe.MatchString(tag)
-		if err := r.db.PutTagWithImmutable(ctx, repoObj.ID, tag, digest, immutable, true); err != nil {
+		if err := r.db.PutTag(ctx, repoObj.ID, tag, digest); err != nil {
 			return ociregistry.Descriptor{}, fmt.Errorf("storing tag: %w", err)
 		}
 	}
@@ -1416,9 +1402,6 @@ func (r *Registry) deleteTag(ctx context.Context, repo string, name string) erro
 		return err
 	}
 	if err := r.db.DeleteTag(ctx, repoObj.ID, name); err != nil {
-		if errors.Is(err, database.ErrTagImmutable) {
-			return fmt.Errorf("%w: tag %q is immutable", ociregistry.ErrDenied, name)
-		}
 		return fmt.Errorf("deleting tag: %w", err)
 	}
 	if r.publisher != nil {

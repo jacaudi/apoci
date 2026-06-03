@@ -145,9 +145,9 @@ gc:
         keepLastN: 10
 ```
 
-Pinned globs and immutable tags are never deleted and don't count against `keepLastN`. Resolution order: `perRepo` config → DB column overrides → global default. Tag and manifest deletes federate to peers, which free their copies on the next GC cycle.
+Pinned globs are never deleted and don't count against `keepLastN`. Resolution order: `perRepo` config → DB column overrides → global default. Tag and manifest deletes federate to peers, which free their copies on the next GC cycle. Run a GC cycle on demand with `apoci gc run`.
 
-Tags matching `immutableTags` (a regex, default `^v[0-9]`) are marked immutable on push: pinned against GC and undeletable, though the owner can overwrite them by re-pushing. An empty value falls back to the default; use a never-matching pattern like `a^` to disable. Run a GC cycle on demand with `apoci gc run`.
+Tags are freely overwritable — re-pushing a tag repoints it at the new manifest.
 
 ### Per-follower filters
 

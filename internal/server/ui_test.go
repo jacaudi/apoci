@@ -42,7 +42,6 @@ func testServerWithUI(t *testing.T, uiEnabled bool) *Server {
 		AccountDomain: testDomain,
 		Listen:        ":0",
 		RegistryToken: "test-token",
-		ImmutableTags: `^v[0-9]`,
 		Peering: config.Peering{
 			HealthCheckInterval: 30 * time.Second,
 			FetchTimeout:        10 * time.Second,

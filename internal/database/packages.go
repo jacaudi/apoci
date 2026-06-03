@@ -12,10 +12,7 @@ import (
 	"github.com/uptrace/bun/dialect/pgdialect"
 )
 
-var (
-	ErrTagImmutable         = errors.New("tag is immutable and cannot be overwritten")
-	ErrPackageOwnerMismatch = errors.New("package is owned by another actor")
-)
+var ErrPackageOwnerMismatch = errors.New("package is owned by another actor")
 
 const ociPackageType = "oci"
 
@@ -214,9 +211,8 @@ func (db *DB) ListPackageVersionsBySubject(ctx context.Context, packageID int64,
 	return versions, nil
 }
 
-// DeletePackageVersion errors with ErrTagImmutable if any immutable tag still
-// references the version. Mutable tags are removed; orphaned blobs are left
-// for the GC sweep.
+// DeletePackageVersion removes a version, its tags, and its files. Orphaned
+// blobs are left for the GC sweep.
 func (db *DB) DeletePackageVersion(ctx context.Context, packageID int64, version string) error {
 	tx, err := db.bun.BeginTx(ctx, nil)
 	if err != nil {
@@ -237,21 +233,10 @@ func (db *DB) DeletePackageVersion(ctx context.Context, packageID int64, version
 	}
 
 	if _, err := tx.NewRaw(
-		"DELETE FROM package_tags WHERE package_id = ? AND version = ? AND immutable = false",
+		"DELETE FROM package_tags WHERE package_id = ? AND version = ?",
 		packageID, version,
 	).Exec(ctx); err != nil {
 		return fmt.Errorf("deleting tags for version: %w", err)
-	}
-
-	var immutableCount int
-	if err := tx.NewRaw(
-		"SELECT COUNT(*) FROM package_tags WHERE package_id = ? AND version = ? AND immutable = true",
-		packageID, version,
-	).Scan(ctx, &immutableCount); err != nil {
-		return fmt.Errorf("checking immutable tags: %w", err)
-	}
-	if immutableCount > 0 {
-		return fmt.Errorf("%w: version has immutable tags", ErrTagImmutable)
 	}
 
 	if _, err := tx.NewRaw(
@@ -369,71 +354,29 @@ func (db *DB) GetPackageTag(ctx context.Context, packageID int64, name string) (
 	return t, nil
 }
 
-// PutPackageTag returns ErrTagImmutable when the existing row is immutable,
-// unless ownerOverwrite is set. The immutable flag is sticky: once set,
-// immutable=false on a later upsert does not clear it.
-func (db *DB) PutPackageTag(ctx context.Context, packageID int64, name, version string, immutable, ownerOverwrite bool) error {
-	tx, err := db.bun.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("beginning tag transaction: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	var existing bool
-	err = tx.NewRaw(
-		"SELECT immutable FROM package_tags WHERE package_id = ? AND name = ?",
-		packageID, name,
-	).Scan(ctx, &existing)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return fmt.Errorf("checking tag immutability: %w", err)
-	}
-	if err == nil && existing && !ownerOverwrite {
-		return ErrTagImmutable
-	}
-
-	if _, err := tx.NewRaw(
-		`INSERT INTO package_tags (package_id, name, version, immutable, updated_at)
-		 VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+// PutPackageTag upserts a tag, repointing it at version if it already exists.
+func (db *DB) PutPackageTag(ctx context.Context, packageID int64, name, version string) error {
+	if _, err := db.bun.NewRaw(
+		`INSERT INTO package_tags (package_id, name, version, updated_at)
+		 VALUES (?, ?, ?, CURRENT_TIMESTAMP)
 		 ON CONFLICT(package_id, name) DO UPDATE SET
 		   version = excluded.version,
-		   updated_at = excluded.updated_at,
-		   immutable = CASE WHEN package_tags.immutable THEN true ELSE excluded.immutable END`,
-		packageID, name, version, immutable,
+		   updated_at = excluded.updated_at`,
+		packageID, name, version,
 	).Exec(ctx); err != nil {
 		return fmt.Errorf("putting tag: %w", err)
 	}
-	return tx.Commit()
+	return nil
 }
 
 func (db *DB) DeletePackageTag(ctx context.Context, packageID int64, name string) error {
-	tx, err := db.bun.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("beginning delete tag transaction: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	var immutable bool
-	err = tx.NewRaw(
-		"SELECT immutable FROM package_tags WHERE package_id = ? AND name = ?",
-		packageID, name,
-	).Scan(ctx, &immutable)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("checking tag before delete: %w", err)
-	}
-	if immutable {
-		return ErrTagImmutable
-	}
-
-	if _, err := tx.NewRaw(
+	if _, err := db.bun.NewRaw(
 		"DELETE FROM package_tags WHERE package_id = ? AND name = ?",
 		packageID, name,
 	).Exec(ctx); err != nil {
 		return fmt.Errorf("deleting tag: %w", err)
 	}
-	return tx.Commit()
+	return nil
 }
 
 func (db *DB) ListPackageTagsAfter(ctx context.Context, packageID int64, startAfter string, limit int) ([]string, error) {
@@ -729,20 +672,10 @@ func (db *DB) DeletePackageVersionWithBlobs(ctx context.Context, packageID int64
 	}
 
 	if _, err := tx.NewRaw(
-		"DELETE FROM package_tags WHERE package_id = ? AND version = ? AND immutable = false",
+		"DELETE FROM package_tags WHERE package_id = ? AND version = ?",
 		packageID, version,
 	).Exec(ctx); err != nil {
 		return nil, fmt.Errorf("deleting tags for version: %w", err)
-	}
-	var immutableCount int
-	if err := tx.NewRaw(
-		"SELECT COUNT(*) FROM package_tags WHERE package_id = ? AND version = ? AND immutable = true",
-		packageID, version,
-	).Scan(ctx, &immutableCount); err != nil {
-		return nil, fmt.Errorf("checking immutable tags: %w", err)
-	}
-	if immutableCount > 0 {
-		return nil, fmt.Errorf("%w: version has immutable tags", ErrTagImmutable)
 	}
 
 	if _, err := tx.NewRaw(
@@ -799,11 +732,7 @@ func (db *DB) GetTag(ctx context.Context, repoID int64, name string) (*Tag, erro
 }
 
 func (db *DB) PutTag(ctx context.Context, repoID int64, name, manifestDigest string) error {
-	return db.PutPackageTag(ctx, repoID, name, manifestDigest, false, false)
-}
-
-func (db *DB) PutTagWithImmutable(ctx context.Context, repoID int64, name, manifestDigest string, immutable, ownerOverwrite bool) error {
-	return db.PutPackageTag(ctx, repoID, name, manifestDigest, immutable, ownerOverwrite)
+	return db.PutPackageTag(ctx, repoID, name, manifestDigest)
 }
 
 func (db *DB) DeleteTag(ctx context.Context, repoID int64, name string) error {
@@ -839,7 +768,6 @@ type PackageRetention struct {
 
 type TagForRetention struct {
 	Name      string
-	Immutable bool
 	UpdatedAt time.Time
 }
 
@@ -868,11 +796,10 @@ func (db *DB) ListOCIPackagesForRetention(ctx context.Context, startAfter string
 func (db *DB) ListTagsForRetention(ctx context.Context, packageID int64) ([]TagForRetention, error) {
 	var rows []struct {
 		Name      string    `bun:"name"`
-		Immutable bool      `bun:"immutable"`
 		UpdatedAt time.Time `bun:"updated_at"`
 	}
 	err := db.bun.NewRaw(
-		"SELECT name, immutable, updated_at FROM package_tags WHERE package_id = ? ORDER BY updated_at DESC",
+		"SELECT name, updated_at FROM package_tags WHERE package_id = ? ORDER BY updated_at DESC",
 		packageID,
 	).Scan(ctx, &rows)
 	if err != nil {
@@ -882,7 +809,6 @@ func (db *DB) ListTagsForRetention(ctx context.Context, packageID int64) ([]TagF
 	for i, r := range rows {
 		out[i] = TagForRetention{
 			Name:      r.Name,
-			Immutable: r.Immutable,
 			UpdatedAt: r.UpdatedAt,
 		}
 	}
@@ -1011,7 +937,6 @@ func tagAsLegacyTag(t *PackageTag) *Tag {
 		RepositoryID:   t.PackageID,
 		Name:           t.Name,
 		ManifestDigest: t.Version,
-		Immutable:      t.Immutable,
 		UpdatedAt:      t.UpdatedAt,
 	}
 }

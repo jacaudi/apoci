@@ -54,7 +54,7 @@ func TestRetentionSweep_KeepLastN(t *testing.T) {
 		require.NoError(t, db.PutPackageVersion(ctx, &database.PackageVersion{
 			PackageID: pkg.ID, Version: dgst, Metadata: []byte(`{}`),
 		}))
-		require.NoError(t, db.PutPackageTag(ctx, pkg.ID, name, dgst, false, false))
+		require.NoError(t, db.PutPackageTag(ctx, pkg.ID, name, dgst))
 		_, err := db.ExecContext(ctx,
 			"UPDATE package_tags SET updated_at = ? WHERE package_id = ? AND name = ?",
 			now.Add(time.Duration(i)*time.Minute), pkg.ID, name)
@@ -96,7 +96,7 @@ func TestRetentionSweep_PerRepoOverride(t *testing.T) {
 		require.NoError(t, db.PutPackageVersion(ctx, &database.PackageVersion{
 			PackageID: pkg.ID, Version: dgst, Metadata: []byte(`{}`),
 		}))
-		require.NoError(t, db.PutPackageTag(ctx, pkg.ID, name, dgst, false, false))
+		require.NoError(t, db.PutPackageTag(ctx, pkg.ID, name, dgst))
 		_, err := db.ExecContext(ctx,
 			"UPDATE package_tags SET updated_at = ? WHERE package_id = ? AND name = ?",
 			now.Add(time.Duration(i)*time.Minute), pkg.ID, name)
@@ -124,7 +124,7 @@ func TestRetentionSweep_PerRepoOverride(t *testing.T) {
 	require.ElementsMatch(t, []string{tagNewest}, names)
 }
 
-func TestRetentionSweep_PinnedAndImmutable(t *testing.T) {
+func TestRetentionSweep_Pinned(t *testing.T) {
 	db, blobs := testGCDeps(t)
 	ctx := context.Background()
 
@@ -132,24 +132,23 @@ func TestRetentionSweep_PinnedAndImmutable(t *testing.T) {
 	require.NoError(t, err)
 
 	now := time.Now()
-	// Put pinned + immutable + three plain tags with deterministic ordering.
+	// Put a pinned tag plus four plain tags with deterministic ordering.
 	specs := []struct {
-		name      string
-		immutable bool
-		offset    int
+		name   string
+		offset int
 	}{
-		{"latest", false, 5},
-		{"v1.0", true, 4},
-		{"old1", false, 3},
-		{"old2", false, 2},
-		{"old3", false, 1},
+		{"latest", 5},
+		{"v1.0", 4},
+		{"old1", 3},
+		{"old2", 2},
+		{"old3", 1},
 	}
 	for _, s := range specs {
 		dgst := "sha256:" + s.name
 		require.NoError(t, db.PutPackageVersion(ctx, &database.PackageVersion{
 			PackageID: pkg.ID, Version: dgst, Metadata: []byte(`{}`),
 		}))
-		require.NoError(t, db.PutPackageTag(ctx, pkg.ID, s.name, dgst, s.immutable, false))
+		require.NoError(t, db.PutPackageTag(ctx, pkg.ID, s.name, dgst))
 		_, err := db.ExecContext(ctx,
 			"UPDATE package_tags SET updated_at = ? WHERE package_id = ? AND name = ?",
 			now.Add(time.Duration(s.offset)*time.Minute), pkg.ID, s.name)
@@ -172,11 +171,10 @@ func TestRetentionSweep_PinnedAndImmutable(t *testing.T) {
 	for _, t := range left {
 		names = append(names, t.Name)
 	}
-	// latest pinned, v1.0 immutable, KeepLastN=1 keeps the most recent of the rest.
+	// latest is pinned; KeepLastN=1 keeps the single most-recent non-pinned tag (v1.0).
 	require.Contains(t, names, "latest")
 	require.Contains(t, names, "v1.0")
-	require.Contains(t, names, "old1") // most recent among non-pinned mutable tags
-	require.Len(t, names, 3)
+	require.Len(t, names, 2)
 }
 
 func TestPruneUntaggedManifestsGC_FederatesDelete(t *testing.T) {
@@ -228,7 +226,7 @@ func TestPruneUntaggedManifestsGC_PreservesIndexChildren(t *testing.T) {
 	require.NoError(t, db.PutPackageVersion(ctx, amd))
 	require.NoError(t, db.PutPackageVersion(ctx, arm))
 	require.NoError(t, db.PutPackageVersion(ctx, idx))
-	require.NoError(t, db.PutPackageTag(ctx, pkg.ID, "v1", idx.Version, false, false))
+	require.NoError(t, db.PutPackageTag(ctx, pkg.ID, "v1", idx.Version))
 	require.NoError(t, db.PutManifestLayers(ctx, idx.ID, []database.BlobRef{
 		{Digest: amd.Version, Size: 1},
 		{Digest: arm.Version, Size: 1},
@@ -273,7 +271,7 @@ func TestGCFullPipeline(t *testing.T) {
 	v := &database.PackageVersion{PackageID: pkg.ID, Version: "sha256:m1", Metadata: []byte(`{}`)}
 	require.NoError(t, db.PutPackageVersion(ctx, v))
 	require.NoError(t, db.PutManifestLayers(ctx, v.ID, []database.BlobRef{{Digest: digest, Size: 13}}))
-	require.NoError(t, db.PutPackageTag(ctx, pkg.ID, "old", v.Version, false, false))
+	require.NoError(t, db.PutPackageTag(ctx, pkg.ID, "old", v.Version))
 
 	_, err = db.ExecContext(ctx,
 		"UPDATE package_tags SET updated_at = ? WHERE package_id = ?",

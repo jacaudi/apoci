@@ -148,7 +148,7 @@ func (b *Backend) handlePublish(w http.ResponseWriter, r *http.Request) {
 	}
 
 	for _, tag := range pkg.DistTags {
-		if err := b.db.PutPackageTag(ctx, dbPkg.ID, tag, pkg.Version, false, true); err != nil {
+		if err := b.db.PutPackageTag(ctx, dbPkg.ID, tag, pkg.Version); err != nil {
 			writeError(w, http.StatusInternalServerError, "put dist-tag")
 			return
 		}
@@ -378,7 +378,7 @@ func (b *Backend) handleDistTagPut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := b.db.PutPackageTag(ctx, dbPkg.ID, tag, version, false, true); err != nil {
+	if err := b.db.PutPackageTag(ctx, dbPkg.ID, tag, version); err != nil {
 		writeError(w, http.StatusInternalServerError, "put tag")
 		return
 	}
@@ -402,10 +402,6 @@ func (b *Backend) handleDistTagDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := b.db.DeletePackageTag(ctx, dbPkg.ID, tag); err != nil {
-		if errors.Is(err, database.ErrTagImmutable) {
-			writeError(w, http.StatusConflict, "tag is immutable")
-			return
-		}
 		writeError(w, http.StatusInternalServerError, "delete tag")
 		return
 	}
