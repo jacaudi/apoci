@@ -148,13 +148,13 @@ func TestE2ETagImmutabilityViaHTTP(t *testing.T) {
 	_ = resp.Body.Close()
 	require.Equal(t, http.StatusCreated, resp.StatusCode, "first push")
 
-	// Second push to v1.0 is rejected
+	// Owner re-push over v1.0 succeeds
 	req = authReq(mustNewRequest(t, "PUT", srv.URL+"/v2/test.example.com/immutable/manifests/v1.0", strings.NewReader(manifest2)))
 	req.Header.Set("Content-Type", "application/vnd.oci.image.manifest.v1+json")
 	resp, err = http.DefaultClient.Do(req)
 	require.NoError(t, err)
 	_ = resp.Body.Close()
-	require.NotEqual(t, http.StatusCreated, resp.StatusCode, "second push to v1.0 should be rejected (immutable)")
+	require.Equal(t, http.StatusCreated, resp.StatusCode, "owner re-push over immutable tag should succeed")
 
 	// Push to 'latest' succeeds twice (not semver)
 	for i := range 2 {

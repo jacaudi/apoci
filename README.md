@@ -118,11 +118,14 @@ Each backend emits its own ActivityPub activities on write; peers ingest them an
 
 ```bash
 apoci follow list
+apoci follow outgoing
+apoci follow reject bar.com
 apoci follow remove bar.com
+apoci actor list
 apoci identity show
 ```
 
-`follow` and `identity` subcommands accept `--remote` and `--token` (or `APOCI_REMOTE_URL` / `APOCI_ADMIN_TOKEN`) to target a remote node, useful for headless or containerized instances.
+These admin subcommands accept `--remote` and `--token` (or `APOCI_REMOTE_URL` / `APOCI_ADMIN_TOKEN`) to target a remote node, useful for headless or containerized instances.
 
 ### Retention
 
@@ -143,6 +146,8 @@ gc:
 ```
 
 Pinned globs and immutable tags are never deleted and don't count against `keepLastN`. Resolution order: `perRepo` config → DB column overrides → global default. Tag and manifest deletes federate to peers, which free their copies on the next GC cycle.
+
+Tags matching `immutableTags` (a regex, default `^v[0-9]`) are marked immutable on push: pinned against GC and undeletable, though the owner can overwrite them by re-pushing. An empty value falls back to the default; use a never-matching pattern like `a^` to disable. Run a GC cycle on demand with `apoci gc run`.
 
 ### Per-follower filters
 
@@ -187,6 +192,8 @@ upstreams:
 
 `private: true` is enforced per upstream registry, not per image. If you proxy private packages from a host that also serves public packages (GHCR, Docker Hub), all cached images from that upstream require auth.
 
+Drop a cached upstream repo with `apoci mirror evict <repo>` (add `--digest sha256:…` for a single manifest); the upstream is untouched.
+
 ## Web UI
 
 Browser-based image browser at the root path:
@@ -196,7 +203,7 @@ ui:
   enabled: true
 ```
 
-Read-only listing of your images and federated images, with copy-paste pull commands. Repos marked `private: true` in the database are excluded.
+Read-only listing of your images and federated images, with copy-paste pull commands. Repos marked `private: true` in the database are excluded. From the CLI, `apoci images list` prints hosted images and their sizes.
 
 ## Deploy
 
@@ -257,7 +264,7 @@ notifications:
     - gc_error
 ```
 
-Metrics: set `metrics.enabled: true` to expose `/debug/vars` (JSON) on the metrics port, optionally protected by `metrics.token`.
+Metrics: set `metrics.enabled: true` to expose Prometheus metrics at `/metrics` on the metrics port, optionally protected by a bearer `metrics.token`.
 
 ## Security
 
@@ -267,7 +274,7 @@ Metrics: set `metrics.enabled: true` to expose `/debug/vars` (JSON) on the metri
 - Origin ownership: a followed peer can only write repos it created
 - SHA-256 verified on every blob fetch
 - SSRF protection: private IPs blocked after DNS resolution
-- Rate limiting on mutating OCI requests (5 req/s per IP, burst 20)
+- Rate limiting: mutating OCI requests (default 50 req/s per IP, burst 100) and the federation inbox (30 req/s, burst 100); both tunable under `rateLimits`
 
 ## Contributing
 

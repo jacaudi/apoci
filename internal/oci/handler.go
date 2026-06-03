@@ -54,7 +54,7 @@ type RegistryRepository interface {
 	ListManifestsBySubject(ctx context.Context, repoID int64, subjectDigest string) ([]database.Manifest, error)
 	PutManifestLayers(ctx context.Context, manifestID int64, refs []database.BlobRef) error
 
-	PutTagWithImmutable(ctx context.Context, repoID int64, tag, digest string, immutable bool) error
+	PutTagWithImmutable(ctx context.Context, repoID int64, tag, digest string, immutable, ownerOverwrite bool) error
 	DeleteTag(ctx context.Context, repoID int64, tag string) error
 	ListTagsAfter(ctx context.Context, repoID int64, startAfter string, limit int) ([]string, error)
 
@@ -552,7 +552,7 @@ func (r *Registry) fetchManifestFromUpstream(ctx context.Context, repo, referenc
 	}
 
 	if !refIsDigest {
-		if err := r.db.PutTagWithImmutable(ctx, repoObj.ID, reference, computed, false); err != nil {
+		if err := r.db.PutTagWithImmutable(ctx, repoObj.ID, reference, computed, false, false); err != nil {
 			r.logger.Warn("failed to cache upstream tag", "tag", reference, "error", err)
 		}
 	}
@@ -1195,7 +1195,6 @@ func (r *Registry) pushManifest(ctx context.Context, repo string, tag string, co
 		return ociregistry.Descriptor{}, fmt.Errorf("storing manifest: %w", err)
 	}
 
-	// Refs before tag: a tag write may set immutable=true, blocking retry.
 	refs := append([]database.BlobRef(nil), meta.layers...)
 	refs = append(refs, meta.children...)
 	if len(refs) > 0 {
@@ -1212,11 +1211,9 @@ func (r *Registry) pushManifest(ctx context.Context, repo string, tag string, co
 	}
 
 	if tag != "" {
+		// ownerOverwrite: the local pusher owns the repo and may re-push an immutable tag.
 		immutable := r.immutableTagRe != nil && r.immutableTagRe.MatchString(tag)
-		if err := r.db.PutTagWithImmutable(ctx, repoObj.ID, tag, digest, immutable); err != nil {
-			if errors.Is(err, database.ErrTagImmutable) {
-				return ociregistry.Descriptor{}, fmt.Errorf("%w: tag %q is immutable", ociregistry.ErrDenied, tag)
-			}
+		if err := r.db.PutTagWithImmutable(ctx, repoObj.ID, tag, digest, immutable, true); err != nil {
 			return ociregistry.Descriptor{}, fmt.Errorf("storing tag: %w", err)
 		}
 	}

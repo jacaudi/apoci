@@ -592,7 +592,7 @@ func TestFederationWithdrawalSweepEmitsDeletesAndStamps(t *testing.T) {
 		MediaType: testOCIManifestMediaType,
 		Metadata:  []byte(`{}`),
 	}))
-	require.NoError(t, s.db.PutPackageTag(ctx, excluded.ID, "latest", dgst, false))
+	require.NoError(t, s.db.PutPackageTag(ctx, excluded.ID, "latest", dgst, false, false))
 
 	_, err = s.db.GetOrCreatePackage(ctx, "oci", "kept/repo", s.identity.ActorURL)
 	require.NoError(t, err)

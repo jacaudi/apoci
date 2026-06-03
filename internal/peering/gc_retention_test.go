@@ -54,7 +54,7 @@ func TestRetentionSweep_KeepLastN(t *testing.T) {
 		require.NoError(t, db.PutPackageVersion(ctx, &database.PackageVersion{
 			PackageID: pkg.ID, Version: dgst, Metadata: []byte(`{}`),
 		}))
-		require.NoError(t, db.PutPackageTag(ctx, pkg.ID, name, dgst, false))
+		require.NoError(t, db.PutPackageTag(ctx, pkg.ID, name, dgst, false, false))
 		_, err := db.ExecContext(ctx,
 			"UPDATE package_tags SET updated_at = ? WHERE package_id = ? AND name = ?",
 			now.Add(time.Duration(i)*time.Minute), pkg.ID, name)
@@ -96,7 +96,7 @@ func TestRetentionSweep_PerRepoOverride(t *testing.T) {
 		require.NoError(t, db.PutPackageVersion(ctx, &database.PackageVersion{
 			PackageID: pkg.ID, Version: dgst, Metadata: []byte(`{}`),
 		}))
-		require.NoError(t, db.PutPackageTag(ctx, pkg.ID, name, dgst, false))
+		require.NoError(t, db.PutPackageTag(ctx, pkg.ID, name, dgst, false, false))
 		_, err := db.ExecContext(ctx,
 			"UPDATE package_tags SET updated_at = ? WHERE package_id = ? AND name = ?",
 			now.Add(time.Duration(i)*time.Minute), pkg.ID, name)
@@ -149,7 +149,7 @@ func TestRetentionSweep_PinnedAndImmutable(t *testing.T) {
 		require.NoError(t, db.PutPackageVersion(ctx, &database.PackageVersion{
 			PackageID: pkg.ID, Version: dgst, Metadata: []byte(`{}`),
 		}))
-		require.NoError(t, db.PutPackageTag(ctx, pkg.ID, s.name, dgst, s.immutable))
+		require.NoError(t, db.PutPackageTag(ctx, pkg.ID, s.name, dgst, s.immutable, false))
 		_, err := db.ExecContext(ctx,
 			"UPDATE package_tags SET updated_at = ? WHERE package_id = ? AND name = ?",
 			now.Add(time.Duration(s.offset)*time.Minute), pkg.ID, s.name)
@@ -228,7 +228,7 @@ func TestPruneUntaggedManifestsGC_PreservesIndexChildren(t *testing.T) {
 	require.NoError(t, db.PutPackageVersion(ctx, amd))
 	require.NoError(t, db.PutPackageVersion(ctx, arm))
 	require.NoError(t, db.PutPackageVersion(ctx, idx))
-	require.NoError(t, db.PutPackageTag(ctx, pkg.ID, "v1", idx.Version, false))
+	require.NoError(t, db.PutPackageTag(ctx, pkg.ID, "v1", idx.Version, false, false))
 	require.NoError(t, db.PutManifestLayers(ctx, idx.ID, []database.BlobRef{
 		{Digest: amd.Version, Size: 1},
 		{Digest: arm.Version, Size: 1},
@@ -273,7 +273,7 @@ func TestGCFullPipeline(t *testing.T) {
 	v := &database.PackageVersion{PackageID: pkg.ID, Version: "sha256:m1", Metadata: []byte(`{}`)}
 	require.NoError(t, db.PutPackageVersion(ctx, v))
 	require.NoError(t, db.PutManifestLayers(ctx, v.ID, []database.BlobRef{{Digest: digest, Size: 13}}))
-	require.NoError(t, db.PutPackageTag(ctx, pkg.ID, "old", v.Version, false))
+	require.NoError(t, db.PutPackageTag(ctx, pkg.ID, "old", v.Version, false, false))
 
 	_, err = db.ExecContext(ctx,
 		"UPDATE package_tags SET updated_at = ? WHERE package_id = ?",

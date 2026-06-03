@@ -9,6 +9,7 @@ endpoint: "https://registry.example.com"
 # registryToken: ""              # auto-generated to {dataDir}/registry.token if empty
 # adminToken: ""                 # auto-generated to {dataDir}/admin.token if empty (separate from registryToken)
 # accountDomain: "example.com"  # vanity domain for WebFinger (defaults to endpoint domain)
+# immutableTags: "^v[0-9]"      # regex over tag names; matches are pinned against GC and can't be deleted (the owner can still re-push). Empty falls back to this default.
 
 # storage:
 #   type: local        # local (default) or s3
@@ -52,10 +53,30 @@ endpoint: "https://registry.example.com"
 #   interval: 6h               # how often to run GC
 #   stalePeerBlobAge: 720h     # remove peer blob refs older than this (720h = 30 days)
 #   orphanBatchSize: 500       # max orphaned blobs to process per cycle
+#   blobGCGracePeriod: 1h      # grace before a newly-unreferenced blob is eligible for deletion
+#   untaggedManifestAge: 168h  # delete untagged manifests older than this (168h = 7 days)
+#   untaggedBatchSize: 500     # max untagged manifests to process per cycle
+#   retentionTagsPerCycle: 10000  # max tags evaluated for retention per cycle
+#   diskUsageThreshold: 0      # 0 = off; 1-100 triggers an extra cycle when disk use exceeds this percent
+#   diskUsageCheckInterval: 5m # how often to check disk usage when diskUsageThreshold > 0
+#   retention:
+#     keepLastN: 0             # keep the N newest tags per repo (0 = unlimited)
+#     maxAge: 0                # delete tags older than this (0 = no age limit), e.g. 720h
+#     pinnedGlobs: ["latest", "v*"]  # path.Match globs never deleted, exempt from keepLastN
+#     perRepo:                 # per-repo overrides
+#       - repo: "foo.com/myapp"
+#         keepLastN: 10
 
 # limits:
 #   maxManifestSize: 10485760     # 10 MB
 #   maxBlobSize: 536870912        # 512 MB
+
+# rateLimits:
+#   inboxRate: 30                 # federation inbox requests/sec per IP
+#   inboxBurst: 100
+#   registryPushRate: 50          # mutating OCI requests/sec per IP
+#   registryPushBurst: 100
+#   trustedIPs: []                # IPs exempt from rate limiting
 
 # scanner:
 #   enabled: false               # scan pushed images and attach the CVE report as an OCI referrer (federates to followers)
@@ -93,7 +114,7 @@ endpoint: "https://registry.example.com"
 # metrics:
 #   enabled: true
 #   listen: ":9090"
-#   token: ""                     # bearer token for /debug/vars (optional, unauthenticated if empty)
+#   token: ""                     # bearer token for /metrics (optional, unauthenticated if empty)
 
 # upstreams:
 #   enabled: false

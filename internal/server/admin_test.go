@@ -1068,7 +1068,7 @@ func TestAdminListImagesWithData(t *testing.T) {
 	mt := "application/vnd.oci.image.layer.v1.tar+gzip"
 	require.NoError(t, s.db.PutBlob(ctx, "sha256:layer1", 2048, &mt, true))
 	require.NoError(t, s.db.PutBlobReferences(ctx, v.ID, []database.BlobRef{{Digest: "sha256:layer1", Size: 2048, MediaType: &mt}}))
-	require.NoError(t, s.db.PutPackageTag(ctx, repo.ID, "latest", v.Version, false))
+	require.NoError(t, s.db.PutPackageTag(ctx, repo.ID, "latest", v.Version, false, false))
 
 	srv := httptest.NewServer(s.routes())
 	defer srv.Close()

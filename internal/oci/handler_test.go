@@ -312,13 +312,18 @@ func TestTagImmutability(t *testing.T) {
 
 	manifest := []byte(`{"schemaVersion":2}`)
 
-	// First push to v1.0 succeeds
+	// First push to v1.0 succeeds and marks the tag immutable.
 	_, err = reg.PushManifest(ctx, "test.example.com/test/immutable", "v1.0", manifest, "application/vnd.oci.image.manifest.v1+json")
 	require.NoError(t, err, "first push to v1.0 should succeed")
 
-	// Second push to v1.0 is rejected
+	// Owner may re-push over an immutable tag; it stays immutable.
 	_, err = reg.PushManifest(ctx, "test.example.com/test/immutable", "v1.0", []byte(`{"schemaVersion":2,"new":true}`), "application/vnd.oci.image.manifest.v1+json")
-	require.Error(t, err, "second push to v1.0 should be rejected (immutable)")
+	require.NoError(t, err, "owner re-push over immutable tag should succeed")
+	repo, err := db.GetRepository(ctx, "test.example.com/test/immutable")
+	require.NoError(t, err)
+	tag, err := db.GetPackageTag(ctx, repo.ID, "v1.0")
+	require.NoError(t, err)
+	require.True(t, tag.Immutable)
 
 	// Push to 'latest' succeeds twice (not matching ^v[0-9])
 	_, err = reg.PushManifest(ctx, "test.example.com/test/immutable", "latest", manifest, "application/vnd.oci.image.manifest.v1+json")

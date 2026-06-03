@@ -20,7 +20,7 @@ func TestPruneUntaggedManifests_DropsOldUntagged(t *testing.T) {
 	untagged := &PackageVersion{PackageID: pkg.ID, Version: "sha256:untagged", Metadata: []byte(`{}`)}
 	require.NoError(t, db.PutPackageVersion(ctx, tagged))
 	require.NoError(t, db.PutPackageVersion(ctx, untagged))
-	require.NoError(t, db.PutPackageTag(ctx, pkg.ID, "latest", "sha256:tagged", false))
+	require.NoError(t, db.PutPackageTag(ctx, pkg.ID, "latest", "sha256:tagged", false, false))
 
 	// Backdate the untagged version's created_at to be older than the cutoff.
 	_, err = db.bun.NewRaw(
@@ -117,7 +117,7 @@ func TestPruneUntaggedManifests_PreservesIndexChildren(t *testing.T) {
 	require.NoError(t, db.PutPackageVersion(ctx, amd))
 	require.NoError(t, db.PutPackageVersion(ctx, arm))
 	require.NoError(t, db.PutPackageVersion(ctx, idx))
-	require.NoError(t, db.PutPackageTag(ctx, pkg.ID, "v1", idx.Version, false))
+	require.NoError(t, db.PutPackageTag(ctx, pkg.ID, "v1", idx.Version, false, false))
 	require.NoError(t, db.PutManifestLayers(ctx, idx.ID, []BlobRef{
 		{Digest: amd.Version, Size: 1},
 		{Digest: arm.Version, Size: 1},

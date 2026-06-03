@@ -369,10 +369,10 @@ func (db *DB) GetPackageTag(ctx context.Context, packageID int64, name string) (
 	return t, nil
 }
 
-// PutPackageTag returns ErrTagImmutable when the existing row is immutable.
-// The immutable flag is sticky: once set, immutable=false on a later upsert
-// does not clear it.
-func (db *DB) PutPackageTag(ctx context.Context, packageID int64, name, version string, immutable bool) error {
+// PutPackageTag returns ErrTagImmutable when the existing row is immutable,
+// unless ownerOverwrite is set. The immutable flag is sticky: once set,
+// immutable=false on a later upsert does not clear it.
+func (db *DB) PutPackageTag(ctx context.Context, packageID int64, name, version string, immutable, ownerOverwrite bool) error {
 	tx, err := db.bun.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("beginning tag transaction: %w", err)
@@ -387,7 +387,7 @@ func (db *DB) PutPackageTag(ctx context.Context, packageID int64, name, version 
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("checking tag immutability: %w", err)
 	}
-	if err == nil && existing {
+	if err == nil && existing && !ownerOverwrite {
 		return ErrTagImmutable
 	}
 
@@ -799,11 +799,11 @@ func (db *DB) GetTag(ctx context.Context, repoID int64, name string) (*Tag, erro
 }
 
 func (db *DB) PutTag(ctx context.Context, repoID int64, name, manifestDigest string) error {
-	return db.PutPackageTag(ctx, repoID, name, manifestDigest, false)
+	return db.PutPackageTag(ctx, repoID, name, manifestDigest, false, false)
 }
 
-func (db *DB) PutTagWithImmutable(ctx context.Context, repoID int64, name, manifestDigest string, immutable bool) error {
-	return db.PutPackageTag(ctx, repoID, name, manifestDigest, immutable)
+func (db *DB) PutTagWithImmutable(ctx context.Context, repoID int64, name, manifestDigest string, immutable, ownerOverwrite bool) error {
+	return db.PutPackageTag(ctx, repoID, name, manifestDigest, immutable, ownerOverwrite)
 }
 
 func (db *DB) DeleteTag(ctx context.Context, repoID int64, name string) error {
