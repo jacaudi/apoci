@@ -1031,7 +1031,13 @@ func (r *Registry) pushBlobChunked(ctx context.Context, repo string, chunkSize i
 	}
 
 	if _, err := r.db.CreateUploadSession(ctx, w.ID(), repoObj.ID, uploadSessionTTL); err != nil {
-		r.logger.Warn("failed to persist upload session", "uuid", w.ID(), "error", err)
+		// Without a persisted session the follow-up PATCH/PUT can't resume, so
+		// fail the POST and discard the staged writer rather than leak it.
+		r.uploadsMu.Lock()
+		delete(r.uploads, w.ID())
+		r.uploadsMu.Unlock()
+		_ = w.Cancel()
+		return nil, fmt.Errorf("persisting upload session: %w", err)
 	}
 
 	return w, nil

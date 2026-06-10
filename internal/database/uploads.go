@@ -24,9 +24,11 @@ func (db *DB) CreateUploadSession(ctx context.Context, uuid string, repoID int64
 
 func (db *DB) GetUploadSession(ctx context.Context, uuid string) (*UploadSession, error) {
 	s := &UploadSession{}
+	// expires_at is written from time.Now(); compare against the same clock, not
+	// the DB's CURRENT_TIMESTAMP, whose timezone/format differs by backend.
 	err := db.bun.NewSelect().Model(s).
 		Where("uuid = ?", uuid).
-		Where("expires_at > CURRENT_TIMESTAMP").
+		Where("expires_at > ?", time.Now()).
 		Scan(ctx)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -49,9 +51,10 @@ func (db *DB) DeleteUploadSession(ctx context.Context, uuid string) error {
 // ListExpiredUploadSessions returns UUIDs of upload sessions that have passed their expiry time.
 func (db *DB) ListExpiredUploadSessions(ctx context.Context, limit int) ([]string, error) {
 	var uuids []string
+	// App clock, not CURRENT_TIMESTAMP — see GetUploadSession.
 	err := db.bun.NewRaw(
-		"SELECT uuid FROM upload_sessions WHERE expires_at <= CURRENT_TIMESTAMP LIMIT ?",
-		limit).Scan(ctx, &uuids)
+		"SELECT uuid FROM upload_sessions WHERE expires_at <= ? LIMIT ?",
+		time.Now(), limit).Scan(ctx, &uuids)
 	if err != nil {
 		return nil, fmt.Errorf("listing expired upload sessions: %w", err)
 	}
