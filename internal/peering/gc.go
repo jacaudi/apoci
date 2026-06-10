@@ -71,6 +71,9 @@ type GCConfig struct {
 	RetentionTagsPerCycle int
 	// LocalActor is used as source_actor when recording manifest tombstones.
 	LocalActor string
+	// Namespace is the accountDomain prefix on stored repo names; it lets
+	// RetentionPerRepo keys be written relative to the namespace (e.g. "user/app").
+	Namespace string
 
 	DiskUsageThreshold     int
 	DiskUsageCheckInterval time.Duration
@@ -243,6 +246,12 @@ func (gc *GarbageCollector) collect(ctx context.Context) {
 func (gc *GarbageCollector) effectiveRetention(repo string) RetentionPolicy {
 	out := gc.cfg.RetentionDefaults
 	cfg, ok := gc.cfg.RetentionPerRepo[repo]
+	if !ok && gc.cfg.Namespace != "" {
+		// Stored names are namespace-prefixed; allow keys written relative to it.
+		if rel, stripped := strings.CutPrefix(repo, gc.cfg.Namespace+"/"); stripped {
+			cfg, ok = gc.cfg.RetentionPerRepo[rel]
+		}
+	}
 	if !ok {
 		return out
 	}
@@ -270,15 +279,14 @@ func tagPinned(name string, globs []string) bool {
 // retentionSweep deletes tags exceeding KeepLastN or older than MaxAge, then
 // federates each delete. Pinned tags are always kept.
 func (gc *GarbageCollector) retentionSweep(ctx context.Context) {
-	budget := gc.cfg.RetentionTagsPerCycle
-	if budget <= 0 {
-		budget = 10000
-	}
+	// maxDeletes <= 0 means no cap: paginate every package to exhaustion.
+	maxDeletes := gc.cfg.RetentionTagsPerCycle
 
 	totalDeleted := 0
 	startAfter := ""
-	for totalDeleted < budget {
-		pkgs, err := gc.db.ListOCIPackagesForRetention(ctx, startAfter, 100)
+	for maxDeletes <= 0 || totalDeleted < maxDeletes {
+
+		pkgs, err := gc.db.ListOCIPackagesForRetention(ctx, startAfter, retentionPackagePageSize)
 		if err != nil {
 			gc.logger.Error("gc: retention: list packages failed", "error", err)
 			gc.notifier.Send(notify.EventGCError, fmt.Sprintf("GC: retention list packages failed: %v", err))
@@ -288,18 +296,21 @@ func (gc *GarbageCollector) retentionSweep(ctx context.Context) {
 			break
 		}
 		for _, pkg := range pkgs {
-			if totalDeleted >= budget {
+			if maxDeletes > 0 && totalDeleted >= maxDeletes {
 				break
 			}
 			policy := gc.effectiveRetention(pkg.Name)
 			if policy.KeepLastN <= 0 && policy.MaxAge <= 0 {
 				continue
 			}
-			deleted := gc.applyRetentionToPackage(ctx, pkg, policy, budget-totalDeleted)
-			totalDeleted += deleted
+			budget := -1 // unlimited
+			if maxDeletes > 0 {
+				budget = maxDeletes - totalDeleted
+			}
+			totalDeleted += gc.applyRetentionToPackage(ctx, pkg, policy, budget)
 		}
 		startAfter = pkgs[len(pkgs)-1].Name
-		if len(pkgs) < 100 {
+		if len(pkgs) < retentionPackagePageSize {
 			break
 		}
 	}
@@ -309,6 +320,8 @@ func (gc *GarbageCollector) retentionSweep(ctx context.Context) {
 		gc.logger.Info("gc: retention deleted tags", "count", totalDeleted)
 	}
 }
+
+const retentionPackagePageSize = 100
 
 func (gc *GarbageCollector) applyRetentionToPackage(ctx context.Context, pkg database.PackageRetention, policy RetentionPolicy, budget int) int {
 	tags, err := gc.db.ListTagsForRetention(ctx, pkg.ID)
@@ -342,7 +355,7 @@ func (gc *GarbageCollector) applyRetentionToPackage(ctx context.Context, pkg dat
 
 	deleted := 0
 	for _, t := range candidates {
-		if deleted >= budget {
+		if budget >= 0 && deleted >= budget {
 			break
 		}
 		if err := gc.db.DeletePackageTag(ctx, pkg.ID, t.Name); err != nil {
@@ -368,29 +381,40 @@ func (gc *GarbageCollector) pruneUntaggedManifests(ctx context.Context) {
 		limit = 500
 	}
 
-	rows, err := gc.db.PruneUntaggedManifests(ctx, gc.cfg.UntaggedManifestAge, limit)
-	if err != nil {
-		gc.logger.Error("gc: prune untagged manifests failed", "error", err)
-		gc.notifier.Send(notify.EventGCError, fmt.Sprintf("GC: prune untagged manifests failed: %v", err))
-		return
-	}
-	if len(rows) == 0 {
-		return
-	}
-	metrics.GCUntaggedManifestsPruned.Add(float64(len(rows)))
-	gc.logger.Info("gc: pruned untagged manifests", "count", len(rows))
+	total := 0
+	for {
+		rows, err := gc.db.PruneUntaggedManifests(ctx, gc.cfg.UntaggedManifestAge, limit)
+		if err != nil {
+			gc.logger.Error("gc: prune untagged manifests failed", "error", err)
+			gc.notifier.Send(notify.EventGCError, fmt.Sprintf("GC: prune untagged manifests failed: %v", err))
+			return
+		}
+		if len(rows) == 0 {
+			break
+		}
+		total += len(rows)
 
-	for _, r := range rows {
-		if gc.cfg.LocalActor != "" {
-			if err := gc.db.RecordDeletedManifest(ctx, r.Digest, r.PackageName, gc.cfg.LocalActor); err != nil {
-				gc.logger.Warn("gc: record manifest tombstone failed", "repo", r.PackageName, "digest", r.Digest, "error", err)
+		for _, r := range rows {
+			if gc.cfg.LocalActor != "" {
+				if err := gc.db.RecordDeletedManifest(ctx, r.Digest, r.PackageName, gc.cfg.LocalActor); err != nil {
+					gc.logger.Warn("gc: record manifest tombstone failed", "repo", r.PackageName, "digest", r.Digest, "error", err)
+				}
+			}
+			if gc.publisher != nil {
+				if err := gc.publisher.PublishManifestDelete(ctx, r.PackageName, r.Digest); err != nil {
+					gc.logger.Warn("gc: federate manifest delete failed", "repo", r.PackageName, "digest", r.Digest, "error", err)
+				}
 			}
 		}
-		if gc.publisher != nil {
-			if err := gc.publisher.PublishManifestDelete(ctx, r.PackageName, r.Digest); err != nil {
-				gc.logger.Warn("gc: federate manifest delete failed", "repo", r.PackageName, "digest", r.Digest, "error", err)
-			}
+
+		if len(rows) < limit {
+			break
 		}
+	}
+
+	if total > 0 {
+		metrics.GCUntaggedManifestsPruned.Add(float64(total))
+		gc.logger.Info("gc: pruned untagged manifests", "count", total)
 	}
 }
 
@@ -426,25 +450,43 @@ func (gc *GarbageCollector) cleanupOrphanedBlobMetadata(ctx context.Context) {
 	if gc.cfg.BlobGCGracePeriod > 0 {
 		cutoff = time.Now().Add(-gc.cfg.BlobGCGracePeriod)
 	}
-	digests, err := gc.db.OrphanedBlobs(ctx, gc.cfg.OrphanBatchSize, cutoff)
-	if err != nil {
-		gc.logger.Error("gc: failed to find orphaned blobs", "error", err)
-		gc.notifier.Send(notify.EventGCError, fmt.Sprintf("GC: failed to find orphaned blobs: %v", err))
-		return
+	limit := gc.cfg.OrphanBatchSize
+	if limit <= 0 {
+		limit = 500
 	}
 
-	removed := 0
-	for _, digest := range digests {
-		if err := gc.db.DeleteBlob(ctx, digest); err != nil {
-			gc.logger.Warn("gc: failed to delete orphaned blob metadata", "digest", digest, "error", err)
-			continue
+	totalRemoved := 0
+	for {
+		digests, err := gc.db.OrphanedBlobs(ctx, limit, cutoff)
+		if err != nil {
+			gc.logger.Error("gc: failed to find orphaned blobs", "error", err)
+			gc.notifier.Send(notify.EventGCError, fmt.Sprintf("GC: failed to find orphaned blobs: %v", err))
+			return
 		}
-		removed++
+		if len(digests) == 0 {
+			break
+		}
+
+		removed := 0
+		for _, digest := range digests {
+			if err := gc.db.DeleteBlob(ctx, digest); err != nil {
+				gc.logger.Warn("gc: failed to delete orphaned blob metadata", "digest", digest, "error", err)
+				continue
+			}
+			removed++
+		}
+		totalRemoved += removed
+
+		// OrphanedBlobs has no cursor; progress relies on deletions shrinking the
+		// set, so stop if a batch deleted nothing to avoid spinning.
+		if removed == 0 || len(digests) < limit {
+			break
+		}
 	}
 
-	if removed > 0 {
-		metrics.GCOrphanedMetadata.Add(float64(removed))
-		gc.logger.Info("gc: removed orphaned blob metadata", "count", removed)
+	if totalRemoved > 0 {
+		metrics.GCOrphanedMetadata.Add(float64(totalRemoved))
+		gc.logger.Info("gc: removed orphaned blob metadata", "count", totalRemoved)
 	}
 }
 

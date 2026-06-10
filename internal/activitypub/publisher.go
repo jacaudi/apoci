@@ -15,6 +15,7 @@ import (
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/metrics"
 
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/database"
+	"git.erwanleboucher.dev/eleboucher/apoci/internal/util"
 )
 
 // pubContext lets enqueueToFollowers apply per-follower tag-glob filters.
@@ -227,7 +228,7 @@ func (p *APPublisher) repoExcluded(repo string) bool {
 		return false
 	}
 	for _, g := range p.excludedRepos {
-		if ok, err := path.Match(g, repo); err == nil && ok {
+		if util.MatchRepoGlob(g, repo, p.identity.AccountDomain) {
 			return true
 		}
 	}

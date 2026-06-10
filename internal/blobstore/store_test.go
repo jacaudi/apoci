@@ -5,6 +5,8 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -120,3 +122,25 @@ func TestPathTraversalRejected(t *testing.T) {
 }
 
 func nopLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+func TestNewRemovesStaleTempFiles(t *testing.T) {
+	dir := t.TempDir()
+	root := filepath.Join(dir, "blobs", "sha256")
+	require.NoError(t, os.MkdirAll(root, 0o750))
+
+	stale := filepath.Join(root, ".upload-abc123")
+	require.NoError(t, os.WriteFile(stale, []byte("partial blob"), 0o600))
+	// A real committed blob in a shard must survive.
+	shard := filepath.Join(root, "ab")
+	require.NoError(t, os.MkdirAll(shard, 0o750))
+	keep := filepath.Join(shard, "abdeadbeef")
+	require.NoError(t, os.WriteFile(keep, []byte("blob"), 0o600))
+
+	_, err := New(dir, nopLog())
+	require.NoError(t, err)
+
+	_, err = os.Stat(stale)
+	require.True(t, os.IsNotExist(err), "stale temp file should be removed")
+	_, err = os.Stat(keep)
+	require.NoError(t, err, "committed blob must survive")
+}

@@ -541,9 +541,8 @@ func applyGCDefaults(cfg *Config) {
 	if cfg.GC.UntaggedBatchSize == 0 {
 		cfg.GC.UntaggedBatchSize = 500
 	}
-	if cfg.GC.RetentionTagsPerCycle == 0 {
-		cfg.GC.RetentionTagsPerCycle = 10000
-	}
+	// RetentionTagsPerCycle is an optional safety cap; 0 means drain every repo
+	// fully each cycle (paginate to exhaustion).
 	if cfg.GC.DiskUsageCheckInterval == 0 {
 		cfg.GC.DiskUsageCheckInterval = 5 * time.Minute
 	}

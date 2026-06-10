@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"path"
 	"path/filepath"
 	"time"
 
@@ -31,6 +30,7 @@ import (
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/replication"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/scanner"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/upstream"
+	"git.erwanleboucher.dev/eleboucher/apoci/internal/util"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/validate"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/workers"
 )
@@ -163,6 +163,7 @@ func New(cfg *config.Config, db *database.DB, blobs blobstore.BlobStore, identit
 		},
 		RetentionPerRepo: toRetentionMap(cfg.GC.Retention.PerRepo),
 		LocalActor:       identity.ActorURL,
+		Namespace:        cfg.AccountDomain,
 	}, db, blobs, notifier, logger)
 	gc.SetFederationPublisher(apPublisher)
 
@@ -501,7 +502,7 @@ func (s *Server) runFederationWithdrawalSweep(ctx context.Context) {
 	for _, pkg := range pending {
 		matched := false
 		for _, g := range globs {
-			if ok, err := path.Match(g, pkg.Name); err == nil && ok {
+			if util.MatchRepoGlob(g, pkg.Name, s.cfg.AccountDomain) {
 				matched = true
 				break
 			}

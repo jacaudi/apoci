@@ -319,6 +319,26 @@ func mustGetBlob(t *testing.T, ctx context.Context, db *database.DB, digest stri
 	return b
 }
 
+func TestEffectiveRetentionNamespaceRelativeKey(t *testing.T) {
+	gc := &GarbageCollector{cfg: GCConfig{
+		Namespace:         "erwanleboucher.dev",
+		RetentionDefaults: RetentionPolicy{MaxAge: 168 * time.Hour},
+		RetentionPerRepo: map[string]RetentionPolicy{
+			"eleboucher/homelab": {KeepLastN: 7, MaxAge: 24 * time.Hour},
+		},
+	}}
+
+	// Stored name is namespace-prefixed; the relative perRepo key must still win.
+	got := gc.effectiveRetention("erwanleboucher.dev/eleboucher/homelab")
+	require.Equal(t, 7, got.KeepLastN)
+	require.Equal(t, 24*time.Hour, got.MaxAge)
+
+	// Unmatched repo falls back to defaults.
+	def := gc.effectiveRetention("erwanleboucher.dev/towonel/towonel-node")
+	require.Equal(t, 0, def.KeepLastN)
+	require.Equal(t, 168*time.Hour, def.MaxAge)
+}
+
 func TestGCStartStop(t *testing.T) {
 	db, blobs := testGCDeps(t)
 	ctx := context.Background()

@@ -77,7 +77,10 @@ func TestPublishManifestRespectsFilter(t *testing.T) {
 const excludedRepo = "eleboucher/agentmemory"
 
 func TestRepoExcluded(t *testing.T) {
-	pub := &APPublisher{excludedRepos: []string{excludedRepo, "user/glob-*"}}
+	pub := &APPublisher{
+		identity:      &Identity{AccountDomain: "test.example.com"},
+		excludedRepos: []string{excludedRepo, "user/glob-*"},
+	}
 	cases := []struct {
 		repo string
 		want bool
@@ -88,6 +91,10 @@ func TestRepoExcluded(t *testing.T) {
 		{"user/other", false},
 		{"eleboucher/agentmemory-mcp", false},
 		{"", false},
+		// Stored names are namespace-prefixed; relative globs must still match.
+		{"test.example.com/" + excludedRepo, true},
+		{"test.example.com/user/glob-foo", true},
+		{"test.example.com/user/other", false},
 	}
 	for _, c := range cases {
 		t.Run(c.repo, func(t *testing.T) {

@@ -48,7 +48,27 @@ func New(dataDir string, logger *slog.Logger) (*Store, error) {
 	if err := os.MkdirAll(root, 0o750); err != nil {
 		return nil, fmt.Errorf("creating blob directory: %w", err)
 	}
-	return &Store{root: root, logger: logger}, nil
+	s := &Store{root: root, logger: logger}
+	s.removeStaleTempFiles()
+	return s, nil
+}
+
+// removeStaleTempFiles deletes ".upload-*" staging files left in the blob root
+// by an interrupted Put. They sit outside the two-char shards, so ListDigests
+// (and thus GC) never sees them. Safe at startup: no Put is in flight.
+func (s *Store) removeStaleTempFiles() {
+	matches, err := filepath.Glob(filepath.Join(s.root, ".upload-*"))
+	if err != nil {
+		s.logger.Warn("blobstore: globbing stale temp files failed", "error", err)
+		return
+	}
+	for _, m := range matches {
+		if err := os.Remove(m); err != nil {
+			s.logger.Warn("blobstore: removing stale temp file failed", "path", m, "error", err)
+			continue
+		}
+		s.logger.Info("blobstore: removed stale upload temp file", "path", m)
+	}
 }
 
 func (s *Store) Put(_ context.Context, r io.Reader, expectedDigest string) (digest string, size int64, err error) {
