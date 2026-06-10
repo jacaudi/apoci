@@ -1,16 +1,31 @@
-FROM public.ecr.aws/docker/library/golang:1.26-bookworm AS builder
+# syntax=docker/dockerfile:1
+FROM --platform=$BUILDPLATFORM public.ecr.aws/docker/library/golang:1.26-bookworm AS builder
 
-RUN apt-get update && apt-get install -y --no-install-recommends gcc libc6-dev && rm -rf /var/lib/apt/lists/*
+# Native gcc plus cross C compilers: the Go toolchain runs on $BUILDPLATFORM and
+# cross-compiles cgo to $TARGETARCH, avoiding QEMU emulation of the whole build.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      gcc libc6-dev \
+      gcc-aarch64-linux-gnu libc6-dev-arm64-cross \
+      gcc-x86-64-linux-gnu libc6-dev-amd64-cross \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
 
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
 
 COPY . .
 
+ARG TARGETARCH
 ARG VERSION=docker
-RUN CGO_ENABLED=1 go build \
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build,id=gobuild-${TARGETARCH} \
+    CC=$(case "${TARGETARCH}" in \
+          arm64) echo aarch64-linux-gnu-gcc ;; \
+          amd64) echo x86_64-linux-gnu-gcc ;; \
+          *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+        esac) \
+    CGO_ENABLED=1 GOOS=linux GOARCH=${TARGETARCH} go build \
     -ldflags "-s -w -X main.version=${VERSION}" \
     -trimpath \
     -o /apoci \
