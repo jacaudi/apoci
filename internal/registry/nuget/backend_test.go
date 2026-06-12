@@ -136,6 +136,30 @@ func TestPushAndDownload(t *testing.T) {
 	assert.Equal(t, nupkg, got)
 }
 
+// Official NuGet clients (dotnet/nuget.exe) append a trailing slash to the
+// PackagePublish resource @id, so pushes land on "/v3/package/" rather than
+// "/v3/package". Both must be accepted.
+func TestPushTrailingSlash(t *testing.T) {
+	srv := newTestServer(t)
+
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	fw, err := mw.CreateFormFile("package", "mypkg.1.0.0.nupkg")
+	require.NoError(t, err)
+	_, err = fw.Write(buildNupkg("mypkg", testVersion))
+	require.NoError(t, err)
+	require.NoError(t, mw.Close())
+
+	req, err := http.NewRequest(http.MethodPut, srv.URL+"/nuget/v3/package/", &body)
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	req.Header.Set("X-NuGet-ApiKey", testToken)
+	resp, err := srv.Client().Do(req)
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusCreated, resp.StatusCode)
+}
+
 func TestPushNormalizesID(t *testing.T) {
 	srv := newTestServer(t)
 

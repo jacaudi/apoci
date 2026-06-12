@@ -1,12 +1,9 @@
 package nuget
 
 import (
-	"archive/zip"
 	"bytes"
 	"encoding/json"
-	"encoding/xml"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -14,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	gtnuget "code.gitea.io/gitea/modules/packages/nuget"
 	"github.com/go-chi/chi/v5"
 
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/blobstore"
@@ -25,20 +23,6 @@ const (
 	nupkgMediaType   = "application/octet-stream"
 	versionMediaType = "application/json"
 )
-
-type nuspecMeta struct {
-	ID          string `xml:"id"`
-	Version     string `xml:"version"`
-	Authors     string `xml:"authors"`
-	Description string `xml:"description"`
-	ProjectURL  string `xml:"projectUrl"`
-	Tags        string `xml:"tags"`
-}
-
-type nuspecDoc struct {
-	XMLName  xml.Name   `xml:"package"`
-	Metadata nuspecMeta `xml:"metadata"`
-}
 
 type storedVersion struct {
 	ID          string `json:"id"`
@@ -120,18 +104,14 @@ func (b *Backend) handlePush(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	meta, err := parseNuspec(body)
+	pkg, err := gtnuget.ParsePackageMetaData(bytes.NewReader(body), int64(len(body)))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "invalid nupkg: "+err.Error())
 		return
 	}
-	if meta.ID == "" || meta.Version == "" {
-		writeError(w, http.StatusBadRequest, "nuspec missing id or version")
-		return
-	}
 
-	pkgID := normalizeID(meta.ID)
-	version := meta.Version
+	pkgID := normalizeID(pkg.ID)
+	version := pkg.Version
 	filename := pkgID + "." + strings.ToLower(version) + ".nupkg"
 
 	digest, _, err := b.blobs.Put(ctx, bytes.NewReader(body), "")
@@ -168,11 +148,11 @@ func (b *Backend) handlePush(w http.ResponseWriter, r *http.Request) {
 	}
 
 	stored := storedVersion{
-		ID:          meta.ID,
-		Authors:     meta.Authors,
-		Description: meta.Description,
-		ProjectURL:  meta.ProjectURL,
-		Tags:        meta.Tags,
+		ID:          pkg.ID,
+		Authors:     pkg.Metadata.Authors,
+		Description: pkg.Metadata.Description,
+		ProjectURL:  pkg.Metadata.ProjectURL,
+		Tags:        pkg.Metadata.Tags,
 	}
 	raw, err := json.Marshal(stored)
 	if err != nil {
@@ -466,33 +446,6 @@ func upperVersion(leaves []registrationLeaf) string {
 		return ""
 	}
 	return strings.ToLower(leaves[len(leaves)-1].CatalogEntry.Version)
-}
-
-func parseNuspec(nupkg []byte) (*nuspecMeta, error) {
-	zr, err := zip.NewReader(bytes.NewReader(nupkg), int64(len(nupkg)))
-	if err != nil {
-		return nil, fmt.Errorf("open zip: %w", err)
-	}
-	for _, f := range zr.File {
-		if !strings.HasSuffix(strings.ToLower(f.Name), ".nuspec") {
-			continue
-		}
-		rc, err := f.Open()
-		if err != nil {
-			return nil, fmt.Errorf("open nuspec: %w", err)
-		}
-		defer func() { _ = rc.Close() }()
-		data, err := io.ReadAll(io.LimitReader(rc, 1<<20))
-		if err != nil {
-			return nil, fmt.Errorf("read nuspec: %w", err)
-		}
-		var doc nuspecDoc
-		if err := xml.Unmarshal(data, &doc); err != nil {
-			return nil, fmt.Errorf("parse nuspec: %w", err)
-		}
-		return &doc.Metadata, nil
-	}
-	return nil, fmt.Errorf("no .nuspec file found in package")
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

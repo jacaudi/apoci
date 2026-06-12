@@ -69,7 +69,10 @@ func (b *Backend) routes() http.Handler {
 
 	r.Get("/v3/index.json", b.handleServiceIndex)
 
+	// Official NuGet clients (dotnet/nuget.exe) append a trailing slash to the
+	// PackagePublish resource @id, so the push lands on "/v3/package/".
 	r.With(b.requireToken).Put("/v3/package", b.handlePush)
+	r.With(b.requireToken).Put("/v3/package/", b.handlePush)
 	r.With(b.requireToken).Delete("/v3/package/{id}/{version}", b.handleDelete)
 
 	r.Get("/v3-flatcontainer/{id}/index.json", b.handleVersionList)
