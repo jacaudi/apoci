@@ -3,7 +3,7 @@ module git.erwanleboucher.dev/eleboucher/apoci
 go 1.26.3
 
 require (
-	charm.land/lipgloss/v2 v2.0.3
+	charm.land/lipgloss/v2 v2.0.4
 	code.gitea.io/gitea v1.26.2
 	code.superseriousbusiness.org/httpsig v1.5.0
 	codeberg.org/gruf/go-runners v1.7.0
