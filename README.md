@@ -2,7 +2,7 @@
 
 > **Status: Beta.** Usable in production with care. APIs may change between minor versions.
 
-A federated, self-hostable container and package registry. Each node is a single-user multi-format registry (OCI, npm, Cargo, PyPI) and an ActivityPub actor (`@registry@your.domain`). Push an artifact and it federates to peers who follow you. If your node goes down, your peers still have your artifacts and you can rebootstrap from any of them.
+A federated, self-hostable container and package registry. Each node is a single-user multi-format registry (OCI, npm, Cargo, PyPI, NuGet) and an ActivityPub actor (`@registry@your.domain`). Push an artifact and it federates to peers who follow you. If your node goes down, your peers still have your artifacts and you can rebootstrap from any of them.
 
 ```
   foo.com               bar.com              baz.com
@@ -64,8 +64,16 @@ If you don't have TLS yet, either set up a TLS reverse proxy or add `"insecure-r
 | npm | `/npm/` | `npm publish --registry https://foo.com/npm/` |
 | Cargo | `/cargo/` | `cargo publish --registry apoci` |
 | PyPI | `/pypi/` | `twine upload --repository apoci dist/*` |
+| NuGet | `/nuget/` | `dotnet nuget push pkg.nupkg --api-key $TOKEN --source https://foo.com/nuget/v3/index.json` |
 
-All four use the same registry token and federate over the same channel. Per-backend overrides (disable, opt out of federation, separate token) live under `backends.*` in the config.
+All five use the same registry token and federate over the same channel. Per-backend overrides (disable, opt out of federation, separate token) live under `backends.*` in the config.
+
+NuGet clients need the source registered first:
+
+```bash
+dotnet nuget add source https://foo.com/nuget/v3/index.json \
+  --name apoci --username apoci --password "$TOKEN" --store-password-in-clear-text
+```
 
 ## Repository naming
 

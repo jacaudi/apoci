@@ -304,6 +304,7 @@ type Backends struct {
 	NPM   BackendConfig `yaml:"npm"   envPrefix:"NPM_"`
 	Cargo BackendConfig `yaml:"cargo" envPrefix:"CARGO_"`
 	PyPI  BackendConfig `yaml:"pypi"  envPrefix:"PYPI_"`
+	NuGet BackendConfig `yaml:"nuget" envPrefix:"NUGET_"`
 }
 
 type BackendConfig struct {
@@ -482,7 +483,7 @@ func applyFederationDefaults(cfg *Config) {
 }
 
 func applyBackendsDefaults(cfg *Config) {
-	for _, b := range []*BackendConfig{&cfg.Backends.NPM, &cfg.Backends.Cargo, &cfg.Backends.PyPI} {
+	for _, b := range []*BackendConfig{&cfg.Backends.NPM, &cfg.Backends.Cargo, &cfg.Backends.PyPI, &cfg.Backends.NuGet} {
 		if b.Enabled == nil {
 			t := true
 			b.Enabled = &t

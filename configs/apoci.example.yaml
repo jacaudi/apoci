@@ -142,3 +142,7 @@ endpoint: "https://registry.example.com"
 #     enabled: true
 #   pypi:
 #     enabled: true
+#   nuget:
+#     enabled: true
+#     federate: true
+#     token: ""                  # clients send this via X-NuGet-ApiKey header

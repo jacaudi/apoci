@@ -26,6 +26,7 @@ import (
 	pkgreg "git.erwanleboucher.dev/eleboucher/apoci/internal/registry"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/registry/cargo"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/registry/npm"
+	"git.erwanleboucher.dev/eleboucher/apoci/internal/registry/nuget"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/registry/pypi"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/replication"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/scanner"
@@ -230,6 +231,14 @@ func New(cfg *config.Config, db *database.DB, blobs blobstore.BlobStore, identit
 			b := pypi.New(pypi.Config{
 				DB: db, Blobs: blobs, Endpoint: cfg.Endpoint, Owner: identity.ActorURL,
 				Token: cfg.Backends.PyPI.TokenOr(cfg.RegistryToken), Publisher: pub,
+				Replicator: blobReplicator, Logger: logger,
+			})
+			return b, b.FederationAdapter()
+		}},
+		{"nuget", cfg.Backends.NuGet, func(pub activitypub.PackagePublisher) (pkgreg.Backend, activitypub.FederationAdapter) {
+			b := nuget.New(nuget.Config{
+				DB: db, Blobs: blobs, Endpoint: cfg.Endpoint, Owner: identity.ActorURL,
+				Token: cfg.Backends.NuGet.TokenOr(cfg.RegistryToken), Publisher: pub,
 				Replicator: blobReplicator, Logger: logger,
 			})
 			return b, b.FederationAdapter()
