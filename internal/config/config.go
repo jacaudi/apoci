@@ -301,10 +301,18 @@ type UI struct {
 // Backends configures the per-package-format registries (OCI is wired
 // separately and always-on). Each block defaults to enabled with federation on.
 type Backends struct {
-	NPM   BackendConfig `yaml:"npm"   envPrefix:"NPM_"`
-	Cargo BackendConfig `yaml:"cargo" envPrefix:"CARGO_"`
-	PyPI  BackendConfig `yaml:"pypi"  envPrefix:"PYPI_"`
-	NuGet BackendConfig `yaml:"nuget" envPrefix:"NUGET_"`
+	NPM     BackendConfig `yaml:"npm"     envPrefix:"NPM_"`
+	Cargo   BackendConfig `yaml:"cargo"   envPrefix:"CARGO_"`
+	PyPI    BackendConfig `yaml:"pypi"    envPrefix:"PYPI_"`
+	NuGet   BackendConfig `yaml:"nuget"   envPrefix:"NUGET_"`
+	GoProxy GoProxyConfig `yaml:"goproxy" envPrefix:"GOPROXY_"`
+}
+
+// GoProxyConfig is the goproxy backend's BackendConfig plus the list of
+// upstream Go module proxies to pull through (empty = store/federation only).
+type GoProxyConfig struct {
+	BackendConfig `yaml:",inline"`
+	Upstreams     []string `yaml:"upstreams" env:"UPSTREAMS"` // e.g. ["https://proxy.golang.org"]
 }
 
 type BackendConfig struct {
@@ -483,7 +491,7 @@ func applyFederationDefaults(cfg *Config) {
 }
 
 func applyBackendsDefaults(cfg *Config) {
-	for _, b := range []*BackendConfig{&cfg.Backends.NPM, &cfg.Backends.Cargo, &cfg.Backends.PyPI, &cfg.Backends.NuGet} {
+	for _, b := range []*BackendConfig{&cfg.Backends.NPM, &cfg.Backends.Cargo, &cfg.Backends.PyPI, &cfg.Backends.NuGet, &cfg.Backends.GoProxy.BackendConfig} {
 		if b.Enabled == nil {
 			t := true
 			b.Enabled = &t

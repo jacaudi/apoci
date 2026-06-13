@@ -143,6 +143,56 @@ verify_url "nuget package downloadable" '' \
 
 # ==============================================================
 echo ""
+echo "--- goproxy: PUT upload + go get ---"
+GO_DIR="$WORK/goproxy"
+MODNAME="apoci.test/demomod"
+MODVER="v1.0.0"
+MODSRC="$GO_DIR/src/${MODNAME}@${MODVER}"
+mkdir -p "$MODSRC"
+cat > "$MODSRC/go.mod" <<EOF
+module $MODNAME
+
+go 1.22
+EOF
+echo "package demomod" > "$MODSRC/demo.go"
+# Build the module zip (entries prefixed "<module>@<version>/") with python's
+# zipfile — the e2e image has no `zip` binary.
+python3 - "$GO_DIR/src" "$GO_DIR/mod.zip" <<'PY'
+import os, sys, zipfile
+root, out = sys.argv[1], sys.argv[2]
+with zipfile.ZipFile(out, "w") as z:
+    for dirpath, _, files in os.walk(root):
+        for f in files:
+            full = os.path.join(dirpath, f)
+            z.write(full, os.path.relpath(full, root))
+PY
+if curl -sf -X PUT -H "Authorization: Bearer $TOKEN" --data-binary @"$GO_DIR/mod.zip" \
+    "$ALICE/goproxy/$MODNAME/@v/$MODVER.zip" >/dev/null; then
+  pass "goproxy module upload"
+else
+  fail "goproxy module upload"
+fi
+verify_url "goproxy version list" "$MODVER" "$ALICE/goproxy/$MODNAME/@v/list"
+verify_url "goproxy .info readable" "\"Version\":\"$MODVER\"" "$ALICE/goproxy/$MODNAME/@v/$MODVER.info"
+verify_url "goproxy .mod readable" "module $MODNAME" "$ALICE/goproxy/$MODNAME/@v/$MODVER.mod"
+
+# Real go client: resolve the module through apoci with sumdb disabled.
+CONSUMER="$WORK/goconsumer"
+mkdir -p "$CONSUMER"
+cat > "$CONSUMER/go.mod" <<EOF
+module apoci.test/consumer
+
+go 1.22
+EOF
+if (cd "$CONSUMER" && GOPROXY="$ALICE/goproxy" GOSUMDB=off GOFLAGS=-mod=mod GOPATH="$GO_DIR/gopath" \
+    go get "$MODNAME@$MODVER" >/dev/null 2>&1); then
+  pass "go get via apoci goproxy"
+else
+  fail "go get via apoci goproxy"
+fi
+
+# ==============================================================
+echo ""
 echo "=== Package Results: $PASS passed, $FAIL failed ==="
 echo ""
 

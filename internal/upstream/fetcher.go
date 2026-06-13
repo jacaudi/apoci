@@ -15,7 +15,6 @@ import (
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/config"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/metrics"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/peering"
-	"git.erwanleboucher.dev/eleboucher/apoci/internal/validate"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/version"
 )
 
@@ -70,12 +69,7 @@ func NewFetcher(cfg config.Upstreams, maxBlobSize, maxManifestSize int64, logger
 		registries[r.Name] = &registry{config: r}
 	}
 	return &Fetcher{
-		client: &http.Client{
-			Timeout: cfg.FetchTimeout,
-			Transport: &http.Transport{
-				DialContext: validate.SafeDialContext,
-			},
-		},
+		client:          newHTTPClient(cfg.FetchTimeout),
 		registries:      registries,
 		logger:          logger,
 		maxBlobSize:     maxBlobSize,

@@ -1,6 +1,6 @@
 # Federation adapters
 
-apoci federates package events over ActivityPub. Each backend (OCI, npm, Cargo, PyPI) owns its own AP object types and ports its publish/update/delete events through a `FederationAdapter` registered in the inbox.
+apoci federates package events over ActivityPub. Each backend (OCI, npm, Cargo, PyPI, NuGet, goproxy) owns its own AP object types and ports its publish/update/delete events through a `FederationAdapter` registered in the inbox. For example, the goproxy backend federates a `GoModule` object per published module version.
 
 ## Wire model
 

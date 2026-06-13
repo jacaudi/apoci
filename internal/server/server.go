@@ -25,6 +25,7 @@ import (
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/peering"
 	pkgreg "git.erwanleboucher.dev/eleboucher/apoci/internal/registry"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/registry/cargo"
+	"git.erwanleboucher.dev/eleboucher/apoci/internal/registry/goproxy"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/registry/npm"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/registry/nuget"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/registry/pypi"
@@ -240,6 +241,16 @@ func New(cfg *config.Config, db *database.DB, blobs blobstore.BlobStore, identit
 				DB: db, Blobs: blobs, Endpoint: cfg.Endpoint, Owner: identity.ActorURL,
 				Token: cfg.Backends.NuGet.TokenOr(cfg.RegistryToken), Publisher: pub,
 				Replicator: blobReplicator, Logger: logger,
+			})
+			return b, b.FederationAdapter()
+		}},
+		{"goproxy", cfg.Backends.GoProxy.BackendConfig, func(pub activitypub.PackagePublisher) (pkgreg.Backend, activitypub.FederationAdapter) {
+			b := goproxy.New(goproxy.Config{
+				DB: db, Blobs: blobs, Endpoint: cfg.Endpoint, Owner: identity.ActorURL,
+				Token: cfg.Backends.GoProxy.TokenOr(cfg.RegistryToken), Publisher: pub,
+				Replicator: blobReplicator,
+				Upstream:   upstream.NewGoFetcher(cfg.Backends.GoProxy.Upstreams, cfg.Upstreams.FetchTimeout, cfg.Limits.MaxBlobSize),
+				Logger:     logger,
 			})
 			return b, b.FederationAdapter()
 		}},

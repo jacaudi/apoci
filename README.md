@@ -65,14 +65,36 @@ If you don't have TLS yet, either set up a TLS reverse proxy or add `"insecure-r
 | Cargo | `/cargo/` | `cargo publish --registry apoci` |
 | PyPI | `/pypi/` | `twine upload --repository apoci dist/*` |
 | NuGet | `/nuget/` | `dotnet nuget push pkg.nupkg --api-key $TOKEN --source https://foo.com/nuget/v3/index.json` |
+| Go modules | `/goproxy/` | `curl -X PUT -H "Authorization: Bearer $TOKEN" --data-binary @mod.zip https://foo.com/goproxy/<module>/@v/<version>.zip` |
 
-All five use the same registry token and federate over the same channel. Per-backend overrides (disable, opt out of federation, separate token) live under `backends.*` in the config.
+All six use the same registry token and federate over the same channel. Per-backend overrides (disable, opt out of federation, separate token) live under `backends.*` in the config.
 
 NuGet clients need the source registered first:
 
 ```bash
 dotnet nuget add source https://foo.com/nuget/v3/index.json \
   --name apoci --username apoci --password "$TOKEN" --store-password-in-clear-text
+```
+
+### Go modules (goproxy)
+
+The `/goproxy/` backend serves the [Go module proxy protocol](https://go.dev/ref/mod#goproxy-protocol) as both a store and a pull-through cache. Go has no native publish command, so push a [module zip](https://go.dev/ref/mod#zip-files) with an authed `PUT` (`.mod` and `.info` are derived from the zip). Set `backends.goproxy.upstreams` to pull-through-cache an upstream like `https://proxy.golang.org`.
+
+Privately-hosted modules aren't in `sum.golang.org`, so clients must opt them out of checksum-DB verification:
+
+```bash
+export GOPROXY=https://foo.com/goproxy
+export GOPRIVATE='your.private/*'   # or GOSUMDB=off to skip sum verification entirely
+go get your.private/module@v1.0.0
+```
+
+```yaml
+backends:
+  goproxy:
+    enabled: true
+    federate: true
+    upstreams:
+      - https://proxy.golang.org
 ```
 
 ## Repository naming
