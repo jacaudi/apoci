@@ -59,6 +59,16 @@ func (w *diskBlobWriter) ChunkSize() int { return 8 * 1024 }
 
 func (w *diskBlobWriter) ID() string { return w.uuid }
 
+// Path returns the staging file path, or "" once Commit or Cancel released it.
+func (w *diskBlobWriter) Path() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.file == nil {
+		return ""
+	}
+	return w.path
+}
+
 // Close is a no-op: the framework calls it after every PATCH chunk, but the
 // staging file must survive to be resumed by later requests and finalized in
 // Commit. The file is released in Commit or Cancel.

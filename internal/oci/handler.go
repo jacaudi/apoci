@@ -191,7 +191,9 @@ func (r *Registry) SetUploadDir(dir string) error {
 	}
 	matches, _ := filepath.Glob(filepath.Join(dir, "upload-*"))
 	for _, m := range matches {
-		_ = os.Remove(m)
+		if err := os.Remove(m); err != nil {
+			r.logger.Warn("removing leftover upload staging file failed", "path", m, "error", err)
+		}
 	}
 	r.uploadDir = dir
 	return nil
@@ -231,7 +233,58 @@ func (r *Registry) CleanExpiredUploads(ctx context.Context) (int, error) {
 	if len(expired) > 0 {
 		r.logger.Info("cleaned expired upload sessions", "count", len(expired))
 	}
+
+	// The reaper above only removes a staging file when its writer is still in
+	// r.uploads; sweep the dir directly to catch files orphaned otherwise.
+	r.sweepStaleStagingFiles(uploadSessionTTL)
+
 	return len(expired), nil
+}
+
+// sweepStaleStagingFiles removes "upload-*" files older than maxAge that no
+// in-flight writer owns.
+func (r *Registry) sweepStaleStagingFiles(maxAge time.Duration) {
+	if r.uploadDir == "" {
+		return
+	}
+	matches, err := filepath.Glob(filepath.Join(r.uploadDir, "upload-*"))
+	if err != nil {
+		r.logger.Warn("globbing upload staging files failed", "error", err)
+		return
+	}
+
+	// Files owned by a live writer must survive even if idle.
+	active := make(map[string]struct{})
+	r.uploadsMu.Lock()
+	for _, w := range r.uploads {
+		if p := w.Path(); p != "" {
+			active[p] = struct{}{}
+		}
+	}
+	r.uploadsMu.Unlock()
+
+	cutoff := time.Now().Add(-maxAge)
+	removed := 0
+	for _, m := range matches {
+		if _, ok := active[m]; ok {
+			continue
+		}
+		info, err := os.Stat(m)
+		if err != nil {
+			continue
+		}
+		if info.ModTime().After(cutoff) {
+			continue
+		}
+		if err := os.Remove(m); err != nil {
+			r.logger.Warn("removing stale upload staging file failed", "path", m, "error", err)
+			continue
+		}
+		removed++
+	}
+	if removed > 0 {
+		r.logger.Info("swept stale upload staging files", "count", removed)
+	}
 }
 
 // normalizeRepo auto-prepends the namespace prefix when the repo is not

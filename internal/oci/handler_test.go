@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -720,6 +722,39 @@ func TestUploadSessionDBWiring(t *testing.T) {
 	}
 
 	_ = writer.Close()
+}
+
+func TestSweepStaleStagingFiles(t *testing.T) {
+	reg, _ := testRegistry(t)
+	uploadDir := t.TempDir()
+	require.NoError(t, reg.SetUploadDir(uploadDir))
+	ctx := context.Background()
+
+	mkfile := func(name string, age time.Duration) string {
+		p := filepath.Join(uploadDir, name)
+		require.NoError(t, os.WriteFile(p, []byte("x"), 0o600))
+		mt := time.Now().Add(-age)
+		require.NoError(t, os.Chtimes(p, mt, mt))
+		return p
+	}
+
+	stale := mkfile("upload-stale", 2*time.Hour)
+	fresh := mkfile("upload-fresh", time.Minute)
+	other := mkfile("not-an-upload", 2*time.Hour)
+
+	w, err := reg.PushBlobChunked(ctx, "test.example.com/test/active", 0)
+	require.NoError(t, err)
+	active := w.(*diskBlobWriter).Path()
+	require.NotEmpty(t, active)
+	old := time.Now().Add(-2 * time.Hour)
+	require.NoError(t, os.Chtimes(active, old, old))
+
+	reg.sweepStaleStagingFiles(time.Hour)
+
+	require.NoFileExists(t, stale, "stale orphan should be swept")
+	require.FileExists(t, fresh, "recently-touched staging file should be kept")
+	require.FileExists(t, other, "non upload-* files must be left alone")
+	require.FileExists(t, active, "in-flight upload's file must be protected")
 }
 
 func TestMountBlobExistingBlob(t *testing.T) {
