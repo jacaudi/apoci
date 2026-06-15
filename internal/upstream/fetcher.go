@@ -8,9 +8,12 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/sync/singleflight"
 
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/config"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/metrics"
@@ -61,6 +64,8 @@ type Fetcher struct {
 	maxBlobSize     int64
 	maxManifestSize int64
 	circuit         *circuitBreaker
+	sfToken         singleflight.Group
+	sfDiscover      singleflight.Group
 }
 
 // NewFetcher creates an upstream fetcher from config.
@@ -333,6 +338,27 @@ func (f *Fetcher) getToken(ctx context.Context, reg *registry, repo string, useC
 		}
 	}
 
+	// Dedupe concurrent token exchanges for the same repo so a cold-cache burst
+	// issues a single request to the upstream auth server rather than one per caller.
+	key := reg.config.Name + "\x00" + repo + "\x00" + strconv.FormatBool(useCredentials)
+	v, doErr, _ := f.sfToken.Do(key, func() (any, error) {
+		if cached, ok := reg.tokenCache.Load(repo); ok {
+			ct := cached.(cachedToken)
+			if time.Now().Before(ct.expiresAt) && (ct.credentialsUsed || !useCredentials) {
+				return ct.token, nil
+			}
+		}
+		return f.fetchToken(ctx, reg, repo, useCredentials)
+	})
+	if doErr != nil {
+		return "", doErr
+	}
+	return v.(string), nil
+}
+
+// fetchToken discovers the auth challenge and exchanges credentials for a
+// scoped pull token, caching the result per repo.
+func (f *Fetcher) fetchToken(ctx context.Context, reg *registry, repo string, useCredentials bool) (string, error) {
 	// Discover the token endpoint via WWW-Authenticate challenge (once per registry).
 	realm, service, err := f.discoverChallenge(ctx, reg)
 	if err != nil {
@@ -429,56 +455,62 @@ func (f *Fetcher) getToken(ctx context.Context, reg *registry, repo string, useC
 func (f *Fetcher) discoverChallenge(ctx context.Context, reg *registry) (realm, service string, err error) {
 	c := &reg.challenge
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
 	if c.done {
-		return c.realm, c.svc, nil
+		realm, service = c.realm, c.svc
+		c.mu.Unlock()
+		return realm, service, nil
 	}
+	c.mu.Unlock()
 
-	probeURL := strings.TrimRight(reg.config.Endpoint, "/") + "/v2/"
-	req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, probeURL, nil)
-	if reqErr != nil {
-		return "", "", fmt.Errorf("creating challenge probe request: %w", reqErr)
-	}
-	req.Header.Set("User-Agent", version.UserAgent)
+	type challenge struct{ realm, svc string }
+	// Dedupe concurrent discovery and, critically, perform the network probe
+	// without holding c.mu so one slow probe cannot stall token acquisition
+	// for every concurrent request to this registry.
+	v, doErr, _ := f.sfDiscover.Do(reg.config.Name, func() (any, error) {
+		c.mu.Lock()
+		if c.done {
+			res := challenge{c.realm, c.svc}
+			c.mu.Unlock()
+			return res, nil
+		}
+		c.mu.Unlock()
 
-	resp, doErr := f.client.Do(req)
+		probeURL := strings.TrimRight(reg.config.Endpoint, "/") + "/v2/"
+		req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, probeURL, nil)
+		if reqErr != nil {
+			return nil, fmt.Errorf("creating challenge probe request: %w", reqErr)
+		}
+		req.Header.Set("User-Agent", version.UserAgent)
+
+		resp, probeErr := f.client.Do(req)
+		if probeErr != nil {
+			return nil, fmt.Errorf("probing registry for auth challenge: %w", probeErr)
+		}
+		_ = resp.Body.Close()
+
+		// No (or unparseable) WWW-Authenticate falls back to a /v2/token guess.
+		res := challenge{realm: strings.TrimRight(reg.config.Endpoint, "/") + "/v2/token"}
+		if www := resp.Header.Get("WWW-Authenticate"); www != "" {
+			if parsedRealm, parsedSvc := parseWWWAuthenticate(www); parsedRealm != "" {
+				res = challenge{realm: parsedRealm, svc: parsedSvc}
+			} else {
+				f.logger.Warn("could not parse WWW-Authenticate header, using fallback token URL",
+					"registry", reg.config.Name, "header", www)
+			}
+		}
+
+		c.mu.Lock()
+		c.realm, c.svc, c.done = res.realm, res.svc, true
+		c.mu.Unlock()
+		f.logger.Debug("discovered auth challenge",
+			"registry", reg.config.Name, "realm", res.realm, "service", res.svc)
+		return res, nil
+	})
 	if doErr != nil {
-		return "", "", fmt.Errorf("probing registry for auth challenge: %w", doErr)
+		return "", "", doErr
 	}
-	_ = resp.Body.Close()
-
-	www := resp.Header.Get("WWW-Authenticate")
-	if www == "" {
-		// Registry returned 200 without a challenge — no auth required,
-		// or it's non-standard. Fall back to a /v2/token endpoint guess.
-		c.realm = strings.TrimRight(reg.config.Endpoint, "/") + "/v2/token"
-		c.done = true
-		return c.realm, c.svc, nil
-	}
-
-	parsedRealm, parsedSvc := parseWWWAuthenticate(www)
-	if parsedRealm == "" {
-		// Unparseable header — fall back.
-		c.realm = strings.TrimRight(reg.config.Endpoint, "/") + "/v2/token"
-		c.done = true
-		f.logger.Warn("could not parse WWW-Authenticate header, using fallback token URL",
-			"registry", reg.config.Name,
-			"header", www,
-		)
-		return c.realm, c.svc, nil
-	}
-
-	c.realm = parsedRealm
-	c.svc = parsedSvc
-	c.done = true
-	f.logger.Debug("discovered auth challenge",
-		"registry", reg.config.Name,
-		"realm", parsedRealm,
-		"service", parsedSvc,
-	)
-
-	return c.realm, c.svc, nil
+	res := v.(challenge)
+	return res.realm, res.svc, nil
 }
 
 // parseWWWAuthenticate extracts the realm and service from a Bearer
