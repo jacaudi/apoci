@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -123,8 +124,10 @@ func fetchWebFinger(ctx context.Context, domain, resource string) (string, error
 		return "", fmt.Errorf("webfinger on %s returned %d", domain, resp.StatusCode)
 	}
 
+	// A JRD document is tiny; bound the body so a hostile peer can't exhaust
+	// memory with a multi-gigabyte response.
 	var wf WebFingerResponse
-	if err := json.NewDecoder(resp.Body).Decode(&wf); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64*1024)).Decode(&wf); err != nil {
 		return "", fmt.Errorf("decoding webfinger response: %w", err)
 	}
 
@@ -180,7 +183,7 @@ func (h *WebFingerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	} else if after, ok := strings.CutPrefix(resource, "acct:"); ok {
 		user, domain, hasDomain := strings.Cut(after, "@")
 		valid = hasDomain && user == "registry" &&
-			(domain == h.identity.Domain || domain == h.identity.AccountDomain)
+			(strings.EqualFold(domain, h.identity.Domain) || strings.EqualFold(domain, h.identity.AccountDomain))
 	}
 
 	if !valid {
