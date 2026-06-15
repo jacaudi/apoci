@@ -83,6 +83,10 @@ func (b *Backend) handlePublish(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	// Cargo treats crate names case-insensitively and every read path lowercases
+	// the name, so store under the lowercase form too; otherwise a crate
+	// published as "MyCrate" is unreachable (404) on index/download/yank.
+	pkg.Name = strings.ToLower(pkg.Name)
 	crateBytes, err := io.ReadAll(pkg.Content)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "read crate: "+err.Error())
