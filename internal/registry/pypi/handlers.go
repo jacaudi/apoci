@@ -177,15 +177,26 @@ func metadataFromForm(r *http.Request) *gtpypi.Metadata {
 
 func (b *Backend) handleSimpleRoot(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	pkgs, err := b.db.ListPackages(ctx, packageType, "", 1<<30)
-	if err != nil {
-		writePlainError(w, http.StatusInternalServerError, "list packages")
-		return
-	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = io.WriteString(w, "<!DOCTYPE html><html><head><title>Simple Index</title></head><body>\n")
-	for _, p := range pkgs {
-		_, _ = fmt.Fprintf(w, "<a href=\"%s/\">%s</a><br>\n", html.EscapeString(p.Name), html.EscapeString(p.Name))
+	// Stream the index in name-ordered batches via the cursor instead of loading
+	// the whole package table into memory, which would be a DoS vector on this
+	// public endpoint.
+	const batch = 1000
+	startAfter := ""
+	for {
+		pkgs, err := b.db.ListPackages(ctx, packageType, startAfter, batch)
+		if err != nil {
+			b.logger.Error("pypi simple index: list packages", "err", err)
+			return
+		}
+		for _, p := range pkgs {
+			_, _ = fmt.Fprintf(w, "<a href=\"%s/\">%s</a><br>\n", html.EscapeString(p.Name), html.EscapeString(p.Name))
+		}
+		if len(pkgs) < batch {
+			break
+		}
+		startAfter = pkgs[len(pkgs)-1].Name
 	}
 	_, _ = io.WriteString(w, "</body></html>\n")
 }
