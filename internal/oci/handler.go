@@ -1418,11 +1418,14 @@ func (r *Registry) deleteManifest(ctx context.Context, repo string, digest ocire
 	if err != nil {
 		return err
 	}
+	// Record the 410-Gone tombstone before removing the manifest, so a failure
+	// can never leave the manifest gone without its tombstone (which would make
+	// getManifest return 404 instead of the intended 410).
+	if err := r.db.RecordDeletedManifest(ctx, string(digest), repo, r.localID); err != nil {
+		return fmt.Errorf("recording manifest tombstone: %w", err)
+	}
 	if err := r.db.DeleteManifest(ctx, repoObj.ID, string(digest)); err != nil {
 		return err
-	}
-	if err := r.db.RecordDeletedManifest(ctx, string(digest), repo, r.localID); err != nil {
-		r.logger.Warn("failed to record manifest tombstone", "digest", string(digest), "error", err)
 	}
 	if r.publisher != nil {
 		if err := r.publisher.PublishManifestDelete(ctx, repo, string(digest)); err != nil {
