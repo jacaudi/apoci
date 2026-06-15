@@ -31,7 +31,9 @@ func (s *Server) routes() http.Handler {
 
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /readyz", s.handleReadyz)
-	mux.HandleFunc("/v2/auth", s.handleRegistryAuth)
+	// Rate-limit the auth oracle so failed Basic-auth attempts can't be
+	// brute-forced at full speed.
+	mux.Handle("/v2/auth", registryPushRateLimitMiddleware(s.registryPushLimiter)(http.HandlerFunc(s.handleRegistryAuth)))
 	mux.HandleFunc("/v2/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v2/" || r.URL.Path == "/v2" {
 			w.Header().Set("Content-Type", "application/json")
