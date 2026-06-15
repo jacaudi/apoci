@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	"net/url"
 	"runtime"
-	"slices"
 	"sync"
 	"time"
 
@@ -109,12 +108,6 @@ func (cb *deliveryCircuitBreaker) forceOpen(domain string, duration time.Duratio
 	cb.openUntil[domain] = time.Now().Add(duration)
 }
 
-// retryItem holds a delivery scheduled for retry with its next attempt time.
-type retryItem struct {
-	delivery database.Delivery
-	nextTime time.Time
-}
-
 type DeliveryRepository interface {
 	PendingDeliveries(ctx context.Context, limit int) ([]database.Delivery, error)
 	MarkDeliveryFailed(ctx context.Context, id int64, attempts, maxAttempts int, lastError string) error
@@ -132,10 +125,6 @@ type DeliveryQueue struct {
 	maxConcurrency int
 	notify         chan struct{}
 	service        runners.Service
-
-	// In-memory retry backlog for failed deliveries
-	backlogMu sync.Mutex
-	backlog   []retryItem
 }
 
 func NewDeliveryQueue(db DeliveryRepository, identity *Identity, logger *slog.Logger) *DeliveryQueue {
@@ -146,7 +135,6 @@ func NewDeliveryQueue(db DeliveryRepository, identity *Identity, logger *slog.Lo
 		circuit:        newDeliveryCircuitBreaker(),
 		maxConcurrency: deliveryMaxConcurrency(),
 		notify:         make(chan struct{}, 1),
-		backlog:        make([]retryItem, 0, 100),
 	}
 }
 
@@ -208,7 +196,6 @@ func (q *DeliveryQueue) run(parentCtx, svcCtx context.Context) {
 			q.processBatch(parentCtx)
 		case <-ticker.C:
 			q.processBatch(parentCtx)
-			q.processBacklog(parentCtx)
 		case <-cleanupTicker.C:
 			q.cleanup(parentCtx)
 		}
@@ -235,71 +222,6 @@ func (q *DeliveryQueue) processBatch(ctx context.Context) {
 		})
 	}
 	p.Wait()
-}
-
-// processBacklog processes deliveries from the in-memory retry backlog.
-// Items are processed if their next retry time has passed.
-func (q *DeliveryQueue) processBacklog(ctx context.Context) {
-	q.backlogMu.Lock()
-	if len(q.backlog) == 0 {
-		q.backlogMu.Unlock()
-		return
-	}
-
-	slices.SortFunc(q.backlog, func(a, b retryItem) int {
-		if a.nextTime.Before(b.nextTime) {
-			return -1
-		}
-		if a.nextTime.After(b.nextTime) {
-			return 1
-		}
-		return 0
-	})
-
-	now := time.Now()
-	var ready []database.Delivery
-	var remaining []retryItem
-	for _, item := range q.backlog {
-		if item.nextTime.Before(now) || item.nextTime.Equal(now) {
-			ready = append(ready, item.delivery)
-		} else {
-			remaining = append(remaining, item)
-		}
-	}
-	q.backlog = remaining
-	q.backlogMu.Unlock()
-
-	if len(ready) == 0 {
-		return
-	}
-
-	q.logger.Debug("processing backlog retries", "count", len(ready))
-
-	p := pool.New().WithMaxGoroutines(q.maxConcurrency)
-	for _, d := range ready {
-		p.Go(func() {
-			q.deliver(ctx, d)
-		})
-	}
-	p.Wait()
-}
-
-// addToBacklog adds a failed delivery to the in-memory retry backlog.
-func (q *DeliveryQueue) addToBacklog(d database.Delivery, backoff time.Duration) {
-	q.backlogMu.Lock()
-	defer q.backlogMu.Unlock()
-
-	// Limit backlog size to prevent memory growth
-	const maxBacklogSize = 1000
-	if len(q.backlog) >= maxBacklogSize {
-		q.logger.Warn("backlog full, dropping retry", "delivery_id", d.ID)
-		return
-	}
-
-	q.backlog = append(q.backlog, retryItem{
-		delivery: d,
-		nextTime: time.Now().Add(backoff),
-	})
 }
 
 func (q *DeliveryQueue) deliver(ctx context.Context, d database.Delivery) {
@@ -343,16 +265,12 @@ func (q *DeliveryQueue) deliver(ctx context.Context, d database.Delivery) {
 				}
 			}
 		}
+		// MarkDeliveryFailed sets next_attempt_at; the DB poll is the single
+		// retry source, so the row is just re-fetched when due.
 		if dbErr := q.db.MarkDeliveryFailed(ctx, d.ID, d.Attempts, d.MaxAttempts, err.Error()); dbErr != nil {
 			q.logger.Error("failed to mark delivery failed", "error", dbErr)
 		}
-
-		// Add to in-memory backlog for faster retry if not at max attempts
-		if d.Attempts+1 < d.MaxAttempts {
-			backoff := min(time.Duration(d.Attempts+1)*30*time.Second, 5*time.Minute)
-			d.Attempts++ // Increment for backlog tracking
-			q.addToBacklog(d, backoff)
-		} else {
+		if d.Attempts+1 >= d.MaxAttempts {
 			metrics.DeliveryFailed.WithLabelValues(domainLabel(domain)).Add(1)
 		}
 		return
