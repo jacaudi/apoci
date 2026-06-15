@@ -152,6 +152,11 @@ func (w *Worker) process(ctx context.Context, j job) {
 		return
 	}
 
+	// Detach from the signal context so a scan already running at shutdown
+	// finishes (bounded by w.timeout and the overall shutdown deadline) instead
+	// of being aborted mid-run, which killed the Trivy subprocess and logged a
+	// spurious error on every shutdown.
+	ctx = context.WithoutCancel(ctx)
 	scanCtx := ctx
 	if w.timeout > 0 {
 		var cancel context.CancelFunc
@@ -180,7 +185,7 @@ func (w *Worker) process(ctx context.Context, j job) {
 	if mediaType == "" {
 		mediaType = ReportMediaType
 	}
-	refDigest, err := w.reg.AttachReferrer(ctx, j.repo, j.digest, ArtifactType, annotations, report.Raw, mediaType)
+	refDigest, err := w.reg.AttachReferrer(scanCtx, j.repo, j.digest, ArtifactType, annotations, report.Raw, mediaType)
 	if err != nil {
 		w.logger.Error("scan: attaching report referrer failed", "repo", j.repo, "digest", j.digest, "error", err)
 		return
