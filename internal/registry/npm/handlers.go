@@ -103,14 +103,6 @@ func (b *Backend) handlePublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if existing, err := b.db.GetPackageVersion(ctx, dbPkg.ID, pkg.Version); err != nil {
-		writeError(w, http.StatusInternalServerError, "lookup version")
-		return
-	} else if existing != nil {
-		writeError(w, http.StatusConflict, "version "+pkg.Version+" already exists")
-		return
-	}
-
 	stored := storedVersion{
 		Meta:      versionMeta,
 		Integrity: "sha512-" + base64.StdEncoding.EncodeToString(sha512Sum(pkg.Data)),
@@ -129,8 +121,15 @@ func (b *Backend) handlePublish(w http.ResponseWriter, r *http.Request) {
 		MediaType: versionMediaType,
 		SizeBytes: int64(len(metadataBytes)),
 	}
-	if err := b.db.PutPackageVersion(ctx, v); err != nil {
+	// Insert-only so a duplicate/racing publish is rejected atomically rather
+	// than silently overwriting an existing immutable version.
+	inserted, err := b.db.InsertPackageVersionIfNew(ctx, v)
+	if err != nil {
 		writeError(w, http.StatusInternalServerError, "put version")
+		return
+	}
+	if !inserted {
+		writeError(w, http.StatusConflict, "version "+pkg.Version+" already exists")
 		return
 	}
 

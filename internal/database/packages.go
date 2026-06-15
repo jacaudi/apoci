@@ -168,6 +168,38 @@ func (db *DB) PutPackageVersion(ctx context.Context, v *PackageVersion) error {
 	return putPackageVersion(ctx, db.bun, v)
 }
 
+// InsertPackageVersionIfNew inserts a version only if (package_id, version) does
+// not already exist, reporting whether it was newly inserted. Publish paths use
+// it to enforce immutability atomically: a racing duplicate publish gets
+// inserted=false instead of silently overwriting via the upsert.
+func (db *DB) InsertPackageVersionIfNew(ctx context.Context, v *PackageVersion) (bool, error) {
+	res, err := db.bun.NewRaw(
+		`INSERT INTO package_versions (package_id, version, metadata, media_type, size_bytes, source_actor, subject_digest, artifact_type)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(package_id, version) DO NOTHING`,
+		v.PackageID, v.Version, v.Metadata, v.MediaType, v.SizeBytes,
+		v.SourceActor, v.SubjectDigest, v.ArtifactType,
+	).Exec(ctx)
+	if err != nil {
+		return false, fmt.Errorf("inserting package version: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("checking version insert: %w", err)
+	}
+	if n == 0 {
+		return false, nil
+	}
+	got, err := getPackageVersion(ctx, db.bun, v.PackageID, v.Version)
+	if err != nil {
+		return false, fmt.Errorf("reading version after insert: %w", err)
+	}
+	if got != nil {
+		*v = *got
+	}
+	return true, nil
+}
+
 func putPackageVersion(ctx context.Context, idb bun.IDB, v *PackageVersion) error {
 	_, err := idb.NewRaw(
 		`INSERT INTO package_versions (package_id, version, metadata, media_type, size_bytes, source_actor, subject_digest, artifact_type)
