@@ -102,8 +102,12 @@ func (a *federationAdapter) ingestVersion(ctx context.Context, obj map[string]an
 	}
 
 	if blobSHA != "" {
+		sizeBytes, err := pkgfed.ValidateBlobRef(blobSHA, size)
+		if err != nil {
+			return fmt.Errorf("cargo version: %w", err)
+		}
 		contentType := crateMediaType
-		if err := a.backend.db.PutBlob(ctx, blobSHA, int64(size), &contentType, false); err != nil {
+		if err := a.backend.db.PutBlob(ctx, blobSHA, sizeBytes, &contentType, false); err != nil {
 			return fmt.Errorf("cargo version: put blob ref: %w", err)
 		}
 		if err := pkgfed.RecordPeerBlob(ctx, a.backend.db, actorURL, blobSHA); err != nil {
@@ -118,7 +122,7 @@ func (a *federationAdapter) ingestVersion(ctx context.Context, obj map[string]an
 			VersionID:   v.ID,
 			Filename:    crateFilename(name, version),
 			BlobDigest:  blobSHA,
-			SizeBytes:   int64(size),
+			SizeBytes:   sizeBytes,
 			ContentType: &contentType,
 		}
 		if err := a.backend.db.PutPackageFile(ctx, file); err != nil {

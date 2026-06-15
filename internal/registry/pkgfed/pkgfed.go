@@ -6,10 +6,26 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/activitypub"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/database"
+	"git.erwanleboucher.dev/eleboucher/apoci/internal/validate"
 )
+
+// ValidateBlobRef validates a federation-supplied blob digest and size before
+// they are persisted. The digest must be a well-formed sha256 reference and the
+// size must be non-negative and fit in int64; otherwise the peer could write
+// unusable rows (e.g. a digest no peer can satisfy, or a negative size).
+func ValidateBlobRef(digest string, size float64) (int64, error) {
+	if err := validate.Digest(digest); err != nil {
+		return 0, fmt.Errorf("invalid blob digest: %w", err)
+	}
+	if size < 0 || size > math.MaxInt64 {
+		return 0, fmt.Errorf("invalid blob size %v", size)
+	}
+	return int64(size), nil
+}
 
 // LookupOwnedPackage returns nil,nil for an unknown package (allowing
 // delete-before-create or yank-before-create to be no-ops) and wraps

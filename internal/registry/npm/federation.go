@@ -117,8 +117,14 @@ func (a *federationAdapter) ingestVersion(ctx context.Context, obj map[string]an
 		blobDigest, _ := obj["npmBlobSHA256"].(string)
 		size, _ := obj["npmSize"].(float64)
 		contentType := tarballMediaType
+		sizeBytes := int64(size)
 		if blobDigest != "" {
-			if err := a.backend.db.PutBlob(ctx, blobDigest, int64(size), &contentType, false); err != nil {
+			validated, err := pkgfed.ValidateBlobRef(blobDigest, size)
+			if err != nil {
+				return fmt.Errorf("npm version: %w", err)
+			}
+			sizeBytes = validated
+			if err := a.backend.db.PutBlob(ctx, blobDigest, sizeBytes, &contentType, false); err != nil {
 				return fmt.Errorf("npm version: put blob ref: %w", err)
 			}
 			if err := pkgfed.RecordPeerBlob(ctx, a.backend.db, actorURL, blobDigest); err != nil {
@@ -134,7 +140,7 @@ func (a *federationAdapter) ingestVersion(ctx context.Context, obj map[string]an
 			VersionID:   v.ID,
 			Filename:    filename,
 			BlobDigest:  blobDigest,
-			SizeBytes:   int64(size),
+			SizeBytes:   sizeBytes,
 			ContentType: &contentType,
 		}
 		if err := a.backend.db.PutPackageFile(ctx, file); err != nil {
