@@ -31,12 +31,14 @@ const queueSize = 64
 // Notifier sends best-effort notifications via shoutrrr.
 // It is safe for concurrent use. A zero-value or nil sender means no-op.
 type Notifier struct {
-	sender *router.ServiceRouter
-	events map[string]struct{}
-	name   string
-	logger *slog.Logger
-	queue  chan string
-	wg     sync.WaitGroup
+	sender   *router.ServiceRouter
+	events   map[string]struct{}
+	name     string
+	logger   *slog.Logger
+	queue    chan string
+	stop     chan struct{}
+	stopOnce sync.Once
+	wg       sync.WaitGroup
 }
 
 // New creates a Notifier. If urls is empty or sender creation fails, the
@@ -64,6 +66,7 @@ func New(name string, urls []string, events []string, logger *slog.Logger) *Noti
 
 	n.sender = sender
 	n.queue = make(chan string, queueSize)
+	n.stop = make(chan struct{})
 	n.wg.Add(1)
 	go n.drain()
 
@@ -84,29 +87,47 @@ func (n *Notifier) Send(event, text string) {
 
 	select {
 	case n.queue <- msg:
+	case <-n.stop:
 	default:
 		n.logger.Warn("notification queue full, dropping message", "event", event)
 	}
 }
 
 // Stop drains the notification queue and waits for pending sends.
-// Implements workers.Stoppable.
+// Implements workers.Stoppable. The queue is never closed, so a concurrent
+// Send after Stop is a no-op rather than a send-on-closed-channel panic.
 func (n *Notifier) Stop() {
 	if n.queue == nil {
 		return
 	}
-	close(n.queue)
+	n.stopOnce.Do(func() { close(n.stop) })
 	n.wg.Wait()
 }
 
 func (n *Notifier) drain() {
 	defer n.wg.Done()
-	for msg := range n.queue {
-		errs := n.sender.Send(msg, &types.Params{})
-		for _, err := range errs {
-			if err != nil {
-				n.logger.Warn("notification send failed", "error", err)
+	for {
+		select {
+		case msg := <-n.queue:
+			n.dispatch(msg)
+		case <-n.stop:
+			// Flush whatever is already buffered, then exit.
+			for {
+				select {
+				case msg := <-n.queue:
+					n.dispatch(msg)
+				default:
+					return
+				}
 			}
+		}
+	}
+}
+
+func (n *Notifier) dispatch(msg string) {
+	for _, err := range n.sender.Send(msg, &types.Params{}) {
+		if err != nil {
+			n.logger.Warn("notification send failed", "error", err)
 		}
 	}
 }
