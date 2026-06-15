@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -35,6 +36,25 @@ func (rw *responseWriter) Write(b []byte) (int, error) {
 	n, err := rw.ResponseWriter.Write(b)
 	rw.written += int64(n)
 	return n, err
+}
+
+// ReadFrom delegates to the underlying ResponseWriter's io.ReaderFrom so blob
+// downloads keep the os.File sendfile fast path instead of being copied through
+// a userspace buffer. Falls back to a generic copy when unsupported.
+func (rw *responseWriter) ReadFrom(src io.Reader) (int64, error) {
+	if rf, ok := rw.ResponseWriter.(io.ReaderFrom); ok {
+		n, err := rf.ReadFrom(src)
+		rw.written += n
+		return n, err
+	}
+	n, err := io.Copy(rw.ResponseWriter, src)
+	rw.written += n
+	return n, err
+}
+
+// Unwrap exposes the underlying ResponseWriter for http.ResponseController.
+func (rw *responseWriter) Unwrap() http.ResponseWriter {
+	return rw.ResponseWriter
 }
 
 // requestIDSafeRe matches only safe characters for the X-Request-ID header.
