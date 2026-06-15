@@ -43,11 +43,16 @@ type BlobReplicator struct {
 	maxConcurrency int
 	sem            chan struct{}
 	wg             sync.WaitGroup
+	shutdownCtx    context.Context
+	cancel         context.CancelFunc
 }
 
 func NewBlobReplicator(db ReplicatorRepository, blobs blobstore.BlobStore, fetcher BlobStreamFetcher, notifier Notifier, logger *slog.Logger) *BlobReplicator {
 	maxConcurrency := replicationMaxConcurrency()
+	shutdownCtx, cancel := context.WithCancel(context.Background())
 	return &BlobReplicator{
+		shutdownCtx:    shutdownCtx,
+		cancel:         cancel,
 		db:             db,
 		blobs:          blobs,
 		fetcher:        fetcher,
@@ -69,19 +74,7 @@ func (r *BlobReplicator) ReplicateBlob(ctx context.Context, peerEndpoint, digest
 		return
 	}
 
-	metrics.BlobReplicationsStarted.Inc()
-	metrics.BlobReplicationsInFlight.Inc()
-
-	r.wg.Go(func() {
-		defer metrics.BlobReplicationsInFlight.Dec()
-		defer r.recoverPanic(digest)
-
-		r.sem <- struct{}{}
-		defer func() { <-r.sem }()
-
-		// Fresh context since the request context will be cancelled.
-		bgCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
-		defer cancel()
+	r.submit(digest, func(bgCtx context.Context) {
 		r.replicateBlob(bgCtx, peerEndpoint, digest)
 	})
 }
@@ -100,19 +93,36 @@ func (r *BlobReplicator) ReplicateFromURL(ctx context.Context, sourceURL, digest
 		return
 	}
 
-	metrics.BlobReplicationsStarted.Inc()
-	metrics.BlobReplicationsInFlight.Inc()
+	r.submit(digest, func(bgCtx context.Context) {
+		r.replicateFromURL(bgCtx, sourceURL, digest)
+	})
+}
 
+// submit bounds replication by acquiring the concurrency semaphore before
+// spawning the goroutine, so a flood of peer announces cannot create an
+// unbounded number of goroutines parked on the semaphore. Work runs under a
+// shutdown-cancelable context with a per-blob timeout; saturated submissions
+// are dropped (replication is best-effort and falls back to pull-through).
+func (r *BlobReplicator) submit(digest string, work func(ctx context.Context)) {
+	metrics.BlobReplicationsStarted.Inc()
+
+	select {
+	case r.sem <- struct{}{}:
+	default:
+		metrics.BlobReplicationsFailed.Add(1)
+		r.logger.Warn("replication concurrency saturated, dropping blob", "digest", digest)
+		return
+	}
+
+	metrics.BlobReplicationsInFlight.Inc()
 	r.wg.Go(func() {
+		defer func() { <-r.sem }()
 		defer metrics.BlobReplicationsInFlight.Dec()
 		defer r.recoverPanic(digest)
 
-		r.sem <- struct{}{}
-		defer func() { <-r.sem }()
-
-		bgCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Minute)
+		bgCtx, cancel := context.WithTimeout(r.shutdownCtx, 5*time.Minute)
 		defer cancel()
-		r.replicateFromURL(bgCtx, sourceURL, digest)
+		work(bgCtx)
 	})
 }
 
@@ -161,8 +171,11 @@ func (r *BlobReplicator) recoverPanic(digest string) {
 	}
 }
 
-// Wait blocks until all in-flight replications complete.
+// Wait cancels in-flight replications and blocks until they return. Cancelling
+// first bounds shutdown: without it, each goroutine's 5-minute detached timeout
+// would have to elapse before Wait could return.
 func (r *BlobReplicator) Wait() {
+	r.cancel()
 	r.wg.Wait()
 }
 
