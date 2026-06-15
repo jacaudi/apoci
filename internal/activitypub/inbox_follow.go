@@ -128,8 +128,26 @@ func (h *InboxHandler) processUndo(ctx context.Context, activity *RawActivity) e
 		return nil
 	}
 
+	// The embedded Follow must be issued by the sender and target this server.
+	if embActor, _ := objectMap[KeyActor].(string); embActor != "" {
+		na, err1 := normaliseActorURL(embActor)
+		aa, err2 := normaliseActorURL(activity.Actor)
+		if err1 != nil || err2 != nil || na != aa {
+			h.logger.Warn("inbox: Undo(Follow) embedded actor does not match sender", "sender", activity.Actor, "embedded", embActor)
+			return nil
+		}
+	}
+	if embObj, _ := objectMap[KeyObject].(string); embObj != "" {
+		no, err1 := normaliseActorURL(embObj)
+		ours, err2 := normaliseActorURL(h.identity.ActorURL)
+		if err1 != nil || err2 != nil || no != ours {
+			h.logger.Warn("inbox: Undo(Follow) does not target this server", "object", embObj)
+			return nil
+		}
+	}
+
 	if err := h.db.RemoveFollow(ctx, activity.Actor); err != nil {
-		h.logger.Debug("inbox: Undo(Follow) no-op", "actor", activity.Actor, "error", err)
+		h.logger.Warn("inbox: Undo(Follow) failed to remove follow", "actor", activity.Actor, "error", err)
 	}
 
 	h.logger.Info("inbox: follow undone", "by", activity.Actor)
