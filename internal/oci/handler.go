@@ -47,6 +47,7 @@ type RegistryRepository interface {
 	GetManifestByDigest(ctx context.Context, repoID int64, digest string) (*database.Manifest, error)
 	GetManifestByTag(ctx context.Context, repoID int64, tag string) (*database.Manifest, error)
 	PutManifest(ctx context.Context, m *database.Manifest) error
+	PutManifestWithLayers(ctx context.Context, m *database.Manifest, refs []database.BlobRef) error
 	DeleteManifest(ctx context.Context, repoID int64, digest string) error
 	IsManifestDeleted(ctx context.Context, digest string) (bool, error)
 	RecordDeletedManifest(ctx context.Context, digest, repoName, sourceActor string) error
@@ -573,23 +574,10 @@ func (r *Registry) fetchManifestFromUpstream(ctx context.Context, repo, referenc
 		SubjectDigest: meta.subjectDigest,
 		ArtifactType:  meta.artifactType,
 	}
-	if err := r.db.PutManifest(ctx, m); err != nil {
-		return nil, fmt.Errorf("caching upstream manifest: %w", err)
-	}
-
 	upstreamRefs := append([]database.BlobRef(nil), meta.layers...)
 	upstreamRefs = append(upstreamRefs, meta.children...)
-	if len(upstreamRefs) > 0 {
-		storedMan, err := r.db.GetManifestByDigest(ctx, repoObj.ID, computed)
-		if err != nil {
-			return nil, fmt.Errorf("loading cached manifest: %w", err)
-		}
-		if storedMan == nil {
-			return nil, fmt.Errorf("cached manifest not found after store")
-		}
-		if err := r.db.PutManifestLayers(ctx, storedMan.ID, upstreamRefs); err != nil {
-			return nil, fmt.Errorf("recording upstream manifest refs: %w", err)
-		}
+	if err := r.db.PutManifestWithLayers(ctx, m, upstreamRefs); err != nil {
+		return nil, fmt.Errorf("caching upstream manifest: %w", err)
 	}
 
 	if !refIsDigest {
@@ -717,19 +705,11 @@ func (r *Registry) getManifest(ctx context.Context, repo string, digest ociregis
 						Content:      data,
 						SourceActor:  &repoObj.OwnerID,
 					}
-					if err := r.db.PutManifest(ctx, m); err != nil {
+					peerMeta := parseManifestMeta(data, r.logger)
+					peerRefs := append([]database.BlobRef(nil), peerMeta.layers...)
+					peerRefs = append(peerRefs, peerMeta.children...)
+					if err := r.db.PutManifestWithLayers(ctx, m, peerRefs); err != nil {
 						r.logger.Warn("failed to cache fetched manifest", "error", err)
-					} else {
-						peerMeta := parseManifestMeta(data, r.logger)
-						peerRefs := append([]database.BlobRef(nil), peerMeta.layers...)
-						peerRefs = append(peerRefs, peerMeta.children...)
-						if len(peerRefs) > 0 {
-							if stored, err := r.db.GetManifestByDigest(ctx, repoObj.ID, computed); err == nil && stored != nil {
-								if err := r.db.PutManifestLayers(ctx, stored.ID, peerRefs); err != nil {
-									r.logger.Warn("failed to record peer manifest refs", "digest", computed, "error", err)
-								}
-							}
-						}
 					}
 					metrics.RegistryManifestPullThru.Add(1)
 					desc := ociregistry.Descriptor{
@@ -1250,23 +1230,13 @@ func (r *Registry) pushManifest(ctx context.Context, repo string, tag string, co
 		ArtifactType:  meta.artifactType,
 	}
 
-	if err := r.db.PutManifest(ctx, m); err != nil {
-		return ociregistry.Descriptor{}, fmt.Errorf("storing manifest: %w", err)
-	}
-
+	// Write the manifest and its blob references atomically so the GC orphan
+	// sweep can never observe a stored manifest whose layer references are still
+	// missing.
 	refs := append([]database.BlobRef(nil), meta.layers...)
 	refs = append(refs, meta.children...)
-	if len(refs) > 0 {
-		man, err := r.db.GetManifestByDigest(ctx, repoObj.ID, digest)
-		if err != nil {
-			return ociregistry.Descriptor{}, fmt.Errorf("loading stored manifest: %w", err)
-		}
-		if man == nil {
-			return ociregistry.Descriptor{}, fmt.Errorf("manifest not found after storing")
-		}
-		if err := r.db.PutManifestLayers(ctx, man.ID, refs); err != nil {
-			return ociregistry.Descriptor{}, fmt.Errorf("recording manifest refs: %w", err)
-		}
+	if err := r.db.PutManifestWithLayers(ctx, m, refs); err != nil {
+		return ociregistry.Descriptor{}, fmt.Errorf("storing manifest: %w", err)
 	}
 
 	if tag != "" {

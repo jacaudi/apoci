@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -262,6 +263,52 @@ func TestRepositoryOwnership(t *testing.T) {
 	isOwner, err = db.IsRepositoryOwner(ctx, repo.ID, "https://bob.example.com/ap/actor")
 	require.NoError(t, err)
 	require.False(t, isOwner, "expected bob to NOT be owner")
+}
+
+func TestPutManifestWithLayersAtomic(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	repo, _ := db.GetOrCreateRepository(ctx, "test/atomic", testAliceActor)
+
+	layer := "sha256:" + strings.Repeat("a", 64)
+	require.NoError(t, db.PutBlob(ctx, layer, 100, nil, true))
+
+	m := &Manifest{
+		RepositoryID: repo.ID,
+		Digest:       "sha256:" + strings.Repeat("b", 64),
+		MediaType:    testManifestMediaType,
+		SizeBytes:    10,
+		Content:      []byte("{}"),
+	}
+	refs := []BlobRef{{Digest: layer, Size: 100}}
+	require.NoError(t, db.PutManifestWithLayers(ctx, m, refs))
+	require.NotZero(t, m.ID, "manifest ID should be populated")
+
+	got, err := db.GetManifestByDigest(ctx, repo.ID, m.Digest)
+	require.NoError(t, err)
+	require.NotNil(t, got)
+
+	// The layer is referenced via package_files written in the same tx, so the
+	// GC sweep must not consider it orphaned.
+	orphans, err := db.OrphanedBlobs(ctx, 100, time.Time{})
+	require.NoError(t, err)
+	require.NotContains(t, orphans, layer, "linked layer must not be orphaned after atomic write")
+
+	// A failing transaction (cancelled context) must leave no manifest row —
+	// the manifest and its refs are all-or-nothing.
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	m2 := &Manifest{
+		RepositoryID: repo.ID,
+		Digest:       "sha256:" + strings.Repeat("c", 64),
+		MediaType:    testManifestMediaType,
+		SizeBytes:    10,
+		Content:      []byte("{}"),
+	}
+	require.Error(t, db.PutManifestWithLayers(cancelled, m2, refs))
+	leftover, err := db.GetManifestByDigest(ctx, repo.ID, m2.Digest)
+	require.NoError(t, err)
+	require.Nil(t, leftover, "manifest must be rolled back when the transaction fails")
 }
 
 func TestManifestCRUD(t *testing.T) {

@@ -127,8 +127,12 @@ func (db *DB) IsPackageOwner(ctx context.Context, packageID int64, ownerID strin
 }
 
 func (db *DB) GetPackageVersion(ctx context.Context, packageID int64, version string) (*PackageVersion, error) {
+	return getPackageVersion(ctx, db.bun, packageID, version)
+}
+
+func getPackageVersion(ctx context.Context, idb bun.IDB, packageID int64, version string) (*PackageVersion, error) {
 	v := &PackageVersion{}
-	err := db.bun.NewSelect().Model(v).
+	err := idb.NewSelect().Model(v).
 		Where("package_id = ?", packageID).
 		Where("version = ?", version).
 		Scan(ctx)
@@ -161,7 +165,11 @@ func (db *DB) GetPackageVersionByTag(ctx context.Context, packageID int64, tagNa
 }
 
 func (db *DB) PutPackageVersion(ctx context.Context, v *PackageVersion) error {
-	_, err := db.bun.NewRaw(
+	return putPackageVersion(ctx, db.bun, v)
+}
+
+func putPackageVersion(ctx context.Context, idb bun.IDB, v *PackageVersion) error {
+	_, err := idb.NewRaw(
 		`INSERT INTO package_versions (package_id, version, metadata, media_type, size_bytes, source_actor, subject_digest, artifact_type)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(package_id, version) DO UPDATE SET
@@ -177,7 +185,7 @@ func (db *DB) PutPackageVersion(ctx context.Context, v *PackageVersion) error {
 	if err != nil {
 		return fmt.Errorf("putting package version: %w", err)
 	}
-	got, err := db.GetPackageVersion(ctx, v.PackageID, v.Version)
+	got, err := getPackageVersion(ctx, idb, v.PackageID, v.Version)
 	if err != nil {
 		return fmt.Errorf("reading version after put: %w", err)
 	}
@@ -278,17 +286,17 @@ func (db *DB) PutBlobReferences(ctx context.Context, versionID int64, refs []Blo
 	if len(refs) == 0 {
 		return nil
 	}
-	tx, err := db.bun.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("beginning put blob references transaction: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
+	return db.bun.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		return putBlobReferences(ctx, tx, versionID, refs)
+	})
+}
 
+func putBlobReferences(ctx context.Context, idb bun.IDB, versionID int64, refs []BlobRef) error {
 	for _, r := range refs {
 		if r.Digest == "" {
 			continue
 		}
-		if _, err := tx.NewRaw(
+		if _, err := idb.NewRaw(
 			`INSERT INTO package_files (version_id, filename, blob_digest, size_bytes, content_type)
 			 VALUES (?, ?, ?, ?, ?)
 			 ON CONFLICT (version_id, filename) DO UPDATE SET
@@ -299,7 +307,7 @@ func (db *DB) PutBlobReferences(ctx context.Context, versionID int64, refs []Blo
 			return fmt.Errorf("inserting blob reference %s: %w", r.Digest, err)
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 func (db *DB) GetPackageFile(ctx context.Context, versionID int64, filename string) (*PackageFile, error) {
@@ -513,6 +521,26 @@ func (db *DB) PutManifest(ctx context.Context, m *Manifest) error {
 	m.ID = v.ID
 	m.CreatedAt = v.CreatedAt
 	return nil
+}
+
+// PutManifestWithLayers stores the manifest and its blob references in a single
+// transaction, so a stored manifest never coexists with missing package_files
+// rows. Without this atomicity, the GC orphan-blob sweep could reap a layer
+// that a just-stored manifest references but whose package_files row hasn't
+// been written yet (the manifest and refs were previously separate writes).
+func (db *DB) PutManifestWithLayers(ctx context.Context, m *Manifest, refs []BlobRef) error {
+	return db.bun.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		v := manifestAsVersion(m)
+		if err := putPackageVersion(ctx, tx, v); err != nil {
+			return err
+		}
+		if err := putBlobReferences(ctx, tx, v.ID, refs); err != nil {
+			return err
+		}
+		m.ID = v.ID
+		m.CreatedAt = v.CreatedAt
+		return nil
+	})
 }
 
 func (db *DB) ListManifestsBySubject(ctx context.Context, repoID int64, subjectDigest string) ([]Manifest, error) {
