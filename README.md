@@ -80,11 +80,11 @@ dotnet nuget add source https://foo.com/nuget/v3/index.json \
 
 The `/goproxy/` backend serves the [Go module proxy protocol](https://go.dev/ref/mod#goproxy-protocol) as both a store and a pull-through cache. Go has no native publish command, so push a [module zip](https://go.dev/ref/mod#zip-files) with an authed `PUT` (`.mod` and `.info` are derived from the zip). Set `backends.goproxy.upstreams` to pull-through-cache an upstream like `https://proxy.golang.org`.
 
-Privately-hosted modules aren't in `sum.golang.org`, so clients must opt them out of checksum-DB verification:
+Public modules pulled through the cache are still verified by your client's `GOSUMDB` (apoci does not verify upstream content itself), so leave checksum-DB verification on. Privately-hosted modules aren't in `sum.golang.org`, so opt only those out:
 
 ```bash
 export GOPROXY=https://foo.com/goproxy
-export GOPRIVATE='your.private/*'   # or GOSUMDB=off to skip sum verification entirely
+export GOPRIVATE='your.private/*'   # opts private modules out of GOSUMDB; keep it enabled for public ones
 go get your.private/module@v1.0.0
 ```
 

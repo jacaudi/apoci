@@ -245,8 +245,11 @@ func (b *Backend) cacheFromUpstream(ctx context.Context, mod, ver string) *datab
 	if err != nil {
 		return nil
 	}
-	// Validate the upstream zip and pull its go.mod before persisting: clients
-	// are told to disable GOSUMDB, so apoci is the only check against a bad upstream.
+	// Validate the upstream zip's structure and pull its go.mod before
+	// persisting. This is NOT a content-integrity check: apoci does not verify
+	// against sum.golang.org. Public modules pulled through the cache are still
+	// verified by the client's GOSUMDB; only modules a client explicitly opts
+	// out of (GOPRIVATE/GONOSUMDB) are served unverified.
 	goMod, err := extractGoMod(zipBytes, mod, ver)
 	if err != nil {
 		b.logger.Warn("goproxy cache: invalid upstream zip", "err", err, "module", mod, "version", ver)
