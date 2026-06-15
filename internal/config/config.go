@@ -649,6 +649,25 @@ func validate(cfg *Config) error {
 	if err := validateReplication(cfg); err != nil {
 		return err
 	}
+	if err := validateGC(cfg); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateGC(cfg *Config) error {
+	for i, g := range cfg.GC.Retention.PinnedGlobs {
+		if _, err := pathpkg.Match(g, ""); err != nil {
+			return fmt.Errorf("gc.retention.pinnedGlobs[%d]: invalid glob %q: %w", i, g, err)
+		}
+	}
+	for i, rr := range cfg.GC.Retention.PerRepo {
+		for j, g := range rr.PinnedGlobs {
+			if _, err := pathpkg.Match(g, ""); err != nil {
+				return fmt.Errorf("gc.retention.perRepo[%d].pinnedGlobs[%d]: invalid glob %q: %w", i, j, g, err)
+			}
+		}
+	}
 	return nil
 }
 
@@ -851,6 +870,11 @@ func validateReplication(cfg *Config) error {
 			return fmt.Errorf("replication.targets: duplicate target name %q", target.Name)
 		}
 		seen[target.Name] = true
+		for j, g := range target.RepoGlobs {
+			if _, err := pathpkg.Match(g, ""); err != nil {
+				return fmt.Errorf("replication.targets[%d].repoGlobs[%d]: invalid glob %q: %w", i, j, g, err)
+			}
+		}
 	}
 	return nil
 }
