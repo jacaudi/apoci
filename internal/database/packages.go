@@ -700,21 +700,26 @@ func (db *DB) DeletePackageVersionWithBlobs(ctx context.Context, packageID int64
 }
 
 func purgeUnreferencedBlobs(ctx context.Context, tx bun.Tx, candidates []string) ([]string, error) {
-	purged := make([]string, 0, len(candidates))
-	for _, d := range candidates {
-		var refs int
-		if err := tx.NewRaw(
-			"SELECT COUNT(*) FROM package_files WHERE blob_digest = ?", d,
-		).Scan(ctx, &refs); err != nil {
-			return nil, fmt.Errorf("counting remaining refs for %s: %w", d, err)
-		}
-		if refs > 0 {
-			continue
-		}
-		if _, err := tx.NewRaw("DELETE FROM blobs WHERE digest = ?", d).Exec(ctx); err != nil {
-			return nil, fmt.Errorf("deleting blob row %s: %w", d, err)
-		}
-		purged = append(purged, d)
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	// Resolve which candidates have no remaining references and delete them in
+	// two set-based statements rather than 2N round-trips, which would hold the
+	// write lock (and block all other writers under SQLite) for the duration.
+	var purged []string
+	if err := tx.NewRaw(
+		`SELECT b.digest FROM blobs b
+		 WHERE b.digest IN (?)
+		   AND NOT EXISTS (SELECT 1 FROM package_files pf WHERE pf.blob_digest = b.digest)`,
+		bun.List(candidates),
+	).Scan(ctx, &purged); err != nil {
+		return nil, fmt.Errorf("finding unreferenced blobs: %w", err)
+	}
+	if len(purged) == 0 {
+		return nil, nil
+	}
+	if _, err := tx.NewRaw("DELETE FROM blobs WHERE digest IN (?)", bun.List(purged)).Exec(ctx); err != nil {
+		return nil, fmt.Errorf("deleting unreferenced blobs: %w", err)
 	}
 	return purged, nil
 }
