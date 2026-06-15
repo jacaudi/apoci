@@ -3,6 +3,7 @@ package activitypub
 import (
 	"crypto"
 	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
@@ -229,9 +230,21 @@ func parsePublicKeyPEM(pemStr string) (crypto.PublicKey, error) {
 	if err != nil {
 		return nil, err
 	}
-	switch pub.(type) {
-	case *rsa.PublicKey, *ecdsa.PublicKey:
+	switch k := pub.(type) {
+	case *rsa.PublicKey:
+		// Reject weak RSA keys: a factorable modulus would let an attacker forge
+		// signatures verifiable by the actor's published key.
+		if k.N.BitLen() < 2048 {
+			return nil, fmt.Errorf("RSA key too small: %d bits (minimum 2048)", k.N.BitLen())
+		}
 		return pub, nil
+	case *ecdsa.PublicKey:
+		switch k.Curve {
+		case elliptic.P256(), elliptic.P384(), elliptic.P521():
+			return pub, nil
+		default:
+			return nil, fmt.Errorf("unsupported ECDSA curve %q", k.Curve.Params().Name)
+		}
 	default:
 		return nil, fmt.Errorf("unsupported key type: %T", pub)
 	}
