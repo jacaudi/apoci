@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -42,9 +43,24 @@ type BlobStream struct {
 	Body io.ReadCloser
 }
 
+// ErrBlobTooLarge is returned by a blob stream when the peer sends more than
+// the configured maximum, instead of silently truncating to the limit.
+var ErrBlobTooLarge = errors.New("peer blob exceeds maximum size")
+
 type streamLimitedReader struct {
-	io.Reader
+	reader io.Reader
 	closer io.Closer
+	limit  int64
+	read   int64
+}
+
+func (r *streamLimitedReader) Read(p []byte) (int, error) {
+	n, err := r.reader.Read(p)
+	r.read += int64(n)
+	if r.read > r.limit {
+		return n, ErrBlobTooLarge
+	}
+	return n, err
 }
 
 func (r *streamLimitedReader) Close() error {
@@ -75,8 +91,9 @@ func (f *Fetcher) FetchStream(ctx context.Context, sourceURL string) (*BlobStrea
 	}
 	return &BlobStream{
 		Body: &streamLimitedReader{
-			Reader: io.LimitReader(resp.Body, f.maxBlobSize+1),
+			reader: resp.Body,
 			closer: resp.Body,
+			limit:  f.maxBlobSize,
 		},
 	}, nil
 }
@@ -107,8 +124,9 @@ func (f *Fetcher) FetchBlobStream(ctx context.Context, peerEndpoint, repo, diges
 
 	return &BlobStream{
 		Body: &streamLimitedReader{
-			Reader: io.LimitReader(resp.Body, f.maxBlobSize+1),
+			reader: resp.Body,
 			closer: resp.Body,
+			limit:  f.maxBlobSize,
 		},
 	}, nil
 }
