@@ -39,6 +39,7 @@ type TargetStatus struct {
 	LastError  string     `json:"lastError,omitempty"`
 	Replicated int64      `json:"replicated"`
 	Failed     int64      `json:"failed"`
+	Dropped    int64      `json:"dropped"`
 }
 
 type targetState struct {
@@ -47,6 +48,7 @@ type targetState struct {
 	lastError  string
 	replicated int64
 	failed     int64
+	dropped    int64
 }
 
 // Config configures a replication Worker.
@@ -66,17 +68,24 @@ type Worker struct {
 	source   Source
 	timeout  time.Duration
 	maxQueue int
-	queue    *queue.SimpleQueue[job]
+	queues   []*queue.SimpleQueue[job]
 	logger   *slog.Logger
 	service  runners.Service
 }
 
+// defaultProcessTimeout bounds a single manifest replication when no
+// Replication.Timeout is configured, so a hung target cannot stall shutdown
+// or a worker indefinitely.
+const defaultProcessTimeout = 5 * time.Minute
+
 func NewWorker(cfg Config, logger *slog.Logger) *Worker {
 	clients := make([]*Client, len(cfg.Targets))
 	states := make([]*targetState, len(cfg.Targets))
+	queues := make([]*queue.SimpleQueue[job], len(cfg.Targets))
 	for i, t := range cfg.Targets {
 		clients[i] = NewClient(t, cfg.Timeout)
 		states[i] = &targetState{}
+		queues[i] = queue.NewSimpleQueue[job](cfg.QueueSize)
 	}
 	return &Worker{
 		targets:  cfg.Targets,
@@ -85,19 +94,25 @@ func NewWorker(cfg Config, logger *slog.Logger) *Worker {
 		source:   cfg.Source,
 		timeout:  cfg.Timeout,
 		maxQueue: cfg.QueueSize,
-		queue:    queue.NewSimpleQueue[job](cfg.QueueSize),
+		queues:   queues,
 		logger:   logger.With("component", "replication"),
 	}
 }
 
-// OnManifestPushed enqueues a replication job per matching target.
+// OnManifestPushed enqueues a replication job onto each matching target's own
+// queue. Per-target queues keep a slow or unreachable target from filling a
+// shared queue and starving healthy targets.
 func (w *Worker) OnManifestPushed(repo, tag, digest, mediaType string, _ *string) {
 	for i, t := range w.targets {
 		if !matchRepo(t, repo) {
 			continue
 		}
-		if !w.queue.TryPush(job{targetIdx: i, repo: repo, tag: tag, digest: digest, mediaType: mediaType}, w.maxQueue) {
+		if !w.queues[i].TryPush(job{targetIdx: i, repo: repo, tag: tag, digest: digest, mediaType: mediaType}, w.maxQueue) {
 			w.logger.Warn("replication queue full, dropping job", "target", t.Name, "repo", repo, "digest", digest)
+			st := w.states[i]
+			st.mu.Lock()
+			st.dropped++
+			st.mu.Unlock()
 		}
 	}
 }
@@ -114,11 +129,17 @@ func matchRepo(t Target, repo string) bool {
 	return false
 }
 
-func (w *Worker) Start(ctx context.Context) {
+func (w *Worker) Start(_ context.Context) {
 	w.service.GoRun(func(svcCtx context.Context) {
-		util.Must(w.logger, func() {
-			w.run(ctx, svcCtx)
-		})
+		var wg sync.WaitGroup
+		for i := range w.targets {
+			wg.Add(1)
+			go func(idx int) {
+				defer wg.Done()
+				util.Must(w.logger, func() { w.run(svcCtx, idx) })
+			}(i)
+		}
+		wg.Wait()
 	})
 }
 
@@ -126,13 +147,14 @@ func (w *Worker) Stop() {
 	w.service.Stop()
 }
 
-func (w *Worker) run(parentCtx, svcCtx context.Context) {
+func (w *Worker) run(svcCtx context.Context, idx int) {
+	q := w.queues[idx]
 	for {
-		j, ok := w.queue.PopCtx(svcCtx)
+		j, ok := q.PopCtx(svcCtx)
 		if !ok {
 			return
 		}
-		w.process(parentCtx, j)
+		w.process(svcCtx, j)
 	}
 }
 
@@ -140,11 +162,12 @@ func (w *Worker) process(ctx context.Context, j job) {
 	target := w.targets[j.targetIdx]
 	state := w.states[j.targetIdx]
 
-	if w.timeout > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, w.timeout)
-		defer cancel()
+	timeout := w.timeout
+	if timeout <= 0 {
+		timeout = defaultProcessTimeout
 	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 
 	err := w.replicate(ctx, j.targetIdx, j.repo, j.tag, j.digest, j.mediaType, map[string]bool{})
 
@@ -242,7 +265,7 @@ func (w *Worker) Status() []TargetStatus {
 	for i, t := range w.targets {
 		st := w.states[i]
 		st.mu.Lock()
-		ts := TargetStatus{Name: t.Name, LastError: st.lastError, Replicated: st.replicated, Failed: st.failed}
+		ts := TargetStatus{Name: t.Name, LastError: st.lastError, Replicated: st.replicated, Failed: st.failed, Dropped: st.dropped}
 		if st.lastRunNS > 0 {
 			last := time.Unix(0, st.lastRunNS)
 			ts.LastRun = &last
