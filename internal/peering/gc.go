@@ -594,6 +594,13 @@ func (gc *GarbageCollector) reconcileBlobStorageDrift(ctx context.Context) {
 			}
 			switch {
 			case row.StoredLocally && !exists:
+				// Re-stat before degrading: the first miss may be transient (a
+				// delete-then-reupload, an interrupted Put about to retry, or an
+				// S3 read-after-write window). Degrading on a transient miss would
+				// route reads to a peer that may not hold the blob.
+				if recheck, rerr := gc.blobs.Exists(ctx, row.Digest); rerr == nil && recheck {
+					continue
+				}
 				hasPeer, err := gc.db.HasPeerBlob(ctx, row.Digest)
 				if err != nil {
 					gc.logger.Warn("gc: drift reconcile: peer lookup failed", "digest", row.Digest, "error", err)
