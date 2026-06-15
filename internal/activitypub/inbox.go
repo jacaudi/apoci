@@ -28,8 +28,7 @@ type Notifier interface {
 }
 
 type InboxRepository interface {
-	GetActivity(ctx context.Context, activityID string) (*database.Activity, error)
-	PutActivity(ctx context.Context, activityID, activityType, actorURL string, activityJSON []byte) error
+	InsertActivityIfNew(ctx context.Context, activityID, activityType, actorURL string, activityJSON []byte) (bool, error)
 	AddFollowRequest(ctx context.Context, actorURL, publicKeyPEM, endpoint string, alias *string) error
 	AcceptFollowRequest(ctx context.Context, actorURL string) error
 	RejectFollowRequest(ctx context.Context, actorURL string) error
@@ -333,20 +332,19 @@ func (h *InboxHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Dedup: AP spec requires processing an activity at most once.
-	existing, err := h.db.GetActivity(r.Context(), activity.ID)
-	if err != nil {
-		h.logger.Error("inbox: failed to check activity dedup", "id", activity.ID, "error", err)
-		http.Error(w, "temporary error", http.StatusServiceUnavailable)
-		return
-	}
-	if existing != nil {
-		// Follow uses deterministic IDs (actor#follow-target), so a re-follow
-		// after removal reuses the same ID. Allow reprocessing when the
-		// relationship no longer exists.
-		if activity.Type == ActivityFollow && h.followGone(r.Context(), activity.Actor) {
-			h.logger.Info("inbox: re-processing Follow (previous relationship removed)", "from", activity.Actor)
-		} else {
+	// Record the dedup row before enqueue so duplicates and replays are rejected
+	// durably (across restarts and concurrent POSTs), not just via the cache.
+	// Follow uses deterministic IDs, so allow reprocessing once the relationship is gone.
+	if activity.Type == ActivityFollow && h.followGone(r.Context(), activity.Actor) {
+		h.logger.Info("inbox: re-processing Follow (previous relationship removed)", "from", activity.Actor)
+	} else {
+		inserted, err := h.db.InsertActivityIfNew(r.Context(), activity.ID, activity.Type, activity.Actor, body)
+		if err != nil {
+			h.logger.Error("inbox: failed to record activity for dedup", "id", activity.ID, "error", err)
+			http.Error(w, "temporary error", http.StatusServiceUnavailable)
+			return
+		}
+		if !inserted {
 			metrics.InboxDedupHits.Add(1)
 			h.logger.Debug("inbox: duplicate activity, skipping", "id", activity.ID)
 			w.WriteHeader(http.StatusAccepted)
@@ -372,8 +370,8 @@ func (h *InboxHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// No async worker configured, process synchronously.
-	h.storeActivity(r.Context(), activity.ID, activity.Type, activity.Actor, body)
+	// No async worker configured, process synchronously. The dedup row was
+	// already recorded above, so no further store is needed.
 	if err := h.dispatch(r.Context(), task); err != nil {
 		h.logger.Warn("inbox: processing failed", "type", activity.Type, "id", activity.ID, "error", err)
 	}
@@ -524,16 +522,6 @@ func extractObjectType(obj any) (string, bool) {
 // matchesDomain reports whether host equals domain or is a subdomain of it.
 func matchesDomain(host, domain string) bool {
 	return host == domain || strings.HasSuffix(host, "."+domain)
-}
-
-func (h *InboxHandler) storeActivity(ctx context.Context, activityID, activityType, actorURL string, body []byte) {
-	if err := h.db.PutActivity(ctx, activityID, activityType, actorURL, body); err != nil {
-		h.logger.Warn("inbox: failed to store activity for dedup",
-			"activity_id", activityID,
-			"type", activityType,
-			"error", err,
-		)
-	}
 }
 
 func (h *InboxHandler) isFollowed(ctx context.Context, actorURL string) bool {

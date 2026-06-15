@@ -31,7 +31,6 @@ func inboxWorkerCount() int {
 // InboxDispatcher processes incoming ActivityPub tasks.
 type InboxDispatcher interface {
 	dispatch(ctx context.Context, task InboxTask) error
-	storeActivity(ctx context.Context, activityID, activityType, actorURL string, activityJSON []byte)
 }
 
 // InboxWorker processes validated ActivityPub activities asynchronously.
@@ -124,7 +123,5 @@ func (w *InboxWorker) process(task InboxTask) {
 			"actor", task.Activity.Actor,
 			"error", dispatchErr,
 		)
-		return
 	}
-	w.handler.storeActivity(ctx, task.Activity.ID, task.Activity.Type, task.Activity.Actor, task.RawBody)
 }

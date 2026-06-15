@@ -8,15 +8,28 @@ import (
 )
 
 func (db *DB) PutActivity(ctx context.Context, activityID, activityType, actorURL string, objectJSON []byte) error {
-	_, err := db.bun.NewRaw(
+	_, err := db.InsertActivityIfNew(ctx, activityID, activityType, actorURL, objectJSON)
+	return err
+}
+
+// InsertActivityIfNew stores the activity for dedup and reports whether it was
+// newly inserted. A false result means the activity already existed (a
+// duplicate or replay), letting callers reject it durably — across restarts and
+// concurrent requests — via the activity_id uniqueness constraint.
+func (db *DB) InsertActivityIfNew(ctx context.Context, activityID, activityType, actorURL string, objectJSON []byte) (bool, error) {
+	res, err := db.bun.NewRaw(
 		`INSERT INTO activities (activity_id, type, actor_url, object_json)
 		 VALUES (?, ?, ?, ?)
 		 ON CONFLICT(activity_id) DO NOTHING`,
 		activityID, activityType, actorURL, objectJSON).Exec(ctx)
 	if err != nil {
-		return fmt.Errorf("storing activity: %w", err)
+		return false, fmt.Errorf("storing activity: %w", err)
 	}
-	return nil
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("checking activity insert: %w", err)
+	}
+	return n > 0, nil
 }
 
 func (db *DB) GetActivity(ctx context.Context, activityID string) (*Activity, error) {
