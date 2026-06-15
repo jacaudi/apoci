@@ -500,6 +500,10 @@ func (db *DB) AddOutgoingFollow(ctx context.Context, actorURL string) error {
 			we_follow_accept_at = CASE
 				WHEN actors.we_follow_status = 'accepted' THEN actors.we_follow_accept_at
 				ELSE NULL
+			END,
+			created_at = CASE
+				WHEN actors.we_follow_status = 'accepted' THEN actors.created_at
+				ELSE CURRENT_TIMESTAMP
 			END`,
 		actorURL).Exec(ctx)
 	if err != nil {
@@ -527,8 +531,11 @@ func (db *DB) AcceptOutgoingFollow(ctx context.Context, actorURL string) error {
 
 // RejectOutgoingFollow marks an outgoing follow as rejected.
 func (db *DB) RejectOutgoingFollow(ctx context.Context, actorURL string) error {
+	// Reset created_at so the stale-cleanup cutoff measures from the rejection,
+	// not the original actor row creation.
 	_, err := db.bun.NewUpdate().Model((*Actor)(nil)).
 		Set("we_follow_status = ?", FollowStatusRejected).
+		Set("created_at = CURRENT_TIMESTAMP").
 		Where("actor_url = ? AND we_follow_them = TRUE AND we_follow_status = ?", actorURL, FollowStatusPending).
 		Exec(ctx)
 	if err != nil {
