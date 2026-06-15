@@ -106,12 +106,11 @@ func TestMigrateV6FromV5Data(t *testing.T) {
 
 	require.NoError(t, db.migrateV6(ctx))
 
-	require.False(t, db.tableExists(ctx, "repositories"))
-	require.False(t, db.tableExists(ctx, "manifests"))
-	require.False(t, db.tableExists(ctx, "tags"))
-	require.False(t, db.tableExists(ctx, "manifest_layers"))
-	require.False(t, db.tableExists(ctx, "deleted_manifests"))
-	require.False(t, db.tableExists(ctx, "repository_owners"))
+	for _, table := range []string{"repositories", "manifests", "tags", "manifest_layers", "deleted_manifests", "repository_owners"} {
+		exists, err := db.tableExists(ctx, table)
+		require.NoError(t, err)
+		require.False(t, exists, "table %q should have been dropped", table)
+	}
 
 	got, err := db.GetRepository(ctx, "foo.com/legacy")
 	require.NoError(t, err)

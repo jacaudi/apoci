@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -113,24 +114,16 @@ func (db *DB) Close() error {
 	return db.bun.Close()
 }
 
-func (db *DB) tableExists(ctx context.Context, tableName string) bool {
+func (db *DB) tableExists(ctx context.Context, tableName string) (bool, error) {
 	var n int
+	query := "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?"
 	if _, isPostgres := db.bun.Dialect().(*pgdialect.Dialect); isPostgres {
-		if err := db.bun.NewRaw(
-			"SELECT COUNT(*) FROM information_schema.tables WHERE table_name = ?",
-			tableName,
-		).Scan(ctx, &n); err != nil {
-			return false
-		}
-		return n > 0
+		query = "SELECT COUNT(*) FROM information_schema.tables WHERE table_name = ?"
 	}
-	if err := db.bun.NewRaw(
-		"SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?",
-		tableName,
-	).Scan(ctx, &n); err != nil {
-		return false
+	if err := db.bun.NewRaw(query, tableName).Scan(ctx, &n); err != nil {
+		return false, fmt.Errorf("checking for table %q: %w", tableName, err)
 	}
-	return n > 0
+	return n > 0, nil
 }
 
 func (db *DB) migrate(ctx context.Context) error {
@@ -142,7 +135,11 @@ func (db *DB) migrate(ctx context.Context) error {
 	version := 0
 	row := db.bun.QueryRowContext(ctx, `SELECT version FROM schema_version LIMIT 1`)
 	if err := row.Scan(&version); err != nil {
-		// No row yet.
+		// Only an empty table means "not initialised". Any other error must abort,
+		// else we'd treat it as version 0 and re-run every migration (incl. DROPs).
+		if !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("reading schema version: %w", err)
+		}
 		if _, err := db.bun.ExecContext(ctx, `INSERT INTO schema_version (version) VALUES (0)`); err != nil {
 			return fmt.Errorf("initializing schema version: %w", err)
 		}
@@ -413,7 +410,11 @@ func isMissingTableErr(err error) bool {
 }
 
 func (db *DB) migrateV4(ctx context.Context) error {
-	if !db.tableExists(ctx, "repositories") {
+	exists, err := db.tableExists(ctx, "repositories")
+	if err != nil {
+		return err
+	}
+	if !exists {
 		return nil
 	}
 	return db.addColumnIfMissing(ctx, "repositories", "private", "BOOLEAN NOT NULL DEFAULT FALSE")
@@ -559,7 +560,11 @@ func (db *DB) migrateV3(ctx context.Context) error {
 func (db *DB) migrateV2(ctx context.Context) error {
 	tables := []string{"follows", "follow_requests"}
 	for _, table := range tables {
-		if !db.tableExists(ctx, table) {
+		exists, err := db.tableExists(ctx, table)
+		if err != nil {
+			return err
+		}
+		if !exists {
 			continue
 		}
 		if err := db.addColumnIfMissing(ctx, table, "alias", "TEXT"); err != nil {
@@ -593,7 +598,11 @@ func (db *DB) migrateV5(ctx context.Context) error {
 
 	// Migrate data from peers (discovery/health info) - only if table exists
 	// This is the base layer with health and replication info
-	if db.tableExists(ctx, "peers") {
+	peersExist, err := db.tableExists(ctx, "peers")
+	if err != nil {
+		return err
+	}
+	if peersExist {
 		if _, err := db.bun.ExecContext(ctx, `
 			INSERT INTO actors (actor_url, name, endpoint, is_healthy, replication_policy, last_seen_at, created_at)
 			SELECT actor_url, name, endpoint, is_healthy, replication_policy, last_seen_at, created_at
@@ -611,7 +620,11 @@ func (db *DB) migrateV5(ctx context.Context) error {
 
 	// Migrate data from follows (inbound: they follow us) - only if table exists
 	// Merges with existing actor data, preserving peer info
-	if db.tableExists(ctx, "follows") {
+	followsExist, err := db.tableExists(ctx, "follows")
+	if err != nil {
+		return err
+	}
+	if followsExist {
 		if _, err := db.bun.ExecContext(ctx, `
 			INSERT INTO actors (actor_url, endpoint, public_key_pem, alias, they_follow_us, they_follow_us_at)
 			SELECT actor_url, endpoint, public_key_pem, alias, TRUE, approved_at
@@ -629,7 +642,11 @@ func (db *DB) migrateV5(ctx context.Context) error {
 
 	// Migrate data from outgoing_follows (outbound: we follow them) - only if table exists
 	// Merges with existing actor data, preserving peer and follow info
-	if db.tableExists(ctx, "outgoing_follows") {
+	outgoingExist, err := db.tableExists(ctx, "outgoing_follows")
+	if err != nil {
+		return err
+	}
+	if outgoingExist {
 		if _, err := db.bun.ExecContext(ctx, `
 			INSERT INTO actors (actor_url, endpoint, we_follow_them, we_follow_status, we_follow_accept_at)
 			SELECT actor_url, '', TRUE, status, accepted_at
