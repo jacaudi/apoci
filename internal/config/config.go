@@ -424,6 +424,21 @@ func applyScannerDefaults(cfg *Config) {
 	}
 }
 
+// expandHome expands a leading "~" or "~/" to the user's home directory.
+func expandHome(path string) (string, error) {
+	if path != "~" && !strings.HasPrefix(path, "~/") {
+		return path, nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("determining home directory: %w", err)
+	}
+	if path == "~" {
+		return home, nil
+	}
+	return filepath.Join(home, path[2:]), nil
+}
+
 func applyServerDefaults(cfg *Config) error {
 	if cfg.Endpoint != "" {
 		cfg.Endpoint = strings.TrimRight(cfg.Endpoint, "/")
@@ -439,6 +454,11 @@ func applyServerDefaults(cfg *Config) error {
 	if cfg.Listen == "" {
 		cfg.Listen = ":5000"
 	}
+	dataDir, err := expandHome(cfg.DataDir)
+	if err != nil {
+		return err
+	}
+	cfg.DataDir = dataDir
 	if cfg.DataDir == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
@@ -446,6 +466,11 @@ func applyServerDefaults(cfg *Config) error {
 		}
 		cfg.DataDir = filepath.Join(home, ".apoci")
 	}
+	keyPath, err := expandHome(cfg.KeyPath)
+	if err != nil {
+		return err
+	}
+	cfg.KeyPath = keyPath
 	if cfg.KeyPath == "" {
 		cfg.KeyPath = filepath.Join(cfg.DataDir, "ap.key")
 	}
