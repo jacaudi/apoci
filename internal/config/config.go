@@ -426,6 +426,7 @@ func applyScannerDefaults(cfg *Config) {
 
 func applyServerDefaults(cfg *Config) error {
 	if cfg.Endpoint != "" {
+		cfg.Endpoint = strings.TrimRight(cfg.Endpoint, "/")
 		u, err := url.Parse(cfg.Endpoint)
 		if err != nil {
 			return fmt.Errorf("invalid endpoint URL: %w", err)
@@ -678,9 +679,17 @@ func validateEndpoint(cfg *Config) error {
 	if cfg.Domain == "" {
 		return fmt.Errorf("could not derive domain from endpoint")
 	}
-	endpointScheme := strings.ToLower(strings.SplitN(cfg.Endpoint, "://", 2)[0])
-	if endpointScheme != "https" && endpointScheme != "http" {
-		return fmt.Errorf("endpoint scheme must be 'https' or 'http', got %q", endpointScheme)
+	u, err := url.Parse(cfg.Endpoint)
+	if err != nil {
+		return fmt.Errorf("invalid endpoint URL: %w", err)
+	}
+	if scheme := strings.ToLower(u.Scheme); scheme != "https" && scheme != "http" {
+		return fmt.Errorf("endpoint scheme must be 'https' or 'http', got %q", scheme)
+	}
+	// The endpoint is concatenated raw to build actor URLs, so a path/query/
+	// fragment would produce malformed identities.
+	if u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("endpoint must be scheme://host[:port] only, without a path, query, or fragment: %q", cfg.Endpoint)
 	}
 	return nil
 }
