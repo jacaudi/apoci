@@ -437,14 +437,21 @@ func (s *Server) Start(ctx context.Context) error {
 	go s.fedSvc.RefreshActors(ctx)         //nolint:gosec // initial refresh on startup before first periodic run
 	go s.runFederationWithdrawalSweep(ctx) //nolint:gosec
 
+	var metricsServer *http.Server
 	if s.cfg.Metrics.Enabled {
 		metricsMux := http.NewServeMux()
 		metricsMux.Handle("/metrics", promhttp.Handler())
 		var metricsHandler http.Handler = metricsMux
 		if s.cfg.Metrics.Token != "" {
 			metricsHandler = bearerAuthMiddleware(s.cfg.Metrics.Token)(metricsMux)
+		} else if !isLoopbackListenAddr(s.cfg.Metrics.Listen) {
+			s.logger.Warn("metrics endpoint enabled without a token on a non-loopback address; operational metrics are exposed to anyone who can reach it",
+				"address", s.cfg.Metrics.Listen)
 		}
-		metricsServer := &http.Server{
+		// Apply the same defensive middleware the main mux uses.
+		metricsHandler = securityHeadersMiddleware(metricsHandler)
+		metricsHandler = recoveryMiddleware(s.logger)(metricsHandler)
+		metricsServer = &http.Server{
 			Addr:              s.cfg.Metrics.Listen,
 			Handler:           metricsHandler,
 			ReadTimeout:       5 * time.Second,
@@ -457,12 +464,6 @@ func (s *Server) Start(ctx context.Context) error {
 			if err := metricsServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 				s.logger.Error("metrics server error", "error", err)
 			}
-		}()
-		go func() { //nolint:gosec // intentional background goroutine for graceful shutdown
-			<-ctx.Done()
-			shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_ = metricsServer.Shutdown(shutdownCtx)
 		}()
 	}
 
@@ -494,6 +495,9 @@ func (s *Server) Start(ctx context.Context) error {
 		defer cancel()
 		s.logger.Info("shutting down HTTP server")
 		_ = s.httpServer.Shutdown(shutdownCtx)
+		if metricsServer != nil {
+			_ = metricsServer.Shutdown(shutdownCtx)
+		}
 
 		s.workers.Stop()
 	}()
@@ -506,6 +510,20 @@ func (s *Server) Start(ctx context.Context) error {
 	}
 	<-shutdownDone
 	return serveErr
+}
+
+// isLoopbackListenAddr reports whether a "host:port" listen address binds only
+// to loopback. An empty or wildcard host ("", "0.0.0.0", "::") is not loopback.
+func isLoopbackListenAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // Stamps federation_withdrawn_at so subsequent restarts don't re-emit.
