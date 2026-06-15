@@ -72,7 +72,11 @@ func NewGoFetcher(proxies []string, fetchTimeout time.Duration, maxModuleSize in
 func (f *GoFetcher) Enabled() bool { return len(f.proxies) > 0 }
 
 func (f *GoFetcher) FetchInfo(ctx context.Context, mod, ver string) ([]byte, error) {
-	return f.fetchBytes(ctx, mod, "@v/"+ver+".info")
+	escVer, err := module.EscapeVersion(ver)
+	if err != nil {
+		return nil, fmt.Errorf("escaping version %q: %w", ver, err)
+	}
+	return f.fetchBytes(ctx, mod, "@v/"+escVer+".info")
 }
 
 func (f *GoFetcher) FetchList(ctx context.Context, mod string) ([]byte, error) {
@@ -85,7 +89,11 @@ func (f *GoFetcher) FetchLatest(ctx context.Context, mod string) ([]byte, error)
 
 // FetchZip returns the module zip bytes, bounded by maxModule.
 func (f *GoFetcher) FetchZip(ctx context.Context, mod, ver string) ([]byte, error) {
-	return f.fetchBytes(ctx, mod, "@v/"+ver+".zip")
+	escVer, err := module.EscapeVersion(ver)
+	if err != nil {
+		return nil, fmt.Errorf("escaping version %q: %w", ver, err)
+	}
+	return f.fetchBytes(ctx, mod, "@v/"+escVer+".zip")
 }
 
 // fetchBytes GETs an escaped module path + suffix from each proxy in turn,
