@@ -171,12 +171,13 @@ func (r *BlobReplicator) recoverPanic(digest string) {
 	}
 }
 
-// Wait cancels in-flight replications and blocks until they return. Cancelling
-// first bounds shutdown: without it, each goroutine's 5-minute detached timeout
-// would have to elapse before Wait could return.
+// Wait blocks until all in-flight replications complete, then releases the
+// shutdown context. The semaphore caps the in-flight set and excess work is
+// dropped rather than queued, so this drains in bounded time (the per-blob
+// timeout), and the overall shutdown deadline is enforced by Workers.Stop.
 func (r *BlobReplicator) Wait() {
-	r.cancel()
 	r.wg.Wait()
+	r.cancel()
 }
 
 func (r *BlobReplicator) replicateBlob(ctx context.Context, peerEndpoint, digest string) {
