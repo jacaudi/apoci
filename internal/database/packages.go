@@ -16,6 +16,14 @@ var ErrPackageOwnerMismatch = errors.New("package is owned by another actor")
 
 const ociPackageType = "oci"
 
+// isPostgresDB reports whether the given bun IDB speaks the Postgres dialect.
+// Used to choose between RETURNING (Postgres) and a read-back (SQLite) for
+// generated-column values like auto-increment ids and created_at.
+func isPostgresDB(idb bun.IDB) bool {
+	_, ok := idb.Dialect().(*pgdialect.Dialect)
+	return ok
+}
+
 func (db *DB) GetPackage(ctx context.Context, pkgType, name string) (*Package, error) {
 	p := &Package{}
 	err := db.bun.NewSelect().Model(p).
@@ -201,8 +209,7 @@ func (db *DB) InsertPackageVersionIfNew(ctx context.Context, v *PackageVersion) 
 }
 
 func putPackageVersion(ctx context.Context, idb bun.IDB, v *PackageVersion) error {
-	_, err := idb.NewRaw(
-		`INSERT INTO package_versions (package_id, version, metadata, media_type, size_bytes, source_actor, subject_digest, artifact_type)
+	upsert := `INSERT INTO package_versions (package_id, version, metadata, media_type, size_bytes, source_actor, subject_digest, artifact_type)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT(package_id, version) DO UPDATE SET
 		   metadata = excluded.metadata,
@@ -210,11 +217,22 @@ func putPackageVersion(ctx context.Context, idb bun.IDB, v *PackageVersion) erro
 		   size_bytes = excluded.size_bytes,
 		   source_actor = excluded.source_actor,
 		   subject_digest = excluded.subject_digest,
-		   artifact_type = excluded.artifact_type`,
+		   artifact_type = excluded.artifact_type`
+	if isPostgresDB(idb) {
+		// Postgres can return the generated id + created_at in the same round trip,
+		// so callers see the right ID immediately without a follow-up SELECT.
+		if err := idb.NewRaw(upsert+` RETURNING id, created_at`,
+			v.PackageID, v.Version, v.Metadata, v.MediaType, v.SizeBytes,
+			v.SourceActor, v.SubjectDigest, v.ArtifactType,
+		).Scan(ctx, &v.ID, &v.CreatedAt); err != nil {
+			return fmt.Errorf("upserting package version: %w", err)
+		}
+		return nil
+	}
+	if _, err := idb.NewRaw(upsert,
 		v.PackageID, v.Version, v.Metadata, v.MediaType, v.SizeBytes,
 		v.SourceActor, v.SubjectDigest, v.ArtifactType,
-	).Exec(ctx)
-	if err != nil {
+	).Exec(ctx); err != nil {
 		return fmt.Errorf("putting package version: %w", err)
 	}
 	got, err := getPackageVersion(ctx, idb, v.PackageID, v.Version)
