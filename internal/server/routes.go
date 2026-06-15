@@ -38,6 +38,12 @@ func (s *Server) routes() http.Handler {
 			_, _ = w.Write([]byte(`{}`))
 			return
 		}
+		// Manifest PUTs are buffered whole into memory by the OCI handler, so
+		// cap the body before it is read. Blob uploads stream and are left
+		// uncapped here (they are bounded elsewhere by MaxBlobSize).
+		if r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/manifests/") {
+			r.Body = http.MaxBytesReader(w, r.Body, s.cfg.Limits.MaxManifestSize)
+		}
 		registryPushRateLimitMiddleware(s.registryPushLimiter)(
 			registryAuthMiddleware(s.cfg.RegistryToken, s.cfg.Endpoint, s.isPrivateRead)(s.ociHandler),
 		).ServeHTTP(w, r)
