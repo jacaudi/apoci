@@ -196,6 +196,11 @@ func (rl *ipRateLimiter) allow(ip string) bool {
 	if rl.isTrusted(ip) {
 		return true
 	}
+	// Get first so the common (cache-hit) path doesn't allocate a throwaway
+	// limiter on every request; only construct one on an actual miss.
+	if item := rl.cache.Get(ip); item != nil {
+		return item.Value().Allow()
+	}
 	item, _ := rl.cache.GetOrSet(ip, rate.NewLimiter(rl.rate, rl.burst))
 	return item.Value().Allow()
 }
@@ -267,7 +272,12 @@ func securityHeadersMiddleware(next http.Handler) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		// Only assert HSTS when the request actually arrived over TLS. Sending it
+		// on plain HTTP is a foot-gun (a 1-year includeSubDomains pin can break
+		// sibling services on a shared parent domain).
+		if r.TLS != nil {
+			w.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
 
 		// UI routes need a more permissive CSP to load styles and scripts
 		if r.URL.Path == "/" || strings.HasPrefix(r.URL.Path, "/ui/") {
