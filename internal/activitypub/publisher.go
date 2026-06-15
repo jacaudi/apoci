@@ -41,7 +41,7 @@ const followerBatchSize = 100
 type PublisherRepository interface {
 	PutActivity(ctx context.Context, activityID, activityType, actorURL string, activityJSON []byte) error
 	ListFollowsBatch(ctx context.Context, afterID int64, limit int) ([]database.Actor, error)
-	EnqueueDelivery(ctx context.Context, activityID, inboxURL string, activityJSON []byte) error
+	EnqueueDeliveryInserted(ctx context.Context, activityID, inboxURL string, activityJSON []byte) (bool, error)
 }
 
 type APPublisher struct {
@@ -314,16 +314,22 @@ func (p *APPublisher) enqueueToFollowers(ctx context.Context, activityID string,
 	}
 
 	p.logger.Debug("publisher: resolved inboxes", "activityID", activityID, "count", len(inboxes))
+	queuedNew := false
 	for inbox := range inboxes {
-		if err := p.db.EnqueueDelivery(ctx, activityID, inbox, activityJSON); err != nil {
+		inserted, err := p.db.EnqueueDeliveryInserted(ctx, activityID, inbox, activityJSON)
+		if err != nil {
 			p.logger.Error("failed to enqueue delivery", "inbox", inbox, "error", err)
-		} else {
+			continue
+		}
+		if inserted {
+			queuedNew = true
 			metrics.DeliveryEnqueued.Add(1)
 			p.logger.Debug("publisher: enqueued delivery", "activityID", activityID, "inbox", inbox)
 		}
 	}
 
-	if len(inboxes) > 0 && p.onEnqueue != nil {
+	// Only wake the delivery worker when something new was actually queued.
+	if queuedNew && p.onEnqueue != nil {
 		p.onEnqueue()
 	}
 

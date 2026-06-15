@@ -8,15 +8,27 @@ import (
 
 // EnqueueDelivery adds an activity delivery to the persistent queue.
 func (db *DB) EnqueueDelivery(ctx context.Context, activityID, inboxURL string, activityJSON []byte) error {
-	_, err := db.bun.NewRaw(
+	_, err := db.EnqueueDeliveryInserted(ctx, activityID, inboxURL, activityJSON)
+	return err
+}
+
+// EnqueueDeliveryInserted enqueues a delivery and reports whether a new row was
+// actually inserted (false means it was already queued — a no-op), so callers
+// don't count idempotent re-enqueues in metrics or trigger spurious wakeups.
+func (db *DB) EnqueueDeliveryInserted(ctx context.Context, activityID, inboxURL string, activityJSON []byte) (bool, error) {
+	res, err := db.bun.NewRaw(
 		`INSERT INTO delivery_queue (activity_id, inbox_url, activity_json)
 		 VALUES (?, ?, ?)
 		 ON CONFLICT (activity_id, inbox_url) DO NOTHING`,
 		activityID, inboxURL, activityJSON).Exec(ctx)
 	if err != nil {
-		return fmt.Errorf("enqueuing delivery: %w", err)
+		return false, fmt.Errorf("enqueuing delivery: %w", err)
 	}
-	return nil
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("checking delivery insert: %w", err)
+	}
+	return n > 0, nil
 }
 
 // PendingDeliveries returns deliveries ready to be attempted, up to limit.
