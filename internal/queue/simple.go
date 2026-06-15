@@ -60,6 +60,14 @@ func (q *SimpleQueue[T]) PopCtx(ctx context.Context) (T, bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
+	// Fast path: an item is already available, so skip the watcher
+	// goroutine/channel allocation entirely (the common case under load).
+	if len(q.items) > 0 {
+		item := q.items[0]
+		q.items = q.items[1:]
+		return item, true
+	}
+
 	done := make(chan struct{})
 	go func() {
 		select {
