@@ -439,6 +439,14 @@ func (h *InboxHandler) doFetchActorKey(ctx context.Context, actorURL string) (st
 		h.fetchFailures.Set(actorURL, struct{}{}, ttlcache.DefaultTTL)
 		return "", err
 	}
+	// When the key declares an owner it must match the actor; a missing owner is
+	// allowed since it's conventional, not mandated.
+	if owner := actor.PublicKey.Owner; owner != "" {
+		norm, err := normaliseActorURL(owner)
+		if err != nil || norm != actorURL {
+			return "", fmt.Errorf("actor %s public key owner %q does not match", actorURL, owner)
+		}
+	}
 	return actor.PublicKey.PublicKeyPEM, nil
 }
 
