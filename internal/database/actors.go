@@ -73,7 +73,10 @@ func (db *DB) DeleteActor(ctx context.Context, actorURL string) error {
 // https://domain, https://domain/*, and https://domain:* (with port).
 func endpointDomainConds(domain string) (exact, withPath, withPort string) {
 	base := "https://" + domain
-	return base, base + "/%", base + ":%"
+	// The trailing "/%" and ":%" are wildcards; the domain itself is escaped so a
+	// literal '_'/'%' in a hostname matches literally (use with ESCAPE '\').
+	escaped := "https://" + escapeLike(domain)
+	return base, escaped + "/%", escaped + ":%"
 }
 
 // FindActorByInput looks up an actor by: exact actor_url, alias, name, or endpoint domain.
@@ -111,7 +114,7 @@ func (db *DB) FindActorByInput(ctx context.Context, input string) (*Actor, error
 	a = &Actor{}
 	exact, withPath, withPort := endpointDomainConds(input)
 	if err := db.bun.NewSelect().Model(a).
-		Where("endpoint = ? OR endpoint LIKE ? OR endpoint LIKE ?", exact, withPath, withPort).
+		Where(`endpoint = ? OR endpoint LIKE ? ESCAPE '\' OR endpoint LIKE ? ESCAPE '\'`, exact, withPath, withPort).
 		Limit(1).Scan(ctx); err == nil {
 		db.logger.Debug("FindActorByInput matched by endpoint", "actorURL", a.ActorURL, "endpoint", a.Endpoint)
 		return a, nil
@@ -203,7 +206,7 @@ func (db *DB) FindFollowRequestByInput(ctx context.Context, input string) (*Foll
 	fr = &FollowRequest{}
 	exact, withPath, withPort := endpointDomainConds(input)
 	if err := db.bun.NewSelect().Model(fr).
-		Where("endpoint = ? OR endpoint LIKE ? OR endpoint LIKE ?", exact, withPath, withPort).
+		Where(`endpoint = ? OR endpoint LIKE ? ESCAPE '\' OR endpoint LIKE ? ESCAPE '\'`, exact, withPath, withPort).
 		Limit(1).Scan(ctx); err == nil {
 		return fr, nil
 	} else if errors.Is(err, sql.ErrNoRows) {
@@ -674,8 +677,8 @@ func (db *DB) SetPeerHealthByDomain(ctx context.Context, domain string, healthy 
 	_, err := db.bun.NewRaw(
 		`UPDATE actors SET is_healthy = ?
 		 WHERE endpoint = ?
-		    OR endpoint LIKE ?
-		    OR endpoint LIKE ?`,
+		    OR endpoint LIKE ? ESCAPE '\'
+		    OR endpoint LIKE ? ESCAPE '\'`,
 		healthy, exact, withPath, withPort).Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("setting actor health by domain: %w", err)

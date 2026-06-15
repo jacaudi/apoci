@@ -1004,11 +1004,11 @@ func (db *DB) queryRepoStats(ctx context.Context, query string, page, pageSize i
 		countQuery := `SELECT COUNT(*) FROM packages p WHERE p.type = ? AND p.private = false`
 		args := []any{ociPackageType}
 		if query != "" {
-			likePattern := "%" + query + "%"
+			likePattern := "%" + escapeLike(query) + "%"
 			if isPostgres {
-				countQuery += " AND p.name ILIKE ?"
+				countQuery += ` AND p.name ILIKE ? ESCAPE '\'`
 			} else {
-				countQuery += " AND p.name LIKE ? COLLATE NOCASE"
+				countQuery += ` AND p.name LIKE ? ESCAPE '\' COLLATE NOCASE`
 			}
 			args = append(args, likePattern)
 		}
@@ -1043,11 +1043,11 @@ func (db *DB) queryRepoStats(ctx context.Context, query string, page, pageSize i
 
 	args := []any{ociPackageType}
 	if query != "" {
-		likePattern := "%" + query + "%"
+		likePattern := "%" + escapeLike(query) + "%"
 		if isPostgres {
-			baseQuery += " AND p.name ILIKE ?"
+			baseQuery += ` AND p.name ILIKE ? ESCAPE '\'`
 		} else {
-			baseQuery += " AND p.name LIKE ? COLLATE NOCASE"
+			baseQuery += ` AND p.name LIKE ? ESCAPE '\' COLLATE NOCASE`
 		}
 		args = append(args, likePattern)
 	}

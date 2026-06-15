@@ -119,6 +119,12 @@ func (db *DB) Close() error {
 	return db.bun.Close()
 }
 
+// escapeLike escapes LIKE wildcard metacharacters so a value matches literally.
+// Use with an explicit ESCAPE '\' clause.
+func escapeLike(s string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
+}
+
 func (db *DB) tableExists(ctx context.Context, tableName string) (bool, error) {
 	var n int
 	query := "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?"
