@@ -22,6 +22,9 @@ type diskBlobWriter struct {
 	maxSize int64
 	// commit persists the staged content (read from the rewound temp file).
 	commit func(dig ociregistry.Digest, data io.Reader) (ociregistry.Descriptor, error)
+	// onDone runs once when the upload reaches a terminal state (committed or
+	// canceled), used to drop registry bookkeeping for any outcome.
+	onDone func()
 
 	mu   sync.Mutex
 	file *os.File
@@ -114,13 +117,19 @@ func (w *diskBlobWriter) Cancel() error {
 
 func (w *diskBlobWriter) cleanup() {
 	w.mu.Lock()
-	defer w.mu.Unlock()
 	if w.file == nil {
+		w.mu.Unlock()
 		return
 	}
 	_ = w.file.Close()
 	_ = os.Remove(w.path)
 	w.file = nil
+	w.mu.Unlock()
+	// Run onDone outside w.mu: it takes the registry lock, and Commit
+	// deliberately avoids nesting w.mu inside that lock.
+	if w.onDone != nil {
+		w.onDone()
+	}
 }
 
 // newDiskBlobWriter creates a staging file in dir. A random ID is generated when uuid is empty.

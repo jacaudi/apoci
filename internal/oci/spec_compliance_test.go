@@ -143,6 +143,59 @@ func TestSpecChunkedBlobUploadDigestMismatch(t *testing.T) {
 	require.Equal(t, http.StatusBadRequest, resp.StatusCode, "digest mismatch should be a 400")
 }
 
+// TestChunkedUploadNoLeakOnTerminalState verifies the in-memory upload map does
+// not retain entries after a digest-mismatch commit or a cancel.
+func TestChunkedUploadNoLeakOnTerminalState(t *testing.T) {
+	reg, srv := testRegistry(t)
+	repo := "test.example.com/test/leak"
+
+	uploadCount := func() int {
+		reg.uploadsMu.Lock()
+		defer reg.uploadsMu.Unlock()
+		return len(reg.uploads)
+	}
+
+	startAndPatch := func() string {
+		req, _ := http.NewRequest("POST", srv.URL+"/v2/"+repo+"/blobs/uploads/", nil)
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		_ = resp.Body.Close()
+		url := srv.URL + resp.Header.Get("Location")
+
+		req, _ = http.NewRequest("PATCH", url, strings.NewReader("staged bytes"))
+		req.Header.Set("Content-Type", "application/octet-stream")
+		resp, err = http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		_ = resp.Body.Close()
+		return srv.URL + resp.Header.Get("Location")
+	}
+
+	// Digest mismatch must release the upload entry.
+	url := startAndPatch()
+	wrong := digest.FromBytes([]byte("different content"))
+	req, _ := http.NewRequest("PUT", url+"?digest="+wrong.String(), nil)
+	req.ContentLength = 0
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	require.Equal(t, 0, uploadCount(), "digest-mismatch upload must not leak an entry")
+
+	// Cancel must release the upload entry too (reached via the POST
+	// session-persist rollback path).
+	startAndPatch()
+	reg.uploadsMu.Lock()
+	var anyWriter *diskBlobWriter
+	for _, w := range reg.uploads {
+		anyWriter = w
+		break
+	}
+	reg.uploadsMu.Unlock()
+	require.NotNil(t, anyWriter)
+	require.NoError(t, anyWriter.Cancel())
+	require.Equal(t, 0, uploadCount(), "canceled upload must not leak an entry")
+}
+
 func TestSpecChunkedBlobUpload(t *testing.T) {
 	_, srv := testRegistry(t)
 

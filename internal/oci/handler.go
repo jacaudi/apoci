@@ -1133,6 +1133,18 @@ func (r *Registry) newUploadWriter(repo, uuid string) (*diskBlobWriter, error) {
 	}
 	id := w.ID()
 
+	// onDone runs on every terminal outcome (commit success, digest mismatch,
+	// or cancel), so a failed upload doesn't leak its r.uploads entry until the
+	// TTL reaper runs. DeleteUploadSession is idempotent with the commit path.
+	w.onDone = func() {
+		r.uploadsMu.Lock()
+		delete(r.uploads, id)
+		r.uploadsMu.Unlock()
+		delCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		_ = r.db.DeleteUploadSession(delCtx, id)
+	}
+
 	w.commit = func(dig ociregistry.Digest, data io.Reader) (ociregistry.Descriptor, error) {
 		r.uploadsMu.Lock()
 		delete(r.uploads, id)
