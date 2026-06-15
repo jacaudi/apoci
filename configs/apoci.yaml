@@ -1,0 +1,148 @@
+endpoint: "https://registry.example.com"
+
+# All fields below are optional — defaults shown
+
+# name: "registry.example.com"   # defaults to domain from endpoint
+# listen: ":5000"
+# dataDir: "~/.apoci"            # defaults to $HOME/.apoci
+# keyPath: "/apoci/storage/ap.key"
+# registryToken: ""              # auto-generated to {dataDir}/registry.token if empty
+# adminToken: ""                 # auto-generated to {dataDir}/admin.token if empty (separate from registryToken)
+# accountDomain: "example.com"  # vanity domain for WebFinger (defaults to endpoint domain)
+
+# storage:
+#   type: local        # local (default) or s3
+#   s3:
+#     bucket: ""                # required for s3
+#     region: "us-east-1"
+#     endpoint: ""              # custom endpoint for MinIO / S3-compatible stores
+#     accessKey: ""             # leave empty to use the default credential chain
+#     secretKey: ""
+#     prefix: ""                # optional key prefix inside the bucket
+#     forcePathStyle: false     # set to true for MinIO and some compatible stores
+#     tempDir: ""               # temp dir for upload staging; defaults to OS temp dir
+
+# database:
+#   driver: sqlite     # sqlite (default) or postgres
+#   dsn: ""            # required for postgres, e.g. "postgres://user:pass@localhost:5432/apoci?sslmode=disable"
+#   maxOpenConns: 0    # max open connections (0 = default: 4 for sqlite, 25 for postgres)
+#   maxIdleConns: 0    # max idle connections (0 = default: 4 for sqlite, 10 for postgres)
+
+# logLevel: info     # debug, info, warn, error
+# logFormat: json    # json, text
+
+# tls:
+#   cert: /etc/apoci/tls.crt
+#   key: /etc/apoci/tls.key
+
+# peering:
+#   healthCheckInterval: 30s
+#   fetchTimeout: 60s
+
+# federation:
+#   autoAccept: none           # none, mutual, or all
+#   allowInsecureHTTP: false   # allow plain HTTP federation (testing only)
+#   allowedDomains: []         # always auto-accept follows from these domains
+#   blockedDomains: []         # silently drop all activities from these domains
+#   blockedActors: []          # silently drop all activities from these actor URLs
+#   excludedRepos: []          # OCI repo path.Match globs that are never federated outbound
+
+# gc:
+#   enabled: true              # set to false to disable background garbage collection
+#   interval: 6h               # how often to run GC
+#   stalePeerBlobAge: 720h     # remove peer blob refs older than this (720h = 30 days)
+#   orphanBatchSize: 500       # max orphaned blobs to process per cycle
+#   blobGCGracePeriod: 1h      # grace before a newly-unreferenced blob is eligible for deletion
+#   untaggedManifestAge: 168h  # delete untagged manifests older than this (168h = 7 days)
+#   untaggedBatchSize: 500     # max untagged manifests to process per cycle
+#   retentionTagsPerCycle: 10000  # max tags evaluated for retention per cycle
+#   diskUsageThreshold: 0      # 0 = off; 1-100 triggers an extra cycle when disk use exceeds this percent
+#   diskUsageCheckInterval: 5m # how often to check disk usage when diskUsageThreshold > 0
+#   retention:
+#     keepLastN: 0             # keep the N newest tags per repo (0 = unlimited)
+#     maxAge: 0                # delete tags older than this (0 = no age limit), e.g. 720h
+#     pinnedGlobs: ["latest", "v*"]  # path.Match globs never deleted, exempt from keepLastN
+#     perRepo:                 # per-repo overrides
+#       - repo: "foo.com/myapp"
+#         keepLastN: 10
+
+# limits:
+#   maxManifestSize: 10485760     # 10 MB
+#   maxBlobSize: 536870912        # 512 MB
+
+# rateLimits:
+#   inboxRate: 30                 # federation inbox requests/sec per IP
+#   inboxBurst: 100
+#   registryPushRate: 50          # mutating OCI requests/sec per IP
+#   registryPushBurst: 100
+#   trustedIPs: []                # IPs exempt from rate limiting
+
+# scanner:
+#   enabled: false               # scan pushed images and attach the CVE report as an OCI referrer (federates to followers)
+#   timeout: 5m                  # per-scan timeout
+#   queueSize: 1000              # max pending scans before new pushes are dropped
+#   trivy:
+#     binaryPath: trivy          # path to the trivy binary (must be on PATH or absolute)
+#     insecure: false            # skip TLS verification when trivy pulls from this registry
+
+# replication:
+#   enabled: false               # push locally-pushed images out to external OCI registries as they arrive
+#   timeout: 5m                  # per-manifest replication timeout
+#   targets:
+#     - name: ghcr
+#       endpoint: "https://ghcr.io"
+#       auth: token              # none, basic, or token (default: token)
+#       username: myuser
+#       password: "ghp_yourtoken"
+#       insecure: false          # skip TLS verification for this target
+#       repoGlobs:               # path.Match globs; empty = replicate all repos
+#         - "registry.example.com/team/*"
+#       stripPrefix: "registry.example.com/"   # removed from the front of the local repo path
+#       destNamespace: "myorg"                 # prepended to the destination repo path
+
+# notifications:
+#   urls:                              # shoutrrr notification URLs (see https://nicholas-fedor.github.io/shoutrrr)
+#     - "discord://token@id"
+#     - "slack://token:token:token@channel"
+#   events:                            # which events to notify on (empty = none)
+#     - peer_health                    # peer goes up or down
+#     - follow_request                 # new follow request received
+#     - replication_failure            # blob replication failed
+#     - gc_error                       # garbage collection errors
+
+# metrics:
+#   enabled: true
+#   listen: ":9090"
+#   token: ""                     # bearer token for /metrics (optional, unauthenticated if empty)
+
+# upstreams:
+#   enabled: false
+#   fetchTimeout: 60s
+#   registries:
+#     - name: docker.io
+#       endpoint: "https://registry-1.docker.io"
+#       # auth: token             # none, basic, or token (default: token)
+#       # username: ""            # leave empty for anonymous pulls
+#       # password: ""
+#     - name: ghcr.io
+#       endpoint: "https://ghcr.io"
+#       username: myuser          # optional: for private repos
+#       password: "ghp_yourtoken"
+#       private: true             # require auth to pull cached images through apoci
+
+# ui:
+#   enabled: false               # enable web UI at / to browse images
+
+# backends:
+#   npm:
+#     enabled: true              # default true; false skips routes + federation entirely
+#     federate: true             # default true; false serves clients but doesn't broadcast or accept inbound activities
+#     token: ""                  # default empty -> falls back to the global registryToken
+#   cargo:
+#     enabled: true
+#   pypi:
+#     enabled: true
+#   nuget:
+#     enabled: true
+#     federate: true
+#     token: ""                  # clients send this via X-NuGet-ApiKey header
