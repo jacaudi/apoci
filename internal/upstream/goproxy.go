@@ -26,6 +26,21 @@ func newHTTPClient(timeout time.Duration) *http.Client {
 	}
 }
 
+// newStreamingHTTPClient is for responses whose body is streamed to disk
+// (blobs, module zips). It must NOT set http.Client.Timeout, which would cap
+// the whole transfer and abort large legitimate downloads mid-stream; instead
+// it bounds connection setup and time-to-first-byte and relies on the request
+// context for the overall deadline.
+func newStreamingHTTPClient(timeout time.Duration) *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{
+			DialContext:           validate.SafeDialContext,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ResponseHeaderTimeout: timeout,
+		},
+	}
+}
+
 // GoFetcher proxies requests to upstream Go module proxies (GOPROXY protocol),
 // walking the configured proxy list in order. It reuses the package's circuit
 // breaker and the shared SafeDialContext HTTP client.
@@ -46,7 +61,7 @@ func NewGoFetcher(proxies []string, fetchTimeout time.Duration, maxModuleSize in
 		}
 	}
 	return &GoFetcher{
-		client:    newHTTPClient(fetchTimeout),
+		client:    newStreamingHTTPClient(fetchTimeout),
 		proxies:   cleaned,
 		maxModule: maxModuleSize,
 		circuit:   newCircuitBreaker(),

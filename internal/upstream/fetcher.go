@@ -55,6 +55,7 @@ type cachedToken struct {
 // Fetcher proxies requests to upstream OCI registries.
 type Fetcher struct {
 	client          *http.Client
+	streamClient    *http.Client
 	registries      map[string]*registry // name -> registry
 	logger          *slog.Logger
 	maxBlobSize     int64
@@ -70,6 +71,7 @@ func NewFetcher(cfg config.Upstreams, maxBlobSize, maxManifestSize int64, logger
 	}
 	return &Fetcher{
 		client:          newHTTPClient(cfg.FetchTimeout),
+		streamClient:    newStreamingHTTPClient(cfg.FetchTimeout),
 		registries:      registries,
 		logger:          logger,
 		maxBlobSize:     maxBlobSize,
@@ -241,7 +243,9 @@ func (f *Fetcher) fetchBlobStreamWithRetry(ctx context.Context, registryName, re
 		return nil, fmt.Errorf("adding auth: %w", err)
 	}
 
-	resp, err := f.client.Do(req)
+	// streamClient has no whole-request timeout so large blobs are not aborted
+	// mid-transfer; the request context bounds the overall deadline.
+	resp, err := f.streamClient.Do(req)
 	if err != nil {
 		if f.circuit.recordFailure(registryName) {
 			metrics.UpstreamCircuitOpen.WithLabelValues(registryName).Set(1)
