@@ -64,7 +64,12 @@ func (q *SimpleQueue[T]) PopCtx(ctx context.Context) (T, bool) {
 	go func() {
 		select {
 		case <-ctx.Done():
+			// Broadcast under the lock so it cannot land between the
+			// consumer's ctx.Err() check and its cond.Wait(), which would
+			// otherwise lose the wakeup and park the consumer forever.
+			q.mu.Lock()
 			q.cond.Broadcast()
+			q.mu.Unlock()
 		case <-done:
 		}
 	}()
