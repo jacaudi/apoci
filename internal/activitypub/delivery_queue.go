@@ -65,9 +65,14 @@ func (cb *deliveryCircuitBreaker) isOpen(domain string) bool {
 	return true
 }
 
+// recordSuccess clears failures only if the circuit was open, so one success
+// can't wipe failures other goroutines are concurrently accumulating.
 func (cb *deliveryCircuitBreaker) recordSuccess(domain string) {
 	cb.mu.Lock()
 	defer cb.mu.Unlock()
+	if _, wasOpen := cb.openUntil[domain]; !wasOpen {
+		return
+	}
 	delete(cb.failures, domain)
 	delete(cb.openUntil, domain)
 }
