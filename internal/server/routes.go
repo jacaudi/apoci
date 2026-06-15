@@ -101,6 +101,11 @@ func ociRepoFromPath(path string) (string, bool) {
 // registries the per-repo flag is read from the DB (populated by the fetcher
 // after the first upstream pull). Fails closed on DB errors.
 func (s *Server) isPrivateRead(ctx context.Context, path string) bool {
+	// The catalog enumerates every repository name, including private and
+	// upstream-mirrored repos, so it must not be served anonymously.
+	if path == "/v2/_catalog" || strings.HasSuffix(path, "/v2/_catalog") {
+		return true
+	}
 	repoName, ok := ociRepoFromPath(path)
 	if !ok {
 		return false
