@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect/pgdialect"
@@ -79,7 +80,11 @@ func OpenPostgres(dsn string, maxOpen, maxIdle int, logger *slog.Logger) (*DB, e
 	sqldb.SetMaxOpenConns(maxOpen)
 	sqldb.SetMaxIdleConns(maxIdle)
 
-	if err := sqldb.Ping(); err != nil {
+	// Bound the connect probe so an unreachable Postgres fails fast instead of
+	// hanging startup indefinitely.
+	pingCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := sqldb.PingContext(pingCtx); err != nil {
 		_ = sqldb.Close()
 		return nil, fmt.Errorf("pinging database: %w", err)
 	}
