@@ -7,11 +7,31 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net/http"
 
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/activitypub"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/database"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/validate"
 )
+
+// PeerBlobFinder locates peers that hold a given blob digest.
+type PeerBlobFinder interface {
+	FindPeersWithBlob(ctx context.Context, blobDigest string) ([]database.PeerBlob, error)
+}
+
+// RedirectToPeer issues a 302 to the first peer that holds the blob, using
+// buildURL to construct the peer-specific download URL. Returns false (so the
+// caller can serve its own not-found response) when no peer has the blob. This
+// keeps the security-sensitive redirect-to-peer logic in one place across the
+// package backends.
+func RedirectToPeer(ctx context.Context, w http.ResponseWriter, r *http.Request, finder PeerBlobFinder, digest string, buildURL func(peerEndpoint string) string) bool {
+	peers, err := finder.FindPeersWithBlob(ctx, digest)
+	if err != nil || len(peers) == 0 {
+		return false
+	}
+	http.Redirect(w, r, buildURL(peers[0].PeerEndpoint), http.StatusFound) //nolint:gosec // peer endpoint sourced from authenticated federation activity
+	return true
+}
 
 // ValidateBlobRef validates a federation-supplied blob digest and size before
 // they are persisted. The digest must be a well-formed sha256 reference and the

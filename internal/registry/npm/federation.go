@@ -248,12 +248,9 @@ func (b *Backend) publishTag(ctx context.Context, activityType, name, tag, versi
 }
 
 func (b *Backend) redirectToPeer(ctx context.Context, w http.ResponseWriter, r *http.Request, digest, packageName, filename string) bool {
-	peers, err := b.db.FindPeersWithBlob(ctx, digest)
-	if err != nil || len(peers) == 0 {
-		return false
-	}
-	http.Redirect(w, r, peerTarballURL(peers[0].PeerEndpoint, packageName, filename), http.StatusFound) //nolint:gosec // peer endpoint sourced from authenticated federation activity
-	return true
+	return pkgfed.RedirectToPeer(ctx, w, r, b.db, digest, func(peer string) string {
+		return peerTarballURL(peer, packageName, filename)
+	})
 }
 
 // peerTarballURL builds a tarball URL on a peer. packageName is intentionally

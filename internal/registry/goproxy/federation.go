@@ -135,12 +135,9 @@ func (b *Backend) publishModule(ctx context.Context, mod, ver string, zipFile *d
 }
 
 func (b *Backend) redirectToPeer(ctx context.Context, w http.ResponseWriter, r *http.Request, digest, mod, ver, suffix string) bool {
-	peers, err := b.db.FindPeersWithBlob(ctx, digest)
-	if err != nil || len(peers) == 0 {
-		return false
-	}
-	http.Redirect(w, r, peerFileURL(peers[0].PeerEndpoint, mod, ver, suffix), http.StatusFound) //nolint:gosec // peer endpoint sourced from authenticated federation activity
-	return true
+	return pkgfed.RedirectToPeer(ctx, w, r, b.db, digest, func(peer string) string {
+		return peerFileURL(peer, mod, ver, suffix)
+	})
 }
 
 func (b *Backend) moduleURL(mod, ver, suffix string) string {
