@@ -195,7 +195,10 @@ func (c *Client) resolveUpload(location, digest string) (string, error) {
 }
 
 func drain(resp *http.Response) {
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
+	// Fully consume the body so the transport can reuse the keep-alive
+	// connection. These are the target registry's control-API responses, not
+	// attacker-streamed blobs, so they are safe to read to completion.
+	_, _ = io.Copy(io.Discard, resp.Body)
 	_ = resp.Body.Close()
 }
 
