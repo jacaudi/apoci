@@ -1302,11 +1302,11 @@ func TestValidNamespaceForHost(t *testing.T) {
 		ns, host string
 		want     bool
 	}{
-		{exampleHost, "registry.example.com", true},
-		{exampleHost, "example.com", true},
+		{exampleHost, "example.com", true},           // exact match
+		{exampleHost, "registry.example.com", false}, // subdomain may not claim parent namespace
 		{exampleHost, "evil.test", false},
 		{exampleHost, "notexample.com", false},
-		{"a.b.c", "x.a.b.c", true},
+		{"a.b.c", "x.a.b.c", false}, // subdomain may not claim parent namespace
 		{aliceDomain, "127.0.0.1", false},
 	}
 	for _, tt := range tests {

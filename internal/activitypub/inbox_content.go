@@ -337,11 +337,10 @@ func (h *InboxHandler) fetchSenderNamespace(ctx context.Context, actorURL string
 	return ns, nil
 }
 
-// validNamespaceForHost checks that ns is the host itself or a parent domain.
-// e.g. host "registry.example.com" may claim "example.com" or "registry.example.com",
-// but not "evil.com".
+// validNamespaceForHost requires an exact host match: a subdomain may not claim
+// its parent domain's namespace (that would collide with sibling tenants).
 func validNamespaceForHost(ns, actorHost string) bool {
-	return matchesDomain(actorHost, ns)
+	return strings.EqualFold(ns, actorHost)
 }
 
 func (h *InboxHandler) ingestTag(ctx context.Context, obj map[string]any, actorURL string) error {
