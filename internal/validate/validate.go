@@ -97,9 +97,14 @@ func init() {
 		{"172.16.0.0/12", "private (172.16.x)"},
 		{"192.168.0.0/16", "private (192.168.x)"},
 		{"127.0.0.0/8", "loopback"},
+		{"100.64.0.0/10", "carrier-grade NAT / shared address space"},
 		{"169.254.0.0/16", "link-local / cloud metadata"},
+		{"::1/128", "IPv6 loopback"},
 		{"fc00::/7", "IPv6 unique local"},
 		{"fe80::/10", "IPv6 link-local"},
+		{"ff00::/8", "IPv6 multicast"},
+		{"2002::/16", "6to4"},
+		{"64:ff9b::/96", "NAT64"},
 	} {
 		privateRanges = append(privateRanges, privateRange{cidr: mustParseCIDR(entry.network), label: entry.label})
 	}
