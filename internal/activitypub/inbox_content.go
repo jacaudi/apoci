@@ -239,6 +239,9 @@ func (h *InboxHandler) ingestManifest(ctx context.Context, obj map[string]any, a
 	subjectDigest, _ := obj["ociSubjectDigest"].(string)
 	var subjectPtr *string
 	if subjectDigest != "" {
+		if err := validate.Digest(subjectDigest); err != nil {
+			return fmt.Errorf("invalid ociSubjectDigest: %w", err)
+		}
 		subjectPtr = &subjectDigest
 	}
 
@@ -260,11 +263,16 @@ func (h *InboxHandler) ingestManifest(ctx context.Context, obj map[string]any, a
 		}
 	}
 
+	// Prefer the verified content length over the peer-claimed ociSize.
+	sizeBytes := int64(size)
+	if content != nil {
+		sizeBytes = int64(len(content))
+	}
 	m := &database.Manifest{
 		RepositoryID:  repoObj.ID,
 		Digest:        digest,
 		MediaType:     mediaType,
-		SizeBytes:     int64(size),
+		SizeBytes:     sizeBytes,
 		Content:       content,
 		SourceActor:   &actorURL,
 		SubjectDigest: subjectPtr,
