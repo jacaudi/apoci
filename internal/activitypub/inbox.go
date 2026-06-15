@@ -162,7 +162,7 @@ func NewInboxHandler(identity *Identity, db InboxRepository, cfg InboxConfig, lo
 	}
 	h.blocked.Store(&blockSets{
 		domains: toSet(cfg.BlockedDomains),
-		actors:  toSet(cfg.BlockedActors),
+		actors:  normaliseActorSet(cfg.BlockedActors),
 	})
 	return h
 }
@@ -256,6 +256,13 @@ func (h *InboxHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	actorURL := keyIDToActorURL(keyID)
+	// Drop blocked actors before issuing any outbound key fetch, so a blocked
+	// peer cannot coerce an outbound request on every inbound POST.
+	if h.isBlocked(actorURL) {
+		h.logger.Debug("inbox: dropped activity from blocked actor", "actor", actorURL)
+		w.WriteHeader(http.StatusAccepted) // silent drop — don't reveal block
+		return
+	}
 	pubKeyPEM, err := h.fetchActorPublicKey(r.Context(), actorURL)
 	if err != nil {
 		h.logger.Warn("inbox: failed to fetch actor key", "actor", actorURL, "error", err)
@@ -309,7 +316,7 @@ func (h *InboxHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.actorAllowed(activity.Actor) {
+	if !h.actorAllowed(normClaimed) {
 		metrics.InboxRateLimited.Add(1)
 		h.logger.Warn("inbox: actor rate limited", "actor", activity.Actor)
 		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
@@ -480,6 +487,24 @@ func normaliseActorURL(raw string) (string, error) {
 	return strings.TrimRight(u.String(), "/"), nil
 }
 
+// normaliseActorKey returns the normalised actor URL, or the raw value if it
+// cannot be parsed, so block/rate-limit keys are stable across trivial URL
+// variations (trailing slash, host case, query/fragment).
+func normaliseActorKey(raw string) string {
+	if n, err := normaliseActorURL(raw); err == nil {
+		return n
+	}
+	return raw
+}
+
+func normaliseActorSet(items []string) map[string]struct{} {
+	set := make(map[string]struct{}, len(items))
+	for _, it := range items {
+		set[normaliseActorKey(it)] = struct{}{}
+	}
+	return set
+}
+
 // extractObjectType returns the "type" field from the activity object.
 // It handles both map objects and bare string references (some implementations
 // send just the activity ID as a string — treated as a Follow).
@@ -518,7 +543,7 @@ func (h *InboxHandler) isFollowed(ctx context.Context, actorURL string) bool {
 
 func (h *InboxHandler) isBlocked(actorURL string) bool {
 	bs := h.blocked.Load()
-	if _, ok := bs.actors[actorURL]; ok {
+	if _, ok := bs.actors[normaliseActorKey(actorURL)]; ok {
 		return true
 	}
 	u, err := url.Parse(actorURL)
@@ -560,12 +585,14 @@ func (h *InboxHandler) ResumeDomain(domain string) {
 
 // PauseActor blocks all inbound activities from a single actor URL.
 func (h *InboxHandler) PauseActor(actorURL string) {
-	h.update(func(_, actors map[string]struct{}) { actors[actorURL] = struct{}{} })
+	key := normaliseActorKey(actorURL)
+	h.update(func(_, actors map[string]struct{}) { actors[key] = struct{}{} })
 }
 
 // ResumeActor lifts a PauseActor block.
 func (h *InboxHandler) ResumeActor(actorURL string) {
-	h.update(func(_, actors map[string]struct{}) { delete(actors, actorURL) })
+	key := normaliseActorKey(actorURL)
+	h.update(func(_, actors map[string]struct{}) { delete(actors, key) })
 }
 
 // BlockedDomains returns the currently blocked domains, sorted.
