@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"golang.org/x/mod/module"
+	"golang.org/x/sync/singleflight"
 
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/metrics"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/validate"
@@ -49,6 +50,7 @@ type GoFetcher struct {
 	proxies   []string
 	maxModule int64
 	circuit   *circuitBreaker
+	sf        singleflight.Group
 }
 
 // NewGoFetcher creates a Go module proxy fetcher. proxies are base URLs such as
@@ -96,9 +98,21 @@ func (f *GoFetcher) FetchZip(ctx context.Context, mod, ver string) ([]byte, erro
 	return f.fetchBytes(ctx, mod, "@v/"+escVer+".zip")
 }
 
-// fetchBytes GETs an escaped module path + suffix from each proxy in turn,
-// returning the first 200 body. The body is bounded by maxModule.
+// fetchBytes coalesces concurrent identical fetches (same module+suffix) so a
+// burst of `go get` requests for the same path issues a single upstream call.
 func (f *GoFetcher) fetchBytes(ctx context.Context, mod, suffix string) ([]byte, error) {
+	v, err, _ := f.sf.Do(mod+"\x00"+suffix, func() (any, error) {
+		return f.fetchBytesUncoalesced(ctx, mod, suffix)
+	})
+	if err != nil {
+		return nil, err
+	}
+	return v.([]byte), nil
+}
+
+// fetchBytesUncoalesced GETs an escaped module path + suffix from each proxy in
+// turn, returning the first 200 body. The body is bounded by maxModule.
+func (f *GoFetcher) fetchBytesUncoalesced(ctx context.Context, mod, suffix string) ([]byte, error) {
 	var lastErr error
 	for _, base := range f.proxies {
 		resp, err := f.do(ctx, base, mod, suffix)
