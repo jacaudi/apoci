@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -79,13 +80,33 @@ func NewS3(cfg S3Config, logger *slog.Logger) (*S3Store, error) {
 		tempDir = os.TempDir()
 	}
 
-	return &S3Store{
+	s := &S3Store{
 		client:  s3.NewFromConfig(awsCfg, clientOpts...),
 		bucket:  cfg.Bucket,
 		prefix:  strings.TrimSuffix(cfg.Prefix, "/"),
 		tempDir: tempDir,
 		logger:  logger,
-	}, nil
+	}
+	s.removeStaleTempFiles()
+	return s, nil
+}
+
+// removeStaleTempFiles deletes "apoci-s3-upload-*" staging files left by a Put
+// interrupted before its deferred cleanup ran (crash/OOM/SIGKILL). The prefix is
+// process-specific, so it's safe even when tempDir is shared.
+func (s *S3Store) removeStaleTempFiles() {
+	matches, err := filepath.Glob(filepath.Join(s.tempDir, "apoci-s3-upload-*"))
+	if err != nil {
+		s.logger.Warn("blobstore: globbing stale s3 temp files failed", "error", err)
+		return
+	}
+	for _, m := range matches {
+		if err := os.Remove(m); err != nil {
+			s.logger.Warn("blobstore: removing stale s3 temp file failed", "path", m, "error", err)
+			continue
+		}
+		s.logger.Info("blobstore: removed stale s3 upload temp file", "path", m)
+	}
 }
 
 func (s *S3Store) Put(ctx context.Context, r io.Reader, expectedDigest string) (string, int64, error) {
