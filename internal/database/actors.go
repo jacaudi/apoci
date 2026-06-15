@@ -609,6 +609,22 @@ func (db *DB) ListOutgoingFollowsPage(ctx context.Context, status string, limit,
 	return actors, nil
 }
 
+// ListOutgoingFollowsBatch returns outgoing follows using keyset (id cursor)
+// pagination so concurrent follow/remove doesn't shift the window and skip or
+// duplicate entries under OFFSET paging.
+func (db *DB) ListOutgoingFollowsBatch(ctx context.Context, status string, afterID int64, limit int) ([]Actor, error) {
+	var actors []Actor
+	err := db.bun.NewSelect().Model(&actors).
+		Where("we_follow_them = TRUE AND we_follow_status = ? AND id > ?", status, afterID).
+		OrderExpr("id ASC").
+		Limit(limit).
+		Scan(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("listing outgoing follows batch: %w", err)
+	}
+	return actors, nil
+}
+
 // DeleteStaleOutgoingFollows removes stale pending and rejected outgoing follows.
 func (db *DB) DeleteStaleOutgoingFollows(ctx context.Context, pendingTTL, rejectedTTL time.Duration) (int64, error) {
 	now := time.Now()

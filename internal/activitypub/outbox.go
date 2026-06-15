@@ -19,14 +19,14 @@ type OutboxRepository interface {
 
 type FollowersRepository interface {
 	CountFollows(ctx context.Context) (int, error)
-	ListFollowsPage(ctx context.Context, offset, limit int) ([]database.Actor, error)
+	ListFollowsBatch(ctx context.Context, afterID int64, limit int) ([]database.Actor, error)
 }
 
 // FollowingRepository is the persistence port for the following handler.
 type FollowingRepository interface {
 	ListOutgoingFollows(ctx context.Context, status string) ([]database.Actor, error)
 	CountOutgoingFollows(ctx context.Context, status string) (int, error)
-	ListOutgoingFollowsPage(ctx context.Context, status string, limit, offset int) ([]database.Actor, error)
+	ListOutgoingFollowsBatch(ctx context.Context, status string, afterID int64, limit int) ([]database.Actor, error)
 }
 
 type OutboxHandler struct {
@@ -92,14 +92,14 @@ func (h *OutboxHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	page := map[string]any{
 		KeyContext:      ContextActivityStreams,
 		KeyType:         TypeOrderedCollectionPage,
-		KeyID:           fmt.Sprintf("%s?page=%s&before=%d", baseURL, pageParam, beforeID),
+		KeyID:           fmt.Sprintf("%s?before=%d", baseURL, beforeID),
 		keyPartOf:       baseURL,
 		keyOrderedItems: items,
 	}
 
 	if hasMore {
 		lastActivity := activities[len(activities)-1]
-		page["next"] = fmt.Sprintf("%s?page=1&before=%d", baseURL, lastActivity.ID)
+		page["next"] = fmt.Sprintf("%s?before=%d", baseURL, lastActivity.ID)
 	}
 
 	w.Header().Set("Content-Type", MediaTypeActivityJSON)
@@ -122,9 +122,9 @@ func (h *FollowersHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	baseURL := "https://" + h.identity.Domain + "/ap/followers"
-	pageParam := r.URL.Query().Get("page")
+	cursor := r.URL.Query().Get("after")
 
-	if pageParam == "" {
+	if cursor == "" {
 		total, err := h.db.CountFollows(r.Context())
 		if err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
@@ -136,7 +136,7 @@ func (h *FollowersHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			KeyType:       TypeOrderedCollection,
 			KeyID:         baseURL,
 			keyTotalItems: total,
-			keyFirst:      baseURL + "?page=1",
+			keyFirst:      baseURL + "?after=0",
 		}
 
 		w.Header().Set("Content-Type", MediaTypeActivityJSON)
@@ -144,11 +144,14 @@ func (h *FollowersHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
-	if offset < 0 {
-		offset = 0
+	// Keyset pagination avoids the OFFSET skip/duplicate window: a concurrent
+	// follow/remove between page fetches doesn't shift the cursor.
+	afterID, err := strconv.ParseInt(cursor, 10, 64)
+	if err != nil || afterID < 0 {
+		http.Error(w, "invalid after cursor", http.StatusBadRequest)
+		return
 	}
-	follows, err := h.db.ListFollowsPage(r.Context(), offset, defaultPageSize+1)
+	follows, err := h.db.ListFollowsBatch(r.Context(), afterID, defaultPageSize+1)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -167,13 +170,13 @@ func (h *FollowersHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	page := map[string]any{
 		KeyContext:      ContextActivityStreams,
 		KeyType:         TypeOrderedCollectionPage,
-		KeyID:           fmt.Sprintf("%s?page=1&offset=%d", baseURL, offset),
+		KeyID:           fmt.Sprintf("%s?after=%d", baseURL, afterID),
 		keyPartOf:       baseURL,
 		keyOrderedItems: items,
 	}
 
 	if hasMore {
-		page["next"] = fmt.Sprintf("%s?page=1&offset=%d", baseURL, offset+defaultPageSize)
+		page["next"] = fmt.Sprintf("%s?after=%d", baseURL, follows[len(follows)-1].ID)
 	}
 
 	w.Header().Set("Content-Type", MediaTypeActivityJSON)
@@ -198,9 +201,8 @@ func (h *FollowingHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	baseURL := "https://" + h.identity.Domain + "/ap/following"
 
-	offsetParam := r.URL.Query().Get("offset")
-	if offsetParam == "" {
-		// No page param — return collection summary with first link.
+	afterParam := r.URL.Query().Get("after")
+	if afterParam == "" {
 		total, err := h.db.CountOutgoingFollows(r.Context(), "accepted")
 		if err != nil {
 			http.Error(w, "internal error", http.StatusInternalServerError)
@@ -211,29 +213,27 @@ func (h *FollowingHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			KeyType:       TypeOrderedCollection,
 			KeyID:         baseURL,
 			keyTotalItems: total,
-			keyFirst:      fmt.Sprintf("%s?offset=0", baseURL),
+			keyFirst:      fmt.Sprintf("%s?after=0", baseURL),
 		}
 		w.Header().Set("Content-Type", MediaTypeActivityJSON)
 		_ = json.NewEncoder(w).Encode(collection)
 		return
 	}
 
-	offset, err := strconv.Atoi(offsetParam)
-	if err != nil || offset < 0 {
-		http.Error(w, "invalid offset", http.StatusBadRequest)
+	afterID, err := strconv.ParseInt(afterParam, 10, 64)
+	if err != nil || afterID < 0 {
+		http.Error(w, "invalid after cursor", http.StatusBadRequest)
 		return
 	}
 
-	total, err := h.db.CountOutgoingFollows(r.Context(), "accepted")
+	follows, err := h.db.ListOutgoingFollowsBatch(r.Context(), "accepted", afterID, defaultPageSize+1)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-
-	follows, err := h.db.ListOutgoingFollowsPage(r.Context(), "accepted", defaultPageSize, offset)
-	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
+	hasMore := len(follows) > defaultPageSize
+	if hasMore {
+		follows = follows[:defaultPageSize]
 	}
 
 	items := make([]string, 0, len(follows))
@@ -244,13 +244,12 @@ func (h *FollowingHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	page := map[string]any{
 		KeyContext:      ContextActivityStreams,
 		KeyType:         TypeOrderedCollectionPage,
-		KeyID:           fmt.Sprintf("%s?offset=%d", baseURL, offset),
+		KeyID:           fmt.Sprintf("%s?after=%d", baseURL, afterID),
 		keyPartOf:       baseURL,
-		keyTotalItems:   total,
 		keyOrderedItems: items,
 	}
-	if next := offset + defaultPageSize; next < total {
-		page["next"] = fmt.Sprintf("%s?offset=%d", baseURL, next)
+	if hasMore {
+		page["next"] = fmt.Sprintf("%s?after=%d", baseURL, follows[len(follows)-1].ID)
 	}
 
 	w.Header().Set("Content-Type", MediaTypeActivityJSON)

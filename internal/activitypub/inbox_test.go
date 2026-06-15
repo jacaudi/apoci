@@ -167,7 +167,7 @@ func TestFollowingHandler(t *testing.T) {
 	require.Equal(t, testOrderedCollection, collection["type"])
 	require.Equal(t, float64(0), collection["totalItems"])
 	require.Equal(t, "https://test.example.com/ap/following", collection["id"])
-	require.Equal(t, "https://test.example.com/ap/following?offset=0", collection["first"])
+	require.Equal(t, "https://test.example.com/ap/following?after=0", collection["first"])
 }
 
 func TestFollowingHandlerPagination(t *testing.T) {
@@ -188,7 +188,7 @@ func TestFollowingHandlerPagination(t *testing.T) {
 	handler := NewFollowingHandler(id, db)
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/ap/following?offset=0", nil)
+	req := httptest.NewRequest("GET", "/ap/following?after=0", nil)
 	handler.ServeHTTP(rec, req)
 
 	require.Equal(t, http.StatusOK, rec.Code)
@@ -196,10 +196,9 @@ func TestFollowingHandlerPagination(t *testing.T) {
 	var page map[string]any
 	require.NoError(t, json.NewDecoder(rec.Body).Decode(&page))
 	require.Equal(t, "OrderedCollectionPage", page["type"])
-	require.Equal(t, float64(25), page["totalItems"])
 	items := page["orderedItems"].([]any)
 	require.Len(t, items, 20, "first page should contain 20 items")
-	require.Equal(t, "https://test.example.com/ap/following?offset=20", page["next"])
+	require.Contains(t, page["next"], "/ap/following?after=")
 }
 
 func TestFollowingHandlerRejectsPost(t *testing.T) {
