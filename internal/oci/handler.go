@@ -358,38 +358,36 @@ func (r *Registry) getBlob(ctx context.Context, repo string, digest ociregistry.
 	if err != nil {
 		return nil, fmt.Errorf("checking blob repo scope: %w", err)
 	}
-	if exists {
-		f, blobSize, openErr := r.blobs.Open(ctx, string(digest))
-		switch {
-		case openErr == nil:
-			return newBlobReader(f, ociregistry.Descriptor{
-				MediaType: defaultMediaType,
-				Digest:    digest,
-				Size:      blobSize,
-			}), nil
-		case !errors.Is(openErr, blobstore.ErrBlobNotFound):
-			return nil, fmt.Errorf("opening blob: %w", openErr)
+	if !exists {
+		if r.upstreamFetcher != nil {
+			reader, err := r.fetchBlobFromUpstream(ctx, originalRepo, digest)
+			if err != nil {
+				r.logger.Debug("blob not found on upstream", "repo", originalRepo, "digest", string(digest), "error", err)
+			} else if reader != nil {
+				return reader, nil
+			}
 		}
-		// Blob tracked but not on disk - try to fetch from peers
+		return nil, ociregistry.ErrBlobUnknown
 	}
 
-	// Try federation peers
+	f, blobSize, openErr := r.blobs.Open(ctx, string(digest))
+	if openErr == nil {
+		return newBlobReader(f, ociregistry.Descriptor{
+			MediaType: defaultMediaType,
+			Digest:    digest,
+			Size:      blobSize,
+		}), nil
+	}
+	if !errors.Is(openErr, blobstore.ErrBlobNotFound) {
+		return nil, fmt.Errorf("opening blob: %w", openErr)
+	}
+
 	if r.resolver != nil && r.fetcher != nil {
 		reader, err := r.fetchBlobFromPeers(ctx, repo, digest)
 		if err != nil {
 			r.logger.Debug("blob not found on any peer", "digest", string(digest), "error", err)
 		} else if reader != nil {
 			metrics.RegistryBlobPullThru.Add(1)
-			return reader, nil
-		}
-	}
-
-	// Try upstream registry (use original repo to detect upstream prefix like "docker.io/")
-	if r.upstreamFetcher != nil {
-		reader, err := r.fetchBlobFromUpstream(ctx, originalRepo, digest)
-		if err != nil {
-			r.logger.Debug("blob not found on upstream", "repo", originalRepo, "digest", string(digest), "error", err)
-		} else if reader != nil {
 			return reader, nil
 		}
 	}

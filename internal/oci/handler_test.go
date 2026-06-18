@@ -1284,3 +1284,80 @@ func TestUpstreamTagHEADPullThrough(t *testing.T) {
 	require.NotNil(t, tag, "tag should be cached after HEAD pull-through")
 	require.Equal(t, manifestDigest, tag.ManifestDigest)
 }
+
+// TestFederatedBlobPullDoesNotLoopOnUnknownRepo guards against the cluster
+// loop that triggers when a peer claims the digest but the requested repo
+// has no local reference: the original code fell through to peer fetch
+// even when BlobExistsInRepo returned false, causing alice and bob to
+// bounce a non-existent-repo request back and forth until something timed
+// out.
+func TestFederatedBlobPullDoesNotLoopOnUnknownRepo(t *testing.T) {
+	dir := t.TempDir()
+	db, err := database.OpenSQLite(dir, 0, 0, nopLog())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	blobs, err := blobstore.New(dir, nopLog())
+	require.NoError(t, err)
+
+	reg, err := NewRegistry(db, blobs, "https://test.example.com", "", config.DefaultMaxManifestSize, config.DefaultMaxBlobSize, nopLog())
+	require.NoError(t, err)
+
+	resolver := &loopGuardResolver{}
+	fetcher := &loopGuardFetcher{t: t}
+	reg.SetFederation(resolver, fetcher)
+
+	ctx := context.Background()
+
+	realRepo := "test.example.com/test/real"
+	blobData := []byte("scoped blob")
+	desc, err := reg.PushBlob(ctx, realRepo, descriptorFor(blobData), strings.NewReader(string(blobData)))
+	require.NoError(t, err)
+	manifest := []byte(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.manifest.v1+json","config":{"digest":"` + string(desc.Digest) + `","size":` + fmt.Sprintf("%d", desc.Size) + `,"mediaType":"application/vnd.oci.image.config.v1+json"},"layers":[]}`)
+	_, err = reg.PushManifest(ctx, realRepo, "v1", manifest, testManifestMediaType)
+	require.NoError(t, err)
+
+	_, err = reg.GetBlob(ctx, "test.example.com/test/nonexistent", desc.Digest)
+	require.Error(t, err)
+	require.Equal(t, 0, resolver.calls)
+	require.Equal(t, 0, fetcher.calls)
+
+	_, err = reg.GetBlob(ctx, "library/unknown", desc.Digest)
+	require.Error(t, err)
+	require.Equal(t, 0, resolver.calls)
+	require.Equal(t, 0, fetcher.calls)
+
+	otherRepo := "test.example.com/test/other"
+	_, err = db.GetOrCreateRepository(ctx, otherRepo, "https://test.example.com")
+	require.NoError(t, err)
+	_, err = reg.GetBlob(ctx, otherRepo, desc.Digest)
+	require.Error(t, err)
+	require.Equal(t, 0, resolver.calls)
+	require.Equal(t, 0, fetcher.calls)
+}
+
+type loopGuardResolver struct {
+	calls int
+}
+
+func (m *loopGuardResolver) FindBlobPeers(_ context.Context, _ string) ([]BlobPeer, error) {
+	m.calls++
+	return []BlobPeer{{PeerEndpoint: "https://peer.example.test"}}, nil
+}
+
+type loopGuardFetcher struct {
+	t     *testing.T
+	calls int
+}
+
+func (m *loopGuardFetcher) FetchBlobStream(_ context.Context, _, _, _ string) (*peering.BlobStream, error) {
+	m.calls++
+	m.t.Fatalf("FetchBlobStream must not be invoked when blob is not in repo; call #%d", m.calls)
+	return nil, nil
+}
+
+func (m *loopGuardFetcher) FetchManifest(_ context.Context, _, _, _ string) ([]byte, string, error) {
+	m.calls++
+	m.t.Fatalf("FetchManifest must not be invoked from getBlob; call #%d", m.calls)
+	return nil, "", nil
+}
