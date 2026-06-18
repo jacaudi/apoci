@@ -7,7 +7,7 @@ require (
 	code.gitea.io/gitea v1.26.2
 	code.superseriousbusiness.org/httpsig v1.5.0
 	codeberg.org/gruf/go-runners v1.7.0
-	cuelabs.dev/go/oci/ociregistry v0.0.0-20260601085548-328ff8e2c943
+	cuelabs.dev/go/oci/ociregistry v0.0.0-20260618065901-6befdbcb3cf6
 	github.com/aws/aws-sdk-go-v2 v1.42.0
 	github.com/aws/aws-sdk-go-v2/config v1.32.25
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.24
