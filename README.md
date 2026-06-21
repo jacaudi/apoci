@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="internal/server/ui/static/apoci-lockup.svg" alt="apoci" width="320">
+</p>
+
 # apoci
 
 > **Status: Beta.** Usable in production with care. APIs may change between minor versions.
