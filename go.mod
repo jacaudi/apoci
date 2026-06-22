@@ -4,7 +4,7 @@ go 1.26.3
 
 require (
 	charm.land/lipgloss/v2 v2.0.4
-	code.gitea.io/gitea v1.26.2
+	code.gitea.io/gitea v1.26.4
 	code.superseriousbusiness.org/httpsig v1.5.0
 	codeberg.org/gruf/go-runners v1.7.0
 	cuelabs.dev/go/oci/ociregistry v0.0.0-20260618065901-6befdbcb3cf6
@@ -137,7 +137,7 @@ require (
 	go.uber.org/multierr v1.11.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
-	golang.org/x/crypto v0.51.0 // indirect
+	golang.org/x/crypto v0.52.0 // indirect
 	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/sys v0.46.0 // indirect
 	golang.org/x/term v0.44.0 // indirect
