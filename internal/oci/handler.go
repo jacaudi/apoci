@@ -413,6 +413,12 @@ func (r *Registry) fetchBlobFromPeers(ctx context.Context, repo string, digest o
 			continue
 		}
 
+		if stream.Size > r.maxBlobSize {
+			_ = stream.Body.Close()
+			r.logger.Warn("peer advertises oversize blob", "peer", peer.PeerEndpoint, "digest", string(digest), "size", stream.Size, "max", r.maxBlobSize)
+			continue
+		}
+
 		storedDigest, size, err := r.blobs.Put(ctx, io.LimitReader(stream.Body, r.maxBlobSize+1), string(digest))
 		if closeErr := stream.Body.Close(); closeErr != nil {
 			r.logger.Warn("failed to close blob stream", "peer", peer.PeerEndpoint, "error", closeErr)
@@ -477,6 +483,11 @@ func (r *Registry) fetchBlobFromUpstream(ctx context.Context, repo string, diges
 	stream, err := r.upstreamFetcher.FetchBlobStream(ctx, registry, upstreamRepo, string(digest))
 	if err != nil {
 		return nil, fmt.Errorf("fetching from upstream %s: %w", registry, err)
+	}
+
+	if stream.Size > r.maxBlobSize {
+		_ = stream.Body.Close()
+		return nil, fmt.Errorf("upstream blob exceeds max size (%d > %d)", stream.Size, r.maxBlobSize)
 	}
 
 	storedDigest, size, err := r.blobs.Put(ctx, io.LimitReader(stream.Body, r.maxBlobSize+1), string(digest))

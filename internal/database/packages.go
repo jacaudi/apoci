@@ -841,12 +841,14 @@ func (db *DB) PruneDeletedManifests(ctx context.Context, olderThan time.Duration
 type UntaggedManifest struct {
 	PackageID   int64
 	PackageName string
+	OwnerID     string
 	Digest      string
 }
 
 type PackageRetention struct {
-	ID   int64
-	Name string
+	ID      int64
+	Name    string
+	OwnerID string
 }
 
 type TagForRetention struct {
@@ -859,11 +861,12 @@ func (db *DB) ListOCIPackagesForRetention(ctx context.Context, startAfter string
 		limit = 100
 	}
 	var rows []struct {
-		ID   int64  `bun:"id"`
-		Name string `bun:"name"`
+		ID      int64  `bun:"id"`
+		Name    string `bun:"name"`
+		OwnerID string `bun:"owner_id"`
 	}
 	err := db.bun.NewRaw(
-		"SELECT id, name FROM packages WHERE type = ? AND name > ? ORDER BY name LIMIT ?",
+		"SELECT id, name, owner_id FROM packages WHERE type = ? AND name > ? ORDER BY name LIMIT ?",
 		ociPackageType, startAfter, limit,
 	).Scan(ctx, &rows)
 	if err != nil {
@@ -871,7 +874,7 @@ func (db *DB) ListOCIPackagesForRetention(ctx context.Context, startAfter string
 	}
 	out := make([]PackageRetention, len(rows))
 	for i, r := range rows {
-		out[i] = PackageRetention{ID: r.ID, Name: r.Name}
+		out[i] = PackageRetention{ID: r.ID, Name: r.Name, OwnerID: r.OwnerID}
 	}
 	return out, nil
 }
@@ -917,10 +920,11 @@ func (db *DB) PruneUntaggedManifests(ctx context.Context, olderThan time.Duratio
 		ID          int64  `bun:"id"`
 		PackageID   int64  `bun:"package_id"`
 		PackageName string `bun:"package_name"`
+		OwnerID     string `bun:"owner_id"`
 		Digest      string `bun:"digest"`
 	}
 	if err := tx.NewRaw(`
-		SELECT pv.id AS id, pv.package_id AS package_id, p.name AS package_name, pv.version AS digest
+		SELECT pv.id AS id, pv.package_id AS package_id, p.name AS package_name, p.owner_id AS owner_id, pv.version AS digest
 		FROM package_versions pv
 		JOIN packages p ON p.id = pv.package_id
 		WHERE p.type = ?
@@ -968,6 +972,7 @@ func (db *DB) PruneUntaggedManifests(ctx context.Context, olderThan time.Duratio
 		out[i] = UntaggedManifest{
 			PackageID:   r.PackageID,
 			PackageName: r.PackageName,
+			OwnerID:     r.OwnerID,
 			Digest:      r.Digest,
 		}
 	}

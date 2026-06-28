@@ -69,6 +69,7 @@ func TestRetentionSweep_KeepLastN(t *testing.T) {
 		BlobGCGracePeriod:     time.Hour,
 		RetentionDefaults:     RetentionPolicy{KeepLastN: 2},
 		RetentionTagsPerCycle: 100,
+		LocalActor:            testActor,
 	}, db, blobs, notify.New("test", nil, nil, nopLog()), nopLog())
 	gc.SetFederationPublisher(pub)
 	gc.RunOnce(ctx)
@@ -201,6 +202,7 @@ func TestPruneUntaggedManifestsGC_FederatesDelete(t *testing.T) {
 		BlobGCGracePeriod:   time.Hour,
 		UntaggedManifestAge: time.Hour,
 		UntaggedBatchSize:   100,
+		LocalActor:          testActor,
 	}, db, blobs, notify.New("test", nil, nil, nopLog()), nopLog())
 	gc.SetFederationPublisher(pub)
 	gc.RunOnce(ctx)
@@ -211,6 +213,43 @@ func TestPruneUntaggedManifestsGC_FederatesDelete(t *testing.T) {
 	gone, err := db.GetPackageVersion(ctx, pkg.ID, "sha256:gone")
 	require.NoError(t, err)
 	require.Nil(t, gone)
+}
+
+// A peer-owned mirror is pruned locally but its deletes are not federated.
+func TestPruneUntaggedManifestsGC_PeerOwnedNotFederated(t *testing.T) {
+	db, blobs := testGCDeps(t)
+	ctx := context.Background()
+
+	// Package owned by a remote peer; LocalActor is a different identity.
+	pkg, err := db.GetOrCreatePackage(ctx, "oci", "peer.example.com/img", testActor)
+	require.NoError(t, err)
+
+	require.NoError(t, db.PutPackageVersion(ctx, &database.PackageVersion{
+		PackageID: pkg.ID, Version: "sha256:gone", Metadata: []byte(`{}`),
+	}))
+	_, err = db.ExecContext(ctx,
+		"UPDATE package_versions SET created_at = ? WHERE package_id = ?",
+		time.Now().Add(-2*time.Hour), pkg.ID)
+	require.NoError(t, err)
+
+	pub := &recordingPublisher{}
+	gc := NewGarbageCollector(GCConfig{
+		Interval:            6 * time.Hour,
+		StalePeerBlobAge:    30 * 24 * time.Hour,
+		OrphanBatchSize:     500,
+		BlobGCGracePeriod:   time.Hour,
+		UntaggedManifestAge: time.Hour,
+		UntaggedBatchSize:   100,
+		LocalActor:          "https://self.example.com/ap/actor",
+	}, db, blobs, notify.New("test", nil, nil, nopLog()), nopLog())
+	gc.SetFederationPublisher(pub)
+	gc.RunOnce(ctx)
+
+	require.Empty(t, pub.manDels, "peer-owned manifest delete must not be federated")
+
+	gone, err := db.GetPackageVersion(ctx, pkg.ID, "sha256:gone")
+	require.NoError(t, err)
+	require.Nil(t, gone, "peer mirror manifest is still pruned locally")
 }
 
 func TestPruneUntaggedManifestsGC_PreservesIndexChildren(t *testing.T) {
@@ -296,6 +335,7 @@ func TestGCFullPipeline(t *testing.T) {
 		UntaggedBatchSize:     100,
 		RetentionDefaults:     RetentionPolicy{MaxAge: 24 * time.Hour},
 		RetentionTagsPerCycle: 100,
+		LocalActor:            testActor,
 	}, db, blobs, notify.New("test", nil, nil, nopLog()), nopLog())
 	gc.SetFederationPublisher(pub)
 	gc.RunOnce(ctx)

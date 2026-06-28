@@ -28,7 +28,7 @@ func TestActorAcceptsActivity(t *testing.T) {
 		{"blob always passes filter", new("nothing"), pubContext{kind: pubKindBlob}, true},
 		{"manifest-delete always passes filter", new("nothing"), pubContext{kind: pubKindManifestDelete}, true},
 		{"untagged manifest passes filter (digest push)", new(tagLatest), pubContext{kind: pubKindManifest, tag: ""}, true},
-		{"tag-delete still subject to filter", new(tagLatest), pubContext{kind: pubKindTagDelete, tag: "dev"}, false},
+		{"tag-delete always passes filter", new(tagLatest), pubContext{kind: pubKindTagDelete, tag: "dev"}, true},
 		{"whitespace tolerant", new(" latest , v* "), pubContext{kind: pubKindManifest, tag: "v9"}, true},
 	}
 	for _, c := range cases {

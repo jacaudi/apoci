@@ -123,6 +123,7 @@ type RateLimits struct {
 	RegistryPushRate  float64  `yaml:"registryPushRate"  env:"REGISTRY_PUSH_RATE"`                  // requests per second for registry push
 	RegistryPushBurst int      `yaml:"registryPushBurst" env:"REGISTRY_PUSH_BURST"`                 // burst capacity for registry push
 	TrustedIPs        []string `yaml:"trustedIPs"        env:"TRUSTED_IPS"        envSeparator:","` // IPs/CIDRs that bypass rate limiting
+	TrustedProxies    []string `yaml:"trustedProxies"    env:"TRUSTED_PROXIES"    envSeparator:","` // IPs/CIDRs of reverse proxies whose X-Forwarded-For is trusted for the client IP
 }
 
 type Metrics struct {

@@ -236,11 +236,11 @@ func (p *APPublisher) repoExcluded(repo string) bool {
 }
 
 // actorAcceptsActivity matches a follower's federation_tag_globs filter against
-// the activity. Activities without a tag context (blobs, manifest deletes, and
-// manifests pushed by digest) always pass — otherwise a later tag activity
-// would point at content the peer never received.
+// the activity. Activities without a tag context (blobs, deletes, and manifests
+// pushed by digest) always pass — otherwise a later tag activity would point at
+// content the peer never received, or a delete would strand a removed tag.
 func actorAcceptsActivity(actor *database.Actor, pubCtx pubContext) bool {
-	if pubCtx.kind == pubKindBlob || pubCtx.kind == pubKindManifestDelete {
+	if pubCtx.kind == pubKindBlob || pubCtx.kind == pubKindManifestDelete || pubCtx.kind == pubKindTagDelete {
 		return true
 	}
 	if pubCtx.kind == pubKindManifest && pubCtx.tag == "" {

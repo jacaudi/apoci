@@ -220,7 +220,7 @@ func TestAPEndpointsExist(t *testing.T) {
 }
 
 func TestRateLimiterAllowsUpToBurst(t *testing.T) {
-	rl := newIPRateLimiter(10, 5, nil)
+	rl := newIPRateLimiter(10, 5, nil, nil)
 	defer rl.Stop()
 
 	for i := range 5 {
@@ -232,7 +232,7 @@ func TestRateLimiterAllowsUpToBurst(t *testing.T) {
 }
 
 func TestRateLimiterTracksSeparateIPs(t *testing.T) {
-	rl := newIPRateLimiter(10, 2, nil)
+	rl := newIPRateLimiter(10, 2, nil, nil)
 	defer rl.Stop()
 
 	require.True(t, rl.allow("10.0.0.1"), "first IP should be allowed")
@@ -240,7 +240,7 @@ func TestRateLimiterTracksSeparateIPs(t *testing.T) {
 }
 
 func TestRateLimiterTrustedIPs(t *testing.T) {
-	rl := newIPRateLimiter(10, 1, []string{"192.168.1.100", "10.0.0.0/8"})
+	rl := newIPRateLimiter(10, 1, []string{"192.168.1.100", "10.0.0.0/8"}, nil)
 	defer rl.Stop()
 
 	// Trusted single IP should always be allowed
@@ -256,6 +256,32 @@ func TestRateLimiterTrustedIPs(t *testing.T) {
 	// Non-trusted IP should be rate limited
 	require.True(t, rl.allow("8.8.8.8"), "first request from untrusted IP allowed")
 	require.False(t, rl.allow("8.8.8.8"), "second request from untrusted IP should be limited")
+}
+
+func TestClientIPForwardedFor(t *testing.T) {
+	rl := newIPRateLimiter(10, 1, nil, []string{"10.0.0.0/8"})
+	defer rl.Stop()
+
+	newReq := func(remote, xff string) *http.Request {
+		r := httptest.NewRequest(http.MethodGet, "/", nil)
+		r.RemoteAddr = remote
+		if xff != "" {
+			r.Header.Set("X-Forwarded-For", xff)
+		}
+		return r
+	}
+
+	// Untrusted direct peer: XFF is ignored, peer address is the key.
+	require.Equal(t, "8.8.8.8", rl.clientIP(newReq("8.8.8.8:1234", "1.1.1.1")))
+
+	// Trusted proxy: rightmost non-proxy XFF entry is the client.
+	require.Equal(t, "1.1.1.1", rl.clientIP(newReq("10.0.0.1:443", "1.1.1.1")))
+
+	// Chain of trusted proxies: skip them, return the real client.
+	require.Equal(t, "1.1.1.1", rl.clientIP(newReq("10.0.0.1:443", "1.1.1.1, 10.0.0.2, 10.0.0.3")))
+
+	// Trusted proxy but no XFF: fall back to the peer address.
+	require.Equal(t, "10.0.0.1", rl.clientIP(newReq("10.0.0.1:443", "")))
 }
 
 func TestOCIRepoFromPath(t *testing.T) {
