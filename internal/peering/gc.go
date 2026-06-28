@@ -267,6 +267,12 @@ func (gc *GarbageCollector) effectiveRetention(repo string) RetentionPolicy {
 	return out
 }
 
+// ownsRepo reports whether a package is locally owned. Deletes for peer mirrors
+// must not be federated: peers reject them and a tombstone would block re-federation.
+func (gc *GarbageCollector) ownsRepo(ownerID string) bool {
+	return gc.cfg.LocalActor != "" && ownerID == gc.cfg.LocalActor
+}
+
 func tagPinned(name string, globs []string) bool {
 	for _, g := range globs {
 		if ok, err := path.Match(g, name); err == nil && ok {
@@ -362,7 +368,7 @@ func (gc *GarbageCollector) applyRetentionToPackage(ctx context.Context, pkg dat
 			gc.logger.Warn("gc: retention: delete tag failed", "package", pkg.Name, "tag", t.Name, "error", err)
 			continue
 		}
-		if gc.publisher != nil {
+		if gc.publisher != nil && gc.ownsRepo(pkg.OwnerID) {
 			if err := gc.publisher.PublishTagDelete(ctx, pkg.Name, t.Name); err != nil {
 				gc.logger.Warn("gc: retention: federate tag delete failed", "package", pkg.Name, "tag", t.Name, "error", err)
 			}
@@ -395,10 +401,12 @@ func (gc *GarbageCollector) pruneUntaggedManifests(ctx context.Context) {
 		total += len(rows)
 
 		for _, r := range rows {
-			if gc.cfg.LocalActor != "" {
-				if err := gc.db.RecordDeletedManifest(ctx, r.Digest, r.PackageName, gc.cfg.LocalActor); err != nil {
-					gc.logger.Warn("gc: record manifest tombstone failed", "repo", r.PackageName, "digest", r.Digest, "error", err)
-				}
+			// Only federate deletes for repos we own; peer mirrors are pruned locally.
+			if !gc.ownsRepo(r.OwnerID) {
+				continue
+			}
+			if err := gc.db.RecordDeletedManifest(ctx, r.Digest, r.PackageName, gc.cfg.LocalActor); err != nil {
+				gc.logger.Warn("gc: record manifest tombstone failed", "repo", r.PackageName, "digest", r.Digest, "error", err)
 			}
 			if gc.publisher != nil {
 				if err := gc.publisher.PublishManifestDelete(ctx, r.PackageName, r.Digest); err != nil {

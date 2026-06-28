@@ -284,11 +284,13 @@ func New(cfg *config.Config, db *database.DB, blobs blobstore.BlobStore, identit
 		rate.Limit(cfg.RateLimits.InboxRate),
 		cfg.RateLimits.InboxBurst,
 		cfg.RateLimits.TrustedIPs,
+		cfg.RateLimits.TrustedProxies,
 	)
 	registryPushLimiter := newIPRateLimiter(
 		rate.Limit(cfg.RateLimits.RegistryPushRate),
 		cfg.RateLimits.RegistryPushBurst,
 		cfg.RateLimits.TrustedIPs,
+		cfg.RateLimits.TrustedProxies,
 	)
 
 	scheduler := workers.NewScheduler(logger)

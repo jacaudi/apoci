@@ -38,9 +38,11 @@ func NewFetcher(timeout time.Duration, maxBlobSize, maxManifestSize int64, logge
 }
 
 // BlobStream provides a streaming reader for a blob being fetched from a peer.
-// The caller must close Body when done.
+// The caller must close Body when done. Size is the advertised Content-Length,
+// or -1 when the source did not declare one.
 type BlobStream struct {
 	Body io.ReadCloser
+	Size int64
 }
 
 // ErrBlobTooLarge is returned by a blob stream when the peer sends more than
@@ -95,6 +97,7 @@ func (f *Fetcher) FetchStream(ctx context.Context, sourceURL string) (*BlobStrea
 			closer: resp.Body,
 			limit:  f.maxBlobSize,
 		},
+		Size: resp.ContentLength,
 	}, nil
 }
 
@@ -128,6 +131,7 @@ func (f *Fetcher) FetchBlobStream(ctx context.Context, peerEndpoint, repo, diges
 			closer: resp.Body,
 			limit:  f.maxBlobSize,
 		},
+		Size: resp.ContentLength,
 	}, nil
 }
 

@@ -75,7 +75,8 @@ endpoint: "https://registry.example.com"
 #   inboxBurst: 100
 #   registryPushRate: 50          # mutating OCI requests/sec per IP
 #   registryPushBurst: 100
-#   trustedIPs: []                # IPs exempt from rate limiting
+#   trustedIPs: []                # IPs/CIDRs exempt from rate limiting
+#   trustedProxies: []            # IPs/CIDRs of reverse proxies whose X-Forwarded-For is trusted for the client IP
 
 # scanner:
 #   enabled: false               # scan pushed images and attach the CVE report as an OCI referrer (federates to followers)

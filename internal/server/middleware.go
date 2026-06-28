@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"regexp"
 	"runtime/debug"
+	"slices"
 	"strings"
 	"time"
 
@@ -89,7 +90,7 @@ func loggingMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {
 				"status", rw.statusCode,
 				"bytes", rw.written,
 				"duration", time.Since(start),
-				"remote", clientIP(r),
+				"remote", remoteIP(r),
 				"request_id", w.Header().Get("X-Request-ID"),
 			)
 		})
@@ -139,43 +140,48 @@ func registryAuthMiddleware(token, endpoint string, isPrivateRead func(context.C
 // ipRateLimiter provides per-IP rate limiting using x/time/rate with automatic
 // eviction of stale entries via ttlcache.
 type ipRateLimiter struct {
-	cache      *ttlcache.Cache[string, *rate.Limiter]
-	rate       rate.Limit
-	burst      int
-	trustedIPs []net.IPNet
+	cache          *ttlcache.Cache[string, *rate.Limiter]
+	rate           rate.Limit
+	burst          int
+	trustedIPs     []net.IPNet
+	trustedProxies []net.IPNet
 }
 
-func newIPRateLimiter(r rate.Limit, burst int, trustedIPs []string) *ipRateLimiter {
+// parseCIDRs turns a list of IPs/CIDRs into IPNets, skipping unparseable entries.
+func parseCIDRs(entries []string) []net.IPNet {
+	var out []net.IPNet
+	for _, entry := range entries {
+		if strings.Contains(entry, "/") {
+			_, ipNet, err := net.ParseCIDR(entry)
+			if err == nil {
+				out = append(out, *ipNet)
+			}
+			continue
+		}
+		ip := net.ParseIP(entry)
+		if ip != nil {
+			bits := 32
+			if ip.To4() == nil {
+				bits = 128
+			}
+			out = append(out, net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)})
+		}
+	}
+	return out
+}
+
+func newIPRateLimiter(r rate.Limit, burst int, trustedIPs, trustedProxies []string) *ipRateLimiter {
 	cache := ttlcache.New[string, *rate.Limiter](
 		ttlcache.WithTTL[string, *rate.Limiter](10 * time.Minute),
 	)
 	go cache.Start()
 
-	var trusted []net.IPNet
-	for _, entry := range trustedIPs {
-		if strings.Contains(entry, "/") {
-			_, ipNet, err := net.ParseCIDR(entry)
-			if err == nil {
-				trusted = append(trusted, *ipNet)
-			}
-		} else {
-			ip := net.ParseIP(entry)
-			if ip != nil {
-				// Convert single IP to /32 or /128 CIDR
-				bits := 32
-				if ip.To4() == nil {
-					bits = 128
-				}
-				trusted = append(trusted, net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)})
-			}
-		}
-	}
-
 	return &ipRateLimiter{
-		cache:      cache,
-		rate:       r,
-		burst:      burst,
-		trustedIPs: trusted,
+		cache:          cache,
+		rate:           r,
+		burst:          burst,
+		trustedIPs:     parseCIDRs(trustedIPs),
+		trustedProxies: parseCIDRs(trustedProxies),
 	}
 }
 
@@ -190,6 +196,55 @@ func (rl *ipRateLimiter) isTrusted(ipStr string) bool {
 		}
 	}
 	return false
+}
+
+// remoteIP returns the direct peer address, for logging. Unlike clientIP it does
+// not consult X-Forwarded-For.
+func remoteIP(r *http.Request) string {
+	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
+	if ip == "" {
+		return r.RemoteAddr
+	}
+	return ip
+}
+
+func (rl *ipRateLimiter) isTrustedProxy(ip net.IP) bool {
+	for _, proxy := range rl.trustedProxies {
+		if proxy.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// clientIP returns the rate-limit key. Behind a trusted proxy it takes the
+// rightmost X-Forwarded-For entry that isn't itself a trusted proxy; otherwise
+// it uses the direct peer, so an untrusted caller can't forge the header.
+func (rl *ipRateLimiter) clientIP(r *http.Request) string {
+	peer, _, _ := net.SplitHostPort(r.RemoteAddr)
+	if peer == "" {
+		peer = r.RemoteAddr
+	}
+	peerIP := net.ParseIP(peer)
+	if peerIP == nil || !rl.isTrustedProxy(peerIP) {
+		return peer
+	}
+	xff := r.Header.Get("X-Forwarded-For")
+	if xff == "" {
+		return peer
+	}
+	parts := strings.Split(xff, ",")
+	for _, raw := range slices.Backward(parts) {
+		ipStr := strings.TrimSpace(raw)
+		ip := net.ParseIP(ipStr)
+		if ip == nil {
+			continue
+		}
+		if !rl.isTrustedProxy(ip) {
+			return ipStr
+		}
+	}
+	return peer
 }
 
 func (rl *ipRateLimiter) allow(ip string) bool {
@@ -209,18 +264,10 @@ func (rl *ipRateLimiter) Stop() {
 	rl.cache.Stop()
 }
 
-func clientIP(r *http.Request) string {
-	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
-	if ip == "" {
-		return r.RemoteAddr
-	}
-	return ip
-}
-
 func rateLimitMiddleware(rl *ipRateLimiter) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if !rl.allow(clientIP(r)) {
+			if !rl.allow(rl.clientIP(r)) {
 				metrics.InboxRateLimited.Add(1)
 				http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 				return
@@ -237,7 +284,7 @@ func registryPushRateLimitMiddleware(rl *ipRateLimiter) func(http.Handler) http.
 				next.ServeHTTP(w, r)
 				return
 			}
-			if !rl.allow(clientIP(r)) {
+			if !rl.allow(rl.clientIP(r)) {
 				metrics.RegistryPushRateLimited.Add(1)
 				http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 				return

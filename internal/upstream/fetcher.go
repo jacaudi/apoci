@@ -297,6 +297,7 @@ func (f *Fetcher) fetchBlobStreamWithRetry(ctx context.Context, registryName, re
 			Reader: io.LimitReader(resp.Body, f.maxBlobSize+1),
 			closer: resp.Body,
 		},
+		Size: resp.ContentLength,
 	}, nil
 }
 
@@ -373,6 +374,12 @@ func (f *Fetcher) fetchToken(ctx context.Context, reg *registry, repo string, us
 	tokenURL, err := url.Parse(realm)
 	if err != nil {
 		return "", fmt.Errorf("parsing realm URL %q: %w", realm, err)
+	}
+	// The realm host legitimately differs from the registry host (auth.docker.io
+	// vs registry-1.docker.io), so don't pin it; SafeDialContext blocks private-IP
+	// realms. But an https upstream must not be downgraded to a plaintext realm.
+	if endpointURL, perr := url.Parse(reg.config.Endpoint); perr == nil && endpointURL.Scheme == "https" && tokenURL.Scheme != "https" {
+		return "", fmt.Errorf("refusing non-https token realm %q for https upstream %s", realm, reg.config.Name)
 	}
 	q := tokenURL.Query()
 	if service != "" {
