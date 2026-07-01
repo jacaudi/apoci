@@ -17,16 +17,28 @@ A federated, self-hostable container and package registry. Each node is a single
   └────────────┘       └────────────┘       └────────────┘
 ```
 
+## Features
+
+- **One registry, many formats.** Serve OCI containers alongside npm, Cargo, PyPI, NuGet, and Go modules — one node, one token.
+- **Federated by design.** Every node is an ActivityPub actor (`@registry@your.domain`): push once and your artifacts replicate to the peers who follow you. Any peer can then serve them, and you can rebootstrap from any peer if your node goes down.
+- **Pull-through caching.** Proxy and cache an upstream OCI registry or Go module proxy, so external dependencies keep resolving through an upstream outage.
+- **Secure by default.** Signed federation (HTTP Signatures), an explicit follow-approval gate, namespace and origin-ownership enforcement, and SSRF protection.
+- **Built to operate.** Tag retention and garbage collection, a read-only web UI, shoutrrr notifications, and Prometheus metrics.
+- **Runs anywhere.** One binary, backed by SQLite or Postgres, with blobs on the filesystem or S3.
+
 ## Install
+
+Pull the container image (published per release for `linux/amd64` and `linux/arm64`):
+
+```bash
+docker pull git.erwanleboucher.dev/eleboucher/apoci:0.0.48   # see the releases page for the latest tag
+```
+
+Prefer a binary? Install with Go, or build from source:
 
 ```bash
 go install git.erwanleboucher.dev/eleboucher/apoci/cmd/apoci@latest
-```
-
-Or build from source:
-
-```bash
-make build        # binary at ./bin/apoci
+make build        # or build from source — binary at ./bin/apoci
 ```
 
 ## Configure and run
@@ -42,13 +54,50 @@ endpoint: "https://foo.com"
 
 The domain becomes your identity (`@registry@foo.com`) and your repo namespace (`foo.com/*`).
 
+Run it — as a container, mounting your config and a data volume:
+
 ```bash
-apoci serve
+docker run -d -p 5000:5000 \
+  -v ~/apoci/data:/apoci/storage \
+  -v $(pwd)/apoci.yaml:/apoci/config/apoci.yaml:ro \
+  git.erwanleboucher.dev/eleboucher/apoci:0.0.48
 ```
 
-`apoci serve` looks for `apoci.yaml` in the current directory; override with `-c` or `APOCI_CONFIG`. The full set of options is documented in [`configs/apoci.example.yaml`](configs/apoci.example.yaml). Every field has an `APOCI_*` env var equivalent; env vars take precedence.
+…or as the binary: `apoci serve`.
+
+`apoci` looks for `apoci.yaml` in the working directory (override with `-c` or `APOCI_CONFIG`); the container reads it from the mounted `/apoci/config/apoci.yaml`. The full option set is documented in [`configs/apoci.example.yaml`](configs/apoci.example.yaml) — every field has an `APOCI_*` env var equivalent, and env vars take precedence.
 
 On first run, two tokens are generated under `dataDir`: `registry.token` (push) and `admin.token` (federation/admin API).
+
+See [docs/deployment.md](docs/deployment.md) for Compose, split-domain, and production options.
+
+### Common settings
+
+Everything past `endpoint` is optional; SQLite + filesystem is the zero-config default. The most common knobs:
+
+```yaml
+dataDir: "~/.apoci"         # database, blobs, keypair, and tokens live here — back it up
+storage:
+  type: local               # local (default) or s3
+database:
+  driver: sqlite            # sqlite (default) or postgres
+  dsn: ""                   # required for postgres
+tls:
+  cert: /etc/apoci/tls.crt  # or terminate TLS at a reverse proxy instead
+  key: /etc/apoci/tls.key
+```
+
+## How it works
+
+Each apoci node is one process — a multi-format registry and an ActivityPub actor for a single operator domain. There is no central hub.
+
+- **Storage** — metadata in SQLite (or Postgres); blobs on the filesystem (or S3). Back up one directory.
+- **Push** — an artifact is stored under your domain namespace (`foo.com/*`) and emitted as a signed ActivityPub activity to your followers.
+- **Federate** — a peer that follows you ingests the activity and replicates the file bytes in the background, so your artifacts live on their node too.
+- **Pull** — served locally if present; otherwise the node 302-redirects to a peer that has the bytes, verifies the digest, caches, and serves. The next pull is local.
+- **Survive** — if your node dies, followers still hold your artifacts, and you rebootstrap from any of them.
+
+The domain is the unit of identity, namespace, and trust — see [Repository naming](#repository-naming) and [Federation](#federation) below.
 
 ## Push
 
@@ -60,73 +109,48 @@ docker push foo.com/myapp:v1
 
 If you don't have TLS yet, either set up a TLS reverse proxy or add `"insecure-registries": ["foo.com:5000"]` to your Docker daemon config.
 
-### Other backends
+apoci serves six artifact formats over the same token. What each supports:
 
-| Backend | Route | Push |
-|---------|-------|------|
-| OCI | `/v2/` | `docker push foo.com/myapp:v1` |
-| npm | `/npm/` | `npm publish --registry https://foo.com/npm/` |
-| Cargo | `/cargo/` | `cargo publish --registry apoci` |
-| PyPI | `/pypi/` | `twine upload --repository apoci dist/*` |
-| NuGet | `/nuget/` | `dotnet nuget push pkg.nupkg --api-key $TOKEN --source https://foo.com/nuget/v3/index.json` |
-| Go modules | `/goproxy/` | `curl -X PUT -H "Authorization: Bearer $TOKEN" --data-binary @mod.zip https://foo.com/goproxy/<module>/@v/<version>.zip` |
+| Format | Local store | Caching proxy | Federation |
+|--------|:---:|:---:|:---:|
+| OCI | ✓ | ✓ | ✓ |
+| npm | ✓ | – | ✓ |
+| Cargo | ✓ | – | ✓ |
+| PyPI | ✓ | – | ✓ |
+| NuGet | ✓ | – | ✓ |
+| Go modules | ✓ | ✓ | ✓ |
 
-All six use the same registry token and federate over the same channel. Per-backend overrides (disable, opt out of federation, separate token) live under `backends.*` in the config.
+- **Local store** — push and self-host your own artifacts of this format (a self-hosted registry you own).
+- **Caching proxy** — *also* pull-through-cache an upstream registry (OCI and Go modules only).
+- **Federation** — writes replicate to peers that follow you.
 
-NuGet clients need the source registered first:
-
-```bash
-dotnet nuget add source https://foo.com/nuget/v3/index.json \
-  --name apoci --username apoci --password "$TOKEN" --store-password-in-clear-text
-```
-
-### Go modules (goproxy)
-
-The `/goproxy/` backend serves the [Go module proxy protocol](https://go.dev/ref/mod#goproxy-protocol) as both a store and a pull-through cache. Go has no native publish command, so push a [module zip](https://go.dev/ref/mod#zip-files) with an authed `PUT` (`.mod` and `.info` are derived from the zip). Set `backends.goproxy.upstreams` to pull-through-cache an upstream like `https://proxy.golang.org`.
-
-Public modules pulled through the cache are still verified by your client's `GOSUMDB` (apoci does not verify upstream content itself), so leave checksum-DB verification on. Privately-hosted modules aren't in `sum.golang.org`, so opt only those out:
-
-```bash
-export GOPROXY=https://foo.com/goproxy
-export GOPRIVATE='your.private/*'   # opts private modules out of GOSUMDB; keep it enabled for public ones
-go get your.private/module@v1.0.0
-```
-
-```yaml
-backends:
-  goproxy:
-    enabled: true
-    federate: true
-    upstreams:
-      - https://proxy.golang.org
-```
+"Local store" is about self-hosting, not access control — artifacts you publish are pull-public (the only private-read gate is on cached OCI upstream mirrors, [docs/upstream-proxy.md](docs/upstream-proxy.md)). Push commands and per-backend configuration: [docs/backends.md](docs/backends.md).
 
 ## Repository naming
 
-Repos are namespaced by domain, the same idea as `@user@domain` in the fediverse. Two operators on different domains can never clash.
-
-```
-docker pull <node>/<origin-domain>/<image>:<tag>
-```
-
-If you operate `foo.com` and follow `bar.com`:
-
-```bash
-docker pull foo.com/foo.com/myapp:v1     # your image, from your node
-docker pull bar.com/bar.com/myapp:v1     # bar's image, directly
-docker pull foo.com/bar.com/myapp:v1     # bar's image, served by your node (federated)
-```
-
-The third case is the point: foo follows bar, so foo has bar's metadata. On pull, foo fetches the blob from bar, verifies the digest, caches it, and serves it. Next pull is local.
-
-You don't need to type your own domain prefix on push — it's added automatically:
+Repos are namespaced by domain, the same idea as `@user@domain` in the fediverse. Two operators on different domains can never clash. You don't type your own domain prefix — it's added automatically on both push and pull:
 
 ```bash
 docker push foo.com/myapp:v1             # stored as foo.com/myapp
+docker pull foo.com/myapp:v1             # your image, from your node
 docker push foo.com/foreign.dev/app:v1   # rejected: foreign domain
 ```
 
-Pulls require the repository to exist (created by a prior push or federation).
+To pull a **federated** image (from a peer you follow), name the origin domain explicitly:
+
+```bash
+docker pull bar.com/bar.com/myapp:v1     # bar's image, from bar directly
+docker pull foo.com/bar.com/myapp:v1     # bar's image, served by your node (federated)
+```
+
+That last case is the point: foo follows bar, so foo has bar's metadata. On pull, foo fetches the blob from bar, verifies the digest, caches it, and serves it — the next pull is local. Pulls require the repository to exist (created by a prior push or federation).
+
+<details>
+<summary>Fully-qualified form</summary>
+
+Every repo also answers to its explicit `<node>/<origin-domain>/<image>` address, so your own image is equally reachable as `foo.com/foo.com/myapp:v1`. The bare form above is a convenience — apoci re-adds your own domain automatically on pull. The fully-qualified form is what federated pulls use, and it's the one to reach for in scripts or when a repo name's first path segment contains a dot (where the bare form can't be re-expanded). The web UI shows the bare command by default with the fully-qualified form one expand away.
+
+</details>
 
 ## Federation
 
@@ -146,169 +170,32 @@ apoci follow accept foo.com
 
 By default, every follow needs operator approval. Set `federation.autoAccept: mutual` to auto-accept peers you already follow, `all` for a public profile, or list specific domains in `federation.allowedDomains`.
 
-Each backend emits its own ActivityPub activities on write; peers ingest them and replicate file bytes in the background. If a blob hasn't replicated yet, the download handler 302s to a peer that has it. See [`docs/federation.md`](docs/federation.md) for the full activity contract.
+Each backend emits its own ActivityPub activities on write; peers ingest them and replicate file bytes in the background. If a blob hasn't replicated yet, the download handler 302s to a peer that has it.
 
-### Manage follows
-
-```bash
-apoci follow list
-apoci follow outgoing
-apoci follow reject bar.com
-apoci follow remove bar.com
-apoci actor list
-apoci identity show
-```
-
-These admin subcommands accept `--remote` and `--token` (or `APOCI_REMOTE_URL` / `APOCI_ADMIN_TOKEN`) to target a remote node, useful for headless or containerized instances.
-
-### Retention
-
-Without retention, every push of `:latest` leaves an orphan manifest behind, and peers mirror them all. Configure GC to drop old tags and reap untagged manifests:
-
-```yaml
-gc:
-  interval: 6h
-  blobGCGracePeriod: 1h
-  untaggedManifestAge: 168h    # 7 days
-  retention:
-    keepLastN: 5
-    maxAge: 720h               # 30 days
-    pinnedGlobs: ["latest", "v*"]
-    perRepo:
-      - repo: "foo.com/myapp"
-        keepLastN: 10
-```
-
-Pinned globs are never deleted and don't count against `keepLastN`. Resolution order: `perRepo` config → DB column overrides → global default. Tag and manifest deletes federate to peers, which free their copies on the next GC cycle. Run a GC cycle on demand with `apoci gc run`.
-
-Tags are freely overwritable — re-pushing a tag repoints it at the new manifest.
-
-### Per-follower filters
-
-By default a follower mirrors every push. To restrict a follower to specific tag globs:
-
-```bash
-apoci follow filter bar.com --tag "latest,v*"
-apoci follow filter bar.com --clear
-```
-
-Globs use `path.Match` syntax. Blob announces, manifest deletes, and untagged manifest pushes always pass the filter so peers don't end up with dangling references.
-
-To silence federation for a repo across all followers, set `federation.excludedRepos` in the config (globs use `path.Match`). Matched repos skip outbound publish entirely — no activity row, no fan-out.
-
-## Upstream proxy
-
-apoci can act as a pull-through cache for any external OCI registry. Pull through your node using the upstream hostname as the leading path segment:
-
-```bash
-docker pull foo.com/docker.io/library/nginx:latest
-docker pull foo.com/ghcr.io/user/repo:tag
-```
-
-First pull caches the manifest and blobs locally; subsequent pulls don't touch the upstream.
-
-```yaml
-upstreams:
-  enabled: true
-  registries:
-    - name: docker.io
-      endpoint: "https://registry-1.docker.io"
-      auth: token
-    - name: ghcr.io
-      endpoint: "https://ghcr.io"
-      auth: token
-      username: myuser
-      password: "ghp_yourtoken"
-      private: true    # require registry token to pull cached images from this upstream
-```
-
-`auth` is `none`, `basic`, or `token` (Docker Bearer challenge). If an upstream goes unreachable, a circuit breaker opens and pulls return 404 immediately until the next probe succeeds.
-
-`private: true` is enforced per upstream registry, not per image. If you proxy private packages from a host that also serves public packages (GHCR, Docker Hub), all cached images from that upstream require auth.
-
-Drop a cached upstream repo with `apoci mirror evict <repo>` (add `--digest sha256:…` for a single manifest); the upstream is untouched.
-
-## Web UI
-
-Browser-based image browser at the root path:
-
-```yaml
-ui:
-  enabled: true
-```
-
-Read-only listing of your images and federated images, with copy-paste pull commands. Repos marked `private: true` in the database are excluded. From the CLI, `apoci images list` prints hosted images and their sizes.
-
-## Deploy
-
-```bash
-make docker
-docker run -d -p 5000:5000 \
-  --user 1000:1000 \
-  -v ~/apoci/data:/apoci/storage \
-  -v $(pwd)/apoci.yaml:/apoci/config/apoci.yaml:ro \
-  apoci:latest
-```
-
-Compose:
-
-```bash
-docker compose up --build -d                           # SQLite
-docker compose -f docker-compose.postgres.yml up -d    # Postgres
-```
-
-### Split-domain
-
-Run on `registry.example.com` while your handle is `@registry@example.com`:
-
-```yaml
-endpoint: "https://registry.example.com"
-accountDomain: "example.com"
-```
-
-Repos are namespaced under `example.com/*`. Proxy `/.well-known/webfinger` from the vanity domain to the service:
-
-```
-example.com {
-    handle /.well-known/webfinger {
-        reverse_proxy registry.example.com:443
-    }
-    respond 404
-}
-```
-
-## Backup
-
-Back up `dataDir` (default `/apoci/storage`). It contains the SQLite database (use `pg_dump` for Postgres), blob storage, the AP keypair, and both tokens. Restore by stopping the node, replacing the directory, and restarting.
-
-Schema migrations run on startup. Peer version skew is tolerated within the same major version.
-
-## Notifications and metrics
-
-Send alerts to Discord, Slack, Telegram, email, etc. via [shoutrrr](https://github.com/nicholas-fedor/shoutrrr) URLs:
-
-```yaml
-notifications:
-  urls:
-    - "discord://token@id"
-  events:
-    - peer_health
-    - follow_request
-    - replication_failure
-    - gc_error
-```
-
-Metrics: set `metrics.enabled: true` to expose Prometheus metrics at `/metrics` on the metrics port, optionally protected by a bearer `metrics.token`.
+See [docs/federation.md](docs/federation.md) for follow management, per-follower filters, and the full activity contract.
 
 ## Security
 
 - Follow gate: only approved peers can send activities
 - HTTP Signatures (RSA-SHA256), 5-minute validity window, replay cache
-- Namespace enforcement: writes scoped to the node's domain, reads require the repo to exist
-- Origin ownership: a followed peer can only write repos it created
-- SHA-256 verified on every blob fetch
-- SSRF protection: private IPs blocked after DNS resolution
-- Rate limiting: mutating OCI requests (default 50 req/s per IP, burst 100) and the federation inbox (30 req/s, burst 100); both tunable under `rateLimits`
+- Namespace enforcement (writes scoped to the node's domain) and origin ownership (a peer can only write repos it created)
+- SHA-256 verified on every blob fetch; SSRF protection blocks private IPs after DNS resolution
+- Rate limiting on mutating OCI requests and the federation inbox
+
+See [docs/security.md](docs/security.md) for the full model.
+
+## Documentation
+
+In-depth guides live in [`docs/`](docs/):
+
+- [Package backends](docs/backends.md) — npm, Cargo, PyPI, NuGet, and Go modules (goproxy)
+- [Federation](docs/federation.md) — follow management, per-follower filters, and the activity contract
+- [Retention and garbage collection](docs/retention.md) — GC, tag retention, pinned globs
+- [Upstream proxy](docs/upstream-proxy.md) — pull-through cache for external registries
+- [Web UI](docs/web-ui.md) — the browser image browser
+- [Deployment and operations](docs/deployment.md) — Docker, Compose, split-domain, backup
+- [Notifications and metrics](docs/observability.md) — alerts and Prometheus
+- [Security model](docs/security.md) — the full security posture
 
 ## Contributing
 
