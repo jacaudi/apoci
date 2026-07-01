@@ -26,8 +26,10 @@ func TestExpandFileSecretsLoadsFromFile(t *testing.T) {
 	t.Setenv(name, "")
 	t.Setenv(name+"_FILE", writeSecret(t, "  s3cr3t-value\n"))
 
-	require.NoError(t, expandFileSecrets(name))
+	got, err := expandFileSecrets(name)
+	require.NoError(t, err)
 	require.Equal(t, "s3cr3t-value", os.Getenv(name))
+	require.Equal(t, []string{name}, got, "a file-sourced var must be reported")
 }
 
 // Invariant 2: bare env set AND _FILE set → bare env wins, file ignored.
@@ -36,8 +38,10 @@ func TestExpandFileSecretsBareEnvWins(t *testing.T) {
 	t.Setenv(name, "explicit-value")
 	t.Setenv(name+"_FILE", writeSecret(t, "file-value"))
 
-	require.NoError(t, expandFileSecrets(name))
+	got, err := expandFileSecrets(name)
+	require.NoError(t, err)
 	require.Equal(t, "explicit-value", os.Getenv(name))
+	require.Empty(t, got, "a directly-set var must not be reported as file-sourced")
 }
 
 // Invariant 3: neither set → no-op, var stays empty (auto-gen fallback preserved).
@@ -47,8 +51,10 @@ func TestExpandFileSecretsNoOpWhenUnset(t *testing.T) {
 	// Ensure no _FILE is present.
 	require.NoError(t, os.Unsetenv(name+"_FILE"))
 
-	require.NoError(t, expandFileSecrets(name))
+	got, err := expandFileSecrets(name)
+	require.NoError(t, err)
 	require.Empty(t, os.Getenv(name))
+	require.Empty(t, got, "no file-sourced vars when neither the bare var nor _FILE is set")
 }
 
 // Invariant 4: _FILE points at an unreadable/nonexistent path → error (loud failure).
@@ -57,8 +63,9 @@ func TestExpandFileSecretsUnreadableFileErrors(t *testing.T) {
 	t.Setenv(name, "")
 	t.Setenv(name+"_FILE", filepath.Join(t.TempDir(), "does-not-exist"))
 
-	err := expandFileSecrets(name)
+	got, err := expandFileSecrets(name)
 	require.Error(t, err)
+	require.Nil(t, got, "no vars reported on failure")
 	require.Empty(t, os.Getenv(name), "bare var must remain unset on failure")
 }
 
@@ -87,4 +94,73 @@ func TestRegistryTokenFileUnreadable(t *testing.T) {
 
 	_, err := Load(path, true)
 	require.Error(t, err)
+}
+
+// Subprocess-leak fix: a file-sourced secret must end up in the Config struct but
+// NOT remain in the process environment, so it is not inherited by spawned trivy
+// child processes (see internal/scanner/trivy.go, cmd.Env = append(os.Environ()...)).
+func TestFileSourcedSecretUnsetFromEnvAfterLoad(t *testing.T) {
+	dir := t.TempDir()
+	path := writeConfig(t, fmt.Sprintf("endpoint: \"https://test.example.com\"\ndataDir: %q\n", dir))
+
+	t.Setenv("APOCI_REGISTRY_TOKEN", "")
+	t.Setenv("APOCI_REGISTRY_TOKEN_FILE", writeSecret(t, "file-mounted-token\n"))
+
+	cfg, err := Load(path, true)
+	require.NoError(t, err)
+
+	require.Equal(t, "file-mounted-token", cfg.RegistryToken, "value must live in cfg")
+	require.Empty(t, os.Getenv("APOCI_REGISTRY_TOKEN"), "value must NOT remain in the process environment")
+}
+
+// A secret set directly as a bare env var (not via _FILE) is pre-existing process
+// state and out of scope: Load must leave it untouched in the environment.
+func TestDirectlySetSecretEnvUnchangedAfterLoad(t *testing.T) {
+	dir := t.TempDir()
+	path := writeConfig(t, fmt.Sprintf("endpoint: \"https://test.example.com\"\ndataDir: %q\n", dir))
+
+	t.Setenv("APOCI_REGISTRY_TOKEN", "direct-value")
+	require.NoError(t, os.Unsetenv("APOCI_REGISTRY_TOKEN_FILE"))
+
+	cfg, err := Load(path, true)
+	require.NoError(t, err)
+
+	require.Equal(t, "direct-value", cfg.RegistryToken)
+	require.Equal(t, "direct-value", os.Getenv("APOCI_REGISTRY_TOKEN"), "a directly-set env var must be left unchanged")
+}
+
+// When neither the bare var nor _FILE is set, the auto-generate fallback still runs
+// and nothing is spuriously written to the environment.
+func TestNeitherSetStillAutoGenerates(t *testing.T) {
+	dir := t.TempDir()
+	path := writeConfig(t, fmt.Sprintf("endpoint: \"https://test.example.com\"\ndataDir: %q\n", dir))
+
+	t.Setenv("APOCI_REGISTRY_TOKEN", "")
+	require.NoError(t, os.Unsetenv("APOCI_REGISTRY_TOKEN_FILE"))
+
+	cfg, err := Load(path, true)
+	require.NoError(t, err)
+
+	require.NotEmpty(t, cfg.RegistryToken, "auto-gen fallback must still populate the token")
+	require.Empty(t, os.Getenv("APOCI_REGISTRY_TOKEN"), "nothing should be written to the env")
+}
+
+// A file-mounted APOCI_ADMIN_TOKEN — the most sensitive of the five secrets — is
+// scrubbed from the environment after Load, just like the other four. The bare env
+// var is never visible to cmd/apoci's remoteClient (it reads os.Getenv before Load
+// ever runs expandFileSecrets), so scrubbing it breaks nothing and stops the token
+// leaking into spawned trivy children.
+func TestAdminTokenFromFileUnsetFromEnvAfterLoad(t *testing.T) {
+	dir := t.TempDir()
+	path := writeConfig(t, fmt.Sprintf("endpoint: \"https://test.example.com\"\ndataDir: %q\n", dir))
+
+	t.Setenv("APOCI_ADMIN_TOKEN", "")
+	t.Setenv("APOCI_ADMIN_TOKEN_FILE", writeSecret(t, "file-admin-token\n"))
+
+	cfg, err := Load(path, true)
+	require.NoError(t, err)
+
+	require.Equal(t, "file-admin-token", cfg.AdminToken, "value must live in cfg")
+	require.Empty(t, os.Getenv("APOCI_ADMIN_TOKEN"),
+		"a file-mounted admin token must NOT remain in the process environment")
 }

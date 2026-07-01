@@ -365,19 +365,33 @@ func Load(path string, mustExist bool) (*Config, error) {
 	// Honor the *_FILE secret convention (Docker/Kubernetes file-mounted
 	// secrets) before parsing env vars, so a file-mounted secret is loaded
 	// into its bare env var and picked up by cenv.Parse below.
-	if err := expandFileSecrets(
+	fileSourced, err := expandFileSecrets(
 		"APOCI_REGISTRY_TOKEN",
 		"APOCI_ADMIN_TOKEN",
 		"APOCI_DB_DSN",
 		"APOCI_STORAGE_S3_ACCESS_KEY",
 		"APOCI_STORAGE_S3_SECRET_KEY",
-	); err != nil {
+	)
+	if err != nil {
 		return nil, err
 	}
 
 	// Env vars override YAML values.
 	if err := cenv.Parse(cfg); err != nil {
 		return nil, fmt.Errorf("parsing environment variables: %w", err)
+	}
+
+	// cenv.Parse has copied the file-sourced secrets into cfg, so scrub them
+	// back out of the process environment. Otherwise they are inherited by every
+	// spawned child process (e.g. the trivy scanner does
+	// cmd.Env = append(os.Environ(), ...) in internal/scanner/trivy.go), which
+	// defeats the point of keeping file-mounted secrets out of the environment.
+	// Only vars we populated FROM A FILE are scrubbed; a var the operator set
+	// directly in the environment is pre-existing state and left untouched.
+	for _, name := range fileSourced {
+		if err := os.Unsetenv(name); err != nil {
+			return nil, fmt.Errorf("scrubbing file-sourced secret %s from environment: %w", name, err)
+		}
 	}
 
 	// Handle TLS env vars — the pointer may be nil from YAML.
@@ -618,7 +632,13 @@ func applyUpstreamDefaults(cfg *Config) {
 // from the file named by <VAR>_FILE. An explicitly-set bare env var always wins.
 // An unreadable <VAR>_FILE is a hard error — silently falling back would defeat
 // the operator's intent to supply the secret from a file.
-func expandFileSecrets(vars ...string) error {
+//
+// It returns the names of the vars it actually populated from a file. Vars that
+// were already set directly in the environment, or that had no <VAR>_FILE, are
+// not included — the caller uses this list to scrub only the file-sourced values
+// back out of the environment after they have been parsed into the Config.
+func expandFileSecrets(vars ...string) ([]string, error) {
+	var fileSourced []string
 	for _, name := range vars {
 		if os.Getenv(name) != "" {
 			continue
@@ -629,13 +649,14 @@ func expandFileSecrets(vars ...string) error {
 		}
 		b, err := os.ReadFile(path) //nolint:gosec // path is operator-controlled via the *_FILE env var
 		if err != nil {
-			return fmt.Errorf("reading %s_FILE (%s): %w", name, path, err)
+			return nil, fmt.Errorf("reading %s_FILE (%s): %w", name, path, err)
 		}
 		if err := os.Setenv(name, strings.TrimSpace(string(b))); err != nil {
-			return err
+			return nil, err
 		}
+		fileSourced = append(fileSourced, name)
 	}
-	return nil
+	return fileSourced, nil
 }
 
 func applyTokenDefaults(cfg *Config) error {
