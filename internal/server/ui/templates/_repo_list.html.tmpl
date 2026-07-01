@@ -29,6 +29,15 @@
             <code>docker pull {{$.RegistryHost}}/{{.Name}}:{{.FirstTag}}</code>
             <button class="copy-btn" data-copy="docker pull {{$.RegistryHost}}/{{.Name}}:{{.FirstTag}}">Copy</button>
         </div>
+        {{if ne .Name .FullName}}
+        <details>
+            <summary>Fully-qualified address</summary>
+            <div class="pull-cmd">
+                <code>docker pull {{$.RegistryHost}}/{{.FullName}}:{{.FirstTag}}</code>
+                <button class="copy-btn" data-copy="docker pull {{$.RegistryHost}}/{{.FullName}}:{{.FirstTag}}">Copy</button>
+            </div>
+        </details>
+        {{end}}
         {{end}}
     </article>
     {{end}}

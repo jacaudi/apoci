@@ -205,7 +205,7 @@ func TestBuildIndexDataStripsLocalDomainPrefix(t *testing.T) {
 	reposPage := &database.ReposPage{
 		Repos: []database.RepoWithStats{
 			// Locally-owned, domain-prefixed (as normalizeRepo stores it).
-			{Name: testDomain + "/wreckroll", OwnerID: self, Tags: []string{"latest"}},
+			{Name: testDomain + "/wreckroll", OwnerID: self, Tags: []string{testTagLatest}},
 			// Locally-owned but NOT domain-prefixed (edge case, invariant 4).
 			{Name: "weirdapp", OwnerID: self},
 			// Federated repo owned by a peer (invariant 2).
@@ -354,6 +354,90 @@ func TestUIRepoTagsFederatedUnchanged(t *testing.T) {
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
 	assert.Contains(t, string(body), "<h1>peer.example.dev/user/app</h1>")
+}
+
+// TestUIIndexGuardsDottedSegmentAndDisclosure covers both changes on the index
+// path: the dotted-segment guard (a local repo whose stripped first segment has
+// a dot keeps its full, resolving name) and the advanced fully-qualified pull
+// disclosure (shown only for repos whose name was actually stripped).
+func TestUIIndexGuardsDottedSegmentAndDisclosure(t *testing.T) {
+	s := testServerWithUI(t, true)
+	self := s.identity.ActorURL
+
+	reposPage := &database.ReposPage{
+		Repos: []database.RepoWithStats{
+			// Simple local repo: strips to the bare name; the bare pull resolves.
+			{Name: testDomain + "/myapp", OwnerID: self, Tags: []string{testTagLatest}},
+			// Dotted local repo: stripping would yield "sub.dom/app", whose bare
+			// pull does NOT resolve (normalizeRepo sees the dot and won't
+			// re-prepend). The guard must keep the full name.
+			{Name: testDomain + "/sub.dom/app", OwnerID: self, Tags: []string{testTagLatest}},
+		},
+		TotalCount: 2,
+		Page:       1,
+		TotalPages: 1,
+	}
+
+	data := s.buildIndexData(reposPage, "", 0, 0)
+	require.Len(t, data.LocalRepos, 2)
+
+	// Simple repo: Name stripped, FullName retains the stored prefix.
+	assert.Equal(t, "myapp", data.LocalRepos[0].Name)
+	assert.Equal(t, testDomain+"/myapp", data.LocalRepos[0].FullName)
+	// Dotted repo: guard keeps the full name so the displayed pull resolves.
+	assert.Equal(t, testDomain+"/sub.dom/app", data.LocalRepos[1].Name)
+	assert.Equal(t, testDomain+"/sub.dom/app", data.LocalRepos[1].FullName)
+
+	rec := httptest.NewRecorder()
+	s.renderTemplate(rec, "_repo_list.html.tmpl", data)
+	body := rec.Body.String()
+
+	// Simple repo: bare primary command plus a fully-qualified disclosure.
+	assert.Contains(t, body, "docker pull "+testDomain+"/myapp:latest")
+	assert.Contains(t, body, "<details")
+	assert.Contains(t, body, "docker pull "+testDomain+"/"+testDomain+"/myapp:latest")
+
+	// Dotted repo: the primary command is already the fully-qualified, resolving
+	// form, so it must render as such.
+	assert.Contains(t, body, "docker pull "+testDomain+"/"+testDomain+"/sub.dom/app:latest")
+
+	// Only the stripped (simple) repo gets a disclosure; the dotted repo — whose
+	// primary already equals its fully-qualified form — does not.
+	assert.Equal(t, 1, strings.Count(body, "<details"))
+}
+
+// TestUIRepoTagsAdvancedPullDisclosure covers the fully-qualified pull disclosure
+// on the tags page: present for a stripped local repo, absent for a federated
+// repo whose displayed name already equals its fully-qualified form.
+func TestUIRepoTagsAdvancedPullDisclosure(t *testing.T) {
+	s := testServerWithUI(t, true)
+
+	// Simple local repo: primary is bare, disclosure exposes the qualified form.
+	local := RepoTagsData{
+		RegistryHost: testDomain,
+		RepoName:     "myapp",
+		FullRepoName: testDomain + "/myapp",
+		Tags:         []TagView{{Name: testTagLatest}},
+	}
+	rec := httptest.NewRecorder()
+	s.renderTemplate(rec, "repo_tags.html.tmpl", local)
+	body := rec.Body.String()
+	assert.Contains(t, body, "docker pull "+testDomain+"/myapp:latest")
+	assert.Contains(t, body, "<details")
+	assert.Contains(t, body, "docker pull "+testDomain+"/"+testDomain+"/myapp:latest")
+
+	// Federated repo: RepoName already equals FullRepoName, so no disclosure.
+	fed := RepoTagsData{
+		RegistryHost: testDomain,
+		RepoName:     "bar.com/app",
+		FullRepoName: "bar.com/app",
+		Tags:         []TagView{{Name: testTagLatest}},
+	}
+	rec2 := httptest.NewRecorder()
+	s.renderTemplate(rec2, "repo_tags.html.tmpl", fed)
+	body2 := rec2.Body.String()
+	assert.NotContains(t, body2, "<details")
+	assert.Contains(t, body2, "docker pull "+testDomain+"/bar.com/app:latest")
 }
 
 func TestHumanizeBytes(t *testing.T) {

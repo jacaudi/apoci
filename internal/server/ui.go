@@ -22,6 +22,7 @@ const digestDisplayLen = 19 // sha256:abc... truncated for display
 
 type RepoView struct {
 	Name       string
+	FullName   string // fully-qualified stored name (namespace/name); == Name unless stripped
 	Tags       []string
 	TagCount   int
 	FirstTag   string
@@ -57,6 +58,7 @@ type RepoTagsData struct {
 	Endpoint     string
 	RegistryHost string // Endpoint without scheme, for docker pull commands
 	RepoName     string
+	FullRepoName string // fully-qualified stored name; == RepoName unless stripped
 	Tags         []TagView
 	Page         int
 	TotalPages   int
@@ -253,6 +255,7 @@ func (s *Server) handleUIRepoTags(w http.ResponseWriter, r *http.Request) {
 		Endpoint:     s.cfg.Endpoint,
 		RegistryHost: stripScheme(s.cfg.Endpoint),
 		RepoName:     displayName,
+		FullRepoName: repoName, // full stored name; displayName may be stripped
 		Tags:         tagViews,
 		Page:         tagsPage.Page,
 		TotalPages:   tagsPage.TotalPages,
@@ -312,6 +315,7 @@ func (s *Server) buildIndexData(reposPage *database.ReposPage, query string, fol
 		}
 		rv := RepoView{
 			Name:       r.Name,
+			FullName:   r.Name, // full stored name; Name may be stripped below
 			Tags:       r.Tags,
 			TagCount:   len(r.Tags),
 			FirstTag:   firstTag,
@@ -379,8 +383,18 @@ func (s *Server) localRepoPrefix() string {
 // so the UI shows the bare name and the pull command (RegistryHost + name) is
 // not doubled. It is a no-op when the prefix is absent. Storage and the
 // /v2/_catalog output keep the full stored name; this is display-only.
+//
+// The strip is guarded: if the stripped result's first path segment contains a
+// dot (e.g. "registry.example.com/sub.dom/app" -> "sub.dom/app"), a bare pull of
+// that name would NOT resolve — normalizeRepo sees the dotted first segment and
+// declines to re-prepend the namespace, so the pull 404s. In that case the full,
+// always-resolving name is returned unchanged.
 func (s *Server) localDisplayName(name string) string {
-	return strings.TrimPrefix(name, s.localRepoPrefix())
+	stripped := strings.TrimPrefix(name, s.localRepoPrefix())
+	if first, _, _ := strings.Cut(stripped, "/"); strings.Contains(first, ".") {
+		return name
+	}
+	return stripped
 }
 
 func stripScheme(endpoint string) string {
