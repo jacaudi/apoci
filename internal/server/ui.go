@@ -359,16 +359,22 @@ func (s *Server) buildIndexData(reposPage *database.ReposPage, query string, fol
 	}
 }
 
-// localRepoPrefix is the account-domain namespace prefix that normalizeRepo
-// bakes into locally-pushed repo names (e.g. "registry.example.com/"). It is the
-// single source of that prefix: AccountDomain is the value normalizeRepo
-// prepends, defaulting to the endpoint Domain but possibly differing
-// (split-domain deployments).
+// localRepoPrefix is the namespace prefix that normalizeRepo bakes into
+// locally-pushed repo names (e.g. "registry.example.com/"). It reads the value
+// straight from the registry so the UI strips exactly what storage prepended:
+// the registry's resolved namespace is the single source of truth, and mirrors
+// normalizeRepo (which prepends nothing when the namespace is empty). Reading
+// it here — rather than recomputing from identity.AccountDomain — keeps display
+// and storage from diverging when their inputs disagree.
 func (s *Server) localRepoPrefix() string {
-	return s.identity.AccountDomain + "/"
+	ns := s.registry.Namespace()
+	if ns == "" {
+		return ""
+	}
+	return ns + "/"
 }
 
-// localDisplayName strips the account-domain namespace prefix that normalizeRepo
+// localDisplayName strips the registry namespace prefix that normalizeRepo
 // bakes into locally-pushed repo names (e.g. "registry.example.com/app" -> "app"),
 // so the UI shows the bare name and the pull command (RegistryHost + name) is
 // not doubled. It is a no-op when the prefix is absent. Storage and the

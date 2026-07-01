@@ -28,6 +28,16 @@ func testServerWithUI(t *testing.T, uiEnabled bool) *Server {
 // Domain. Passing testDomain reproduces the default single-domain deployment.
 func testServerWithAccountDomain(t *testing.T, uiEnabled bool, accountDomain string) *Server {
 	t.Helper()
+	return testServerWithDomains(t, uiEnabled, "https://test.example.com", testDomain, accountDomain)
+}
+
+// testServerWithDomains builds a UI test server with independently-set endpoint,
+// endpoint Domain, and AccountDomain, so tests can reproduce deployments where
+// the endpoint host, the federation Domain, and the registry namespace differ.
+// (The production config loader derives Domain from the endpoint host and
+// defaults AccountDomain to it, so these only diverge under direct construction.)
+func testServerWithDomains(t *testing.T, uiEnabled bool, endpoint, domain, accountDomain string) *Server {
+	t.Helper()
 	dir := t.TempDir()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -39,14 +49,14 @@ func testServerWithAccountDomain(t *testing.T, uiEnabled bool, accountDomain str
 	blobs, err := blobstore.New(dir, logger)
 	require.NoError(t, err)
 
-	identity, err := activitypub.LoadOrCreateIdentity("https://test.example.com", testDomain, accountDomain, "", logger)
+	identity, err := activitypub.LoadOrCreateIdentity(endpoint, domain, accountDomain, "", logger)
 	require.NoError(t, err)
 
 	gcEnabled := true
 	cfg := &config.Config{
 		Name:          "test-node",
-		Endpoint:      "https://test.example.com",
-		Domain:        testDomain,
+		Endpoint:      endpoint,
+		Domain:        domain,
 		AccountDomain: accountDomain,
 		Listen:        ":0",
 		RegistryToken: "test-token",
@@ -277,6 +287,53 @@ func TestUISplitAccountDomainStripsPrefix(t *testing.T) {
 	assert.Equal(t, http.StatusOK, tagsResp.StatusCode)
 	assert.Contains(t, string(tagsBody), "<h1>wreckroll</h1>")
 	assert.NotContains(t, string(tagsBody), accountDomain+"/wreckroll")
+}
+
+// TestUIUnsetAccountDomainDivergentDomain reproduces the divergence the
+// single-source refactor closes: AccountDomain is unset while the endpoint host
+// differs from the federation Domain. With AccountDomain empty, normalizeRepo
+// falls back to the actor-URL host (the endpoint host) and namespaces local
+// repos under it, while identity.AccountDomain falls back to Domain. The UI must
+// strip the prefix normalizeRepo actually prepended (the registry namespace =
+// endpoint host), not identity.AccountDomain (= Domain), or display and the tags
+// retry both break.
+func TestUIUnsetAccountDomainDivergentDomain(t *testing.T) {
+	const (
+		endpoint     = "https://registry.example.com"
+		endpointHost = "registry.example.com"
+		domain       = "social.example.com" // != endpointHost; identity.AccountDomain defaults here
+	)
+	s := testServerWithDomains(t, true, endpoint, domain, "")
+	srv := httptest.NewServer(s.routes())
+	defer srv.Close()
+
+	// normalizeRepo namespaces local repos under the endpoint host when
+	// AccountDomain is unset. Store the repo exactly as it would.
+	_, err := s.db.GetOrCreateRepository(t.Context(), endpointHost+"/wreckroll", s.identity.ActorURL)
+	require.NoError(t, err)
+
+	// Index: the local repo displays stripped, and the pull command is not
+	// doubled (RegistryHost is the endpoint host, so an un-stripped name would
+	// render "registry.example.com/registry.example.com/wreckroll").
+	resp, err := http.Get(srv.URL + "/")
+	require.NoError(t, err)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Contains(t, string(body), "<strong>wreckroll</strong>")
+	assert.NotContains(t, string(body), endpointHost+"/"+endpointHost)
+
+	// Tags: /ui/tags/wreckroll must re-resolve the endpoint-host-prefixed repo
+	// and display the stripped heading.
+	tagsResp, err := http.Get(srv.URL + "/ui/tags/wreckroll")
+	require.NoError(t, err)
+	tagsBody, err := io.ReadAll(tagsResp.Body)
+	require.NoError(t, err)
+	_ = tagsResp.Body.Close()
+	assert.Equal(t, http.StatusOK, tagsResp.StatusCode)
+	assert.Contains(t, string(tagsBody), "<h1>wreckroll</h1>")
+	assert.NotContains(t, string(tagsBody), endpointHost+"/"+endpointHost)
 }
 
 func TestUIRepoTagsFederatedUnchanged(t *testing.T) {
