@@ -61,6 +61,12 @@ type Config struct {
 	Replication   Replication   `yaml:"replication"   envPrefix:"APOCI_REPLICATION_"`
 
 	Domain string `yaml:"-" env:"-"`
+
+	// GeneratedTokenPaths lists the token files this load minted itself because
+	// no value was supplied via config, env, or an existing file. It is a
+	// runtime signal for the CLI to warn on — never serialized. Empty when every
+	// token was operator-supplied or loaded from disk.
+	GeneratedTokenPaths []string `yaml:"-" env:"-"`
 }
 
 type Storage struct {
@@ -651,7 +657,15 @@ func expandFileSecrets(vars ...string) ([]string, error) {
 		if err != nil {
 			return nil, fmt.Errorf("reading %s_FILE (%s): %w", name, path, err)
 		}
-		if err := os.Setenv(name, strings.TrimSpace(string(b))); err != nil {
+		value := strings.TrimSpace(string(b))
+		if value == "" {
+			// An empty (or whitespace-only) secret file fails loudly for the same
+			// reason an unreadable one does: silently falling through would let the
+			// bare var stay empty and mint a random auto-generated token, defeating
+			// the operator's intent to supply the secret from a file.
+			return nil, fmt.Errorf("secret file %s for %s_FILE is empty", path, name)
+		}
+		if err := os.Setenv(name, value); err != nil {
 			return nil, err
 		}
 		fileSourced = append(fileSourced, name)
@@ -661,46 +675,56 @@ func expandFileSecrets(vars ...string) ([]string, error) {
 
 func applyTokenDefaults(cfg *Config) error {
 	if cfg.RegistryToken == "" {
-		token, err := loadOrGenerateToken(filepath.Join(cfg.DataDir, "registry.token"))
+		path := filepath.Join(cfg.DataDir, "registry.token")
+		token, generated, err := loadOrGenerateToken(path)
 		if err != nil {
 			return fmt.Errorf("setting up registry token: %w", err)
 		}
 		cfg.RegistryToken = token
+		if generated {
+			cfg.GeneratedTokenPaths = append(cfg.GeneratedTokenPaths, path)
+		}
 	}
 	if cfg.AdminToken == "" {
-		token, err := loadOrGenerateToken(filepath.Join(cfg.DataDir, "admin.token"))
+		path := filepath.Join(cfg.DataDir, "admin.token")
+		token, generated, err := loadOrGenerateToken(path)
 		if err != nil {
 			return fmt.Errorf("setting up admin token: %w", err)
 		}
 		cfg.AdminToken = token
+		if generated {
+			cfg.GeneratedTokenPaths = append(cfg.GeneratedTokenPaths, path)
+		}
 	}
 	return nil
 }
 
-func loadOrGenerateToken(path string) (string, error) {
+// loadOrGenerateToken returns the token at path, minting and persisting a new
+// one when the file is absent or empty. generated reports whether a new token
+// was created (true) versus read from an existing file (false).
+func loadOrGenerateToken(path string) (token string, generated bool, err error) {
 	data, err := os.ReadFile(path) //nolint:gosec // operator-controlled path
 	if err == nil {
-		token := strings.TrimSpace(string(data))
-		if token != "" {
-			return token, nil
+		if existing := strings.TrimSpace(string(data)); existing != "" {
+			return existing, false, nil
 		}
 	}
 
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
-		return "", fmt.Errorf("creating directory for token: %w", err)
+		return "", false, fmt.Errorf("creating directory for token: %w", err)
 	}
 
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {
-		return "", fmt.Errorf("generating random token: %w", err)
+		return "", false, fmt.Errorf("generating random token: %w", err)
 	}
-	token := hex.EncodeToString(buf)
+	token = hex.EncodeToString(buf)
 
 	if err := os.WriteFile(path, []byte(token+"\n"), 0o600); err != nil {
-		return "", fmt.Errorf("writing token file: %w", err)
+		return "", false, fmt.Errorf("writing token file: %w", err)
 	}
 
-	return token, nil
+	return token, true, nil
 }
 
 func validate(cfg *Config) error {

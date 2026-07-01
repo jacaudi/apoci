@@ -69,6 +69,35 @@ func TestExpandFileSecretsUnreadableFileErrors(t *testing.T) {
 	require.Empty(t, os.Getenv(name), "bare var must remain unset on failure")
 }
 
+// Invariant 6: _FILE points at an empty file → error (loud failure), same as the
+// unreadable case. A transiently-empty mounted secret must fail startup, not fall
+// through to a silently auto-generated token.
+func TestExpandFileSecretsEmptyFileErrors(t *testing.T) {
+	const name = "APOCI_TEST_SECRET"
+	t.Setenv(name, "")
+	t.Setenv(name+"_FILE", writeSecret(t, ""))
+
+	got, err := expandFileSecrets(name)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), name+"_FILE", "error must name the var")
+	require.Nil(t, got, "no vars reported on failure")
+	require.Empty(t, os.Getenv(name), "bare var must remain unset on failure")
+}
+
+// Invariant 6b: a whitespace-only file trims to empty and must fail the same way —
+// TrimSpace must not turn a blank secret into a valid empty value.
+func TestExpandFileSecretsWhitespaceOnlyFileErrors(t *testing.T) {
+	const name = "APOCI_TEST_SECRET"
+	t.Setenv(name, "")
+	t.Setenv(name+"_FILE", writeSecret(t, "   \n\t\n"))
+
+	got, err := expandFileSecrets(name)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), name+"_FILE", "error must name the var")
+	require.Nil(t, got, "no vars reported on failure")
+	require.Empty(t, os.Getenv(name), "bare var must remain unset on failure")
+}
+
 // End-to-end via Load(): registry token sourced from APOCI_REGISTRY_TOKEN_FILE
 // (invariant 1 + 5) instead of being auto-generated.
 func TestRegistryTokenFromFile(t *testing.T) {

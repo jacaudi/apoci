@@ -95,6 +95,7 @@ func serveCmd(configPath *string) *cobra.Command {
 			}
 
 			logger := buildLogger(cfg)
+			warnGeneratedTokens(logger, cfg)
 
 			db, err := openDB(cfg, logger)
 			if err != nil {
@@ -978,6 +979,7 @@ func openAll(configPath string, logger *slog.Logger) (*database.DB, *activitypub
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	warnGeneratedTokens(logger, cfg)
 
 	logger.Debug("opening database", "driver", cfg.Database.Driver)
 	db, err := openDB(cfg, logger)
@@ -1033,4 +1035,15 @@ func buildLogger(cfg *config.Config) *slog.Logger {
 	}
 
 	return slog.New(handler)
+}
+
+// warnGeneratedTokens emits a startup warning for every registry/admin token
+// that config.Load minted itself because none was supplied. It gives an
+// operator who intended to provide a token (e.g. a mistyped token-file path) a
+// clear signal that a random one was auto-generated instead of failing silent.
+// The token value is never logged — only that one was generated and where.
+func warnGeneratedTokens(logger *slog.Logger, cfg *config.Config) {
+	for _, path := range cfg.GeneratedTokenPaths {
+		logger.Warn("no token supplied; auto-generated a random one and wrote it to disk", "path", path)
+	}
 }
