@@ -24,6 +24,26 @@ type DB struct {
 	logger *slog.Logger
 }
 
+// sqliteDSN builds the connection string for the on-disk SQLite database.
+//
+// _txlock=immediate makes every transaction a BEGIN IMMEDIATE, taking the write
+// lock up front. Without it, bun's deferred BEGIN takes SHARED on a SELECT and
+// only tries to promote to RESERVED on the following INSERT; if another
+// connection already holds RESERVED, SQLite returns SQLITE_BUSY immediately
+// (promoting would risk deadlock) and never runs the busy handler, so
+// _busy_timeout does not apply. Acquiring the write lock at BEGIN routes the
+// wait through the busy handler instead, so _busy_timeout actually covers it.
+//
+// _busy_timeout is 10s: under CI-matrix concurrent pushes the up-front write
+// lock serialises writers, and a short timeout would surface transient
+// contention as 500s.
+func sqliteDSN(dbPath string) string {
+	return fmt.Sprintf(
+		"file:%s?_journal_mode=WAL&_txlock=immediate&_foreign_keys=ON&_busy_timeout=10000&_synchronous=NORMAL",
+		dbPath,
+	)
+}
+
 // OpenSQLite opens a SQLite database in the given data directory.
 func OpenSQLite(dataDir string, maxOpen, maxIdle int, logger *slog.Logger) (*DB, error) {
 	if err := os.MkdirAll(dataDir, 0o750); err != nil {
@@ -31,9 +51,7 @@ func OpenSQLite(dataDir string, maxOpen, maxIdle int, logger *slog.Logger) (*DB,
 	}
 
 	dbPath := filepath.Join(dataDir, "apoci.db")
-	dsn := fmt.Sprintf("file:%s?_journal_mode=WAL&_foreign_keys=ON&_busy_timeout=5000&_synchronous=NORMAL", dbPath)
-
-	sqldb, err := sql.Open("sqlite3", dsn)
+	sqldb, err := sql.Open("sqlite3", sqliteDSN(dbPath))
 	if err != nil {
 		return nil, fmt.Errorf("opening sqlite database: %w", err)
 	}
