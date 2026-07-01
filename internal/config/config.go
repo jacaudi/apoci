@@ -362,6 +362,19 @@ func Load(path string, mustExist bool) (*Config, error) {
 		}
 	}
 
+	// Honor the *_FILE secret convention (Docker/Kubernetes file-mounted
+	// secrets) before parsing env vars, so a file-mounted secret is loaded
+	// into its bare env var and picked up by cenv.Parse below.
+	if err := expandFileSecrets(
+		"APOCI_REGISTRY_TOKEN",
+		"APOCI_ADMIN_TOKEN",
+		"APOCI_DB_DSN",
+		"APOCI_STORAGE_S3_ACCESS_KEY",
+		"APOCI_STORAGE_S3_SECRET_KEY",
+	); err != nil {
+		return nil, err
+	}
+
 	// Env vars override YAML values.
 	if err := cenv.Parse(cfg); err != nil {
 		return nil, fmt.Errorf("parsing environment variables: %w", err)
@@ -598,6 +611,31 @@ func applyUpstreamDefaults(cfg *Config) {
 			cfg.Upstreams.Registries[i].Auth = "token"
 		}
 	}
+}
+
+// expandFileSecrets implements the *_FILE secret convention used by Docker and
+// Kubernetes: for each var name, if the bare env var is unset, the value is read
+// from the file named by <VAR>_FILE. An explicitly-set bare env var always wins.
+// An unreadable <VAR>_FILE is a hard error — silently falling back would defeat
+// the operator's intent to supply the secret from a file.
+func expandFileSecrets(vars ...string) error {
+	for _, name := range vars {
+		if os.Getenv(name) != "" {
+			continue
+		}
+		path := os.Getenv(name + "_FILE")
+		if path == "" {
+			continue
+		}
+		b, err := os.ReadFile(path) //nolint:gosec // path is operator-controlled via the *_FILE env var
+		if err != nil {
+			return fmt.Errorf("reading %s_FILE (%s): %w", name, path, err)
+		}
+		if err := os.Setenv(name, strings.TrimSpace(string(b))); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func applyTokenDefaults(cfg *Config) error {
