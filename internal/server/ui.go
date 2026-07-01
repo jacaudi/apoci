@@ -186,8 +186,31 @@ func (s *Server) handleUIRepoTags(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if repo == nil {
+		// Locally-owned repos are displayed (and thus linked) without the
+		// account-domain namespace prefix that normalizeRepo bakes in. Re-prepend
+		// it to resolve the stored name when the stripped form misses.
+		if prefix := s.localRepoPrefix(); !strings.HasPrefix(repoName, prefix) {
+			stored := prefix + repoName
+			repo, err = s.db.GetRepository(ctx, stored)
+			if err != nil {
+				s.logger.Error("failed to get repository for tags UI", "error", err, "repo", stored)
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+				return
+			}
+			if repo != nil {
+				repoName = stored
+			}
+		}
+	}
+	if repo == nil {
 		http.NotFound(w, r)
 		return
+	}
+
+	// Display locally-owned repos without the doubled instance domain.
+	displayName := repoName
+	if repo.OwnerID == s.identity.ActorURL {
+		displayName = s.localDisplayName(displayName)
 	}
 
 	// Parse pagination params
@@ -225,11 +248,11 @@ func (s *Server) handleUIRepoTags(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := RepoTagsData{
-		Title:        repoName + " - Tags",
+		Title:        displayName + " - Tags",
 		RegistryName: s.cfg.Name,
 		Endpoint:     s.cfg.Endpoint,
 		RegistryHost: stripScheme(s.cfg.Endpoint),
-		RepoName:     repoName,
+		RepoName:     displayName,
 		Tags:         tagViews,
 		Page:         tagsPage.Page,
 		TotalPages:   tagsPage.TotalPages,
@@ -297,6 +320,7 @@ func (s *Server) buildIndexData(reposPage *database.ReposPage, query string, fol
 		}
 
 		if r.OwnerID == selfActor {
+			rv.Name = s.localDisplayName(rv.Name)
 			localRepos = append(localRepos, rv)
 		} else {
 			// Extract peer domain from owner ID (actor URL)
@@ -333,6 +357,24 @@ func (s *Server) buildIndexData(reposPage *database.ReposPage, query string, fol
 		HasPrev:         reposPage.Page > 1,
 		HasNext:         reposPage.Page < reposPage.TotalPages,
 	}
+}
+
+// localRepoPrefix is the account-domain namespace prefix that normalizeRepo
+// bakes into locally-pushed repo names (e.g. "registry.example.com/"). It is the
+// single source of that prefix: AccountDomain is the value normalizeRepo
+// prepends, defaulting to the endpoint Domain but possibly differing
+// (split-domain deployments).
+func (s *Server) localRepoPrefix() string {
+	return s.identity.AccountDomain + "/"
+}
+
+// localDisplayName strips the account-domain namespace prefix that normalizeRepo
+// bakes into locally-pushed repo names (e.g. "registry.example.com/app" -> "app"),
+// so the UI shows the bare name and the pull command (RegistryHost + name) is
+// not doubled. It is a no-op when the prefix is absent. Storage and the
+// /v2/_catalog output keep the full stored name; this is display-only.
+func (s *Server) localDisplayName(name string) string {
+	return strings.TrimPrefix(name, s.localRepoPrefix())
 }
 
 func stripScheme(endpoint string) string {

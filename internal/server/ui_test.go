@@ -20,6 +20,14 @@ import (
 
 func testServerWithUI(t *testing.T, uiEnabled bool) *Server {
 	t.Helper()
+	return testServerWithAccountDomain(t, uiEnabled, testDomain)
+}
+
+// testServerWithAccountDomain builds a UI test server whose AccountDomain (the
+// registry namespace normalizeRepo prepends) may differ from its endpoint
+// Domain. Passing testDomain reproduces the default single-domain deployment.
+func testServerWithAccountDomain(t *testing.T, uiEnabled bool, accountDomain string) *Server {
+	t.Helper()
 	dir := t.TempDir()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -31,7 +39,7 @@ func testServerWithUI(t *testing.T, uiEnabled bool) *Server {
 	blobs, err := blobstore.New(dir, logger)
 	require.NoError(t, err)
 
-	identity, err := activitypub.LoadOrCreateIdentity("https://test.example.com", testDomain, "", "", logger)
+	identity, err := activitypub.LoadOrCreateIdentity("https://test.example.com", testDomain, accountDomain, "", logger)
 	require.NoError(t, err)
 
 	gcEnabled := true
@@ -39,7 +47,7 @@ func testServerWithUI(t *testing.T, uiEnabled bool) *Server {
 		Name:          "test-node",
 		Endpoint:      "https://test.example.com",
 		Domain:        testDomain,
-		AccountDomain: testDomain,
+		AccountDomain: accountDomain,
 		Listen:        ":0",
 		RegistryToken: "test-token",
 		Peering: config.Peering{
@@ -109,7 +117,9 @@ func TestUIIndex(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, string(body), "test-node")
 	assert.Contains(t, string(body), "My Images")
-	assert.Contains(t, string(body), "test.example.com/localapp")
+	// Locally-owned repo is shown without the doubled instance domain.
+	assert.Contains(t, string(body), "<strong>localapp</strong>")
+	assert.NotContains(t, string(body), testDomain+"/"+testDomain)
 }
 
 func TestUISearch(t *testing.T) {
@@ -129,7 +139,9 @@ func TestUISearch(t *testing.T) {
 
 	body, err := io.ReadAll(resp.Body)
 	require.NoError(t, err)
-	assert.Contains(t, string(body), "test.example.com/myapp")
+	// Locally-owned repo is shown without the doubled instance domain.
+	assert.Contains(t, string(body), "<strong>myapp</strong>")
+	assert.NotContains(t, string(body), testDomain+"/"+testDomain)
 }
 
 func TestUISearchShortQuery(t *testing.T) {
@@ -174,6 +186,117 @@ func TestUIStaticAssets(t *testing.T) {
 			assert.NotEmpty(t, body)
 		})
 	}
+}
+
+func TestBuildIndexDataStripsLocalDomainPrefix(t *testing.T) {
+	s := testServerWithUI(t, true)
+	self := s.identity.ActorURL
+
+	reposPage := &database.ReposPage{
+		Repos: []database.RepoWithStats{
+			// Locally-owned, domain-prefixed (as normalizeRepo stores it).
+			{Name: testDomain + "/wreckroll", OwnerID: self, Tags: []string{"latest"}},
+			// Locally-owned but NOT domain-prefixed (edge case, invariant 4).
+			{Name: "weirdapp", OwnerID: self},
+			// Federated repo owned by a peer (invariant 2).
+			{Name: "peer.example.dev/user/app", OwnerID: "https://peer.example.dev/ap/actor"},
+		},
+		TotalCount: 3,
+		Page:       1,
+		TotalPages: 1,
+	}
+
+	data := s.buildIndexData(reposPage, "", 0, 0)
+
+	require.Len(t, data.LocalRepos, 2)
+	// Invariant 1: local domain-prefixed repo displays without the instance domain.
+	assert.Equal(t, "wreckroll", data.LocalRepos[0].Name)
+	// Invariant 4: local repo without the domain prefix is unchanged.
+	assert.Equal(t, "weirdapp", data.LocalRepos[1].Name)
+
+	// Invariant 2: federated repo name is displayed unchanged.
+	require.Len(t, data.FederatedGroups, 1)
+	require.Len(t, data.FederatedGroups[0].Repos, 1)
+	assert.Equal(t, "peer.example.dev/user/app", data.FederatedGroups[0].Repos[0].Name)
+}
+
+func TestUIRepoTagsStripsLocalDomainPrefix(t *testing.T) {
+	s := testServerWithUI(t, true)
+	srv := httptest.NewServer(s.routes())
+	defer srv.Close()
+
+	// Stored under the domain-prefixed name (as normalizeRepo writes it).
+	_, err := s.db.GetOrCreateRepository(t.Context(), testDomain+"/wreckroll", s.identity.ActorURL)
+	require.NoError(t, err)
+
+	// Invariant 3: the index links to the stripped name; it must re-resolve.
+	resp, err := http.Get(srv.URL + "/ui/tags/wreckroll")
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	// Heading shows the stripped name, and there is no doubled instance domain.
+	assert.Contains(t, string(body), "<h1>wreckroll</h1>")
+	assert.NotContains(t, string(body), testDomain+"/"+testDomain)
+}
+
+// TestUISplitAccountDomainStripsPrefix covers deployments where AccountDomain
+// (the registry namespace normalizeRepo prepends) differs from the endpoint
+// Domain. Local repos are stored as <accountDomain>/<name>, so the display
+// strip and the tags retry must use AccountDomain, not Domain.
+func TestUISplitAccountDomainStripsPrefix(t *testing.T) {
+	const accountDomain = "account.example.com" // != testDomain (endpoint domain)
+	s := testServerWithAccountDomain(t, true, accountDomain)
+	srv := httptest.NewServer(s.routes())
+	defer srv.Close()
+
+	// Stored under the AccountDomain-prefixed name (as normalizeRepo writes it).
+	_, err := s.db.GetOrCreateRepository(t.Context(), accountDomain+"/wreckroll", s.identity.ActorURL)
+	require.NoError(t, err)
+
+	// Index: the pull command shows the stripped name against the endpoint host.
+	resp, err := http.Get(srv.URL + "/")
+	require.NoError(t, err)
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	_ = resp.Body.Close()
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Contains(t, string(body), "<strong>wreckroll</strong>")
+	assert.NotContains(t, string(body), accountDomain+"/wreckroll")
+
+	// Tags: /ui/tags/wreckroll must re-resolve the stored AccountDomain-prefixed
+	// repo and display the stripped heading.
+	tagsResp, err := http.Get(srv.URL + "/ui/tags/wreckroll")
+	require.NoError(t, err)
+	tagsBody, err := io.ReadAll(tagsResp.Body)
+	require.NoError(t, err)
+	_ = tagsResp.Body.Close()
+	assert.Equal(t, http.StatusOK, tagsResp.StatusCode)
+	assert.Contains(t, string(tagsBody), "<h1>wreckroll</h1>")
+	assert.NotContains(t, string(tagsBody), accountDomain+"/wreckroll")
+}
+
+func TestUIRepoTagsFederatedUnchanged(t *testing.T) {
+	s := testServerWithUI(t, true)
+	srv := httptest.NewServer(s.routes())
+	defer srv.Close()
+
+	_, err := s.db.GetOrCreateRepository(t.Context(), "peer.example.dev/user/app", "https://peer.example.dev/ap/actor")
+	require.NoError(t, err)
+
+	// Invariant 2: federated repo path resolves and displays unchanged.
+	resp, err := http.Get(srv.URL + "/ui/tags/peer.example.dev/user/app")
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Contains(t, string(body), "<h1>peer.example.dev/user/app</h1>")
 }
 
 func TestHumanizeBytes(t *testing.T) {
