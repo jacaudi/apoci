@@ -1,0 +1,591 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "apoci Admin API",
+    "description": "Administrative API for the apoci OCI registry. Every endpoint is guarded by the admin bearer token (the AdminToken configuration value). The API is mounted at /api/admin.",
+    "version": "1.0.0"
+  },
+  "servers": [
+    { "url": "/api/admin", "description": "Admin API base path" }
+  ],
+  "security": [
+    { "bearerAuth": [] }
+  ],
+  "tags": [
+    { "name": "identity", "description": "Node identity" },
+    { "name": "images", "description": "Hosted images" },
+    { "name": "follows", "description": "Federation follow relationships" },
+    { "name": "mirrors", "description": "Mirror cache management" },
+    { "name": "peers", "description": "Peer blocking" },
+    { "name": "gc", "description": "Garbage collection" },
+    { "name": "replication", "description": "Replication status" }
+  ],
+  "paths": {
+    "/identity": {
+      "get": {
+        "tags": ["identity"],
+        "summary": "Get this node's identity",
+        "operationId": "adminGetIdentity",
+        "responses": {
+          "200": {
+            "description": "Node identity",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/Identity" } }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/images": {
+      "get": {
+        "tags": ["images"],
+        "summary": "List locally hosted images",
+        "operationId": "adminListImages",
+        "responses": {
+          "200": {
+            "description": "Hosted images",
+            "content": {
+              "application/json": {
+                "schema": { "type": "array", "items": { "$ref": "#/components/schemas/ImageEntry" } }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/actors": {
+      "get": {
+        "tags": ["identity"],
+        "summary": "List all known actors",
+        "operationId": "adminListActors",
+        "responses": {
+          "200": {
+            "description": "Known actors",
+            "content": {
+              "application/json": {
+                "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Actor" } }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/follows": {
+      "get": {
+        "tags": ["follows"],
+        "summary": "List inbound followers",
+        "operationId": "adminListFollows",
+        "responses": {
+          "200": {
+            "description": "Inbound followers",
+            "content": {
+              "application/json": {
+                "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Actor" } }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      },
+      "post": {
+        "tags": ["follows"],
+        "summary": "Follow a remote actor",
+        "operationId": "adminAddFollow",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/FollowRequest" } }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Follow initiated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "followed": { "type": "string", "description": "Actor ID that was followed" } }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "502": { "description": "Failed to resolve, fetch, or deliver to the remote actor" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      },
+      "delete": {
+        "tags": ["follows"],
+        "summary": "Remove a follow relationship",
+        "operationId": "adminRemoveFollow",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/FollowRequest" } }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Follow removed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "removed": { "type": "string", "description": "Actor URL that was removed" } }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      },
+      "patch": {
+        "tags": ["follows"],
+        "summary": "Update a follower's tag filter",
+        "operationId": "adminUpdateFollowFilter",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/FollowFilterRequest" } }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Filter updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "updated": { "type": "string", "description": "Target actor whose filter was updated" },
+                    "tag_globs": { "type": "array", "items": { "type": "string" } }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Missing target or invalid glob pattern" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "description": "Follower not found" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/follows/pending": {
+      "get": {
+        "tags": ["follows"],
+        "summary": "List pending inbound follow requests",
+        "operationId": "adminListPending",
+        "responses": {
+          "200": {
+            "description": "Pending follow requests",
+            "content": {
+              "application/json": {
+                "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Actor" } }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/follows/outgoing": {
+      "get": {
+        "tags": ["follows"],
+        "summary": "List outgoing follows",
+        "operationId": "adminListOutgoingFollows",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "description": "Filter by follow status. When omitted, all outgoing follows are returned.",
+            "schema": { "type": "string", "enum": ["pending", "accepted", "rejected"] }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Outgoing follows",
+            "content": {
+              "application/json": {
+                "schema": { "type": "array", "items": { "$ref": "#/components/schemas/Actor" } }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/follows/accept": {
+      "post": {
+        "tags": ["follows"],
+        "summary": "Accept a pending inbound follow request",
+        "operationId": "adminAcceptFollow",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/FollowRequest" } }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Follow accepted. followed_back is present only when the node followed the actor back.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "accepted": { "type": "string", "description": "Actor URL that was accepted" },
+                    "followed_back": { "type": "string", "description": "Actor URL that was followed back" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/follows/reject": {
+      "post": {
+        "tags": ["follows"],
+        "summary": "Reject a pending inbound follow request",
+        "operationId": "adminRejectFollow",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/FollowRequest" } }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Follow rejected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "rejected": { "type": "string", "description": "Actor URL that was rejected" } }
+                }
+              }
+            }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/mirrors/{repository}": {
+      "delete": {
+        "tags": ["mirrors"],
+        "summary": "Evict a mirrored repository or a single mirrored manifest",
+        "description": "Deletes mirrored content and its associated blobs. When digest is supplied, only that manifest is evicted; otherwise the entire mirrored repository is removed. Locally owned repositories cannot be evicted here.",
+        "operationId": "adminEvictMirror",
+        "parameters": [
+          {
+            "name": "repository",
+            "in": "path",
+            "required": true,
+            "description": "Repository name. May contain slashes.",
+            "schema": { "type": "string" }
+          },
+          {
+            "name": "digest",
+            "in": "query",
+            "required": false,
+            "description": "When present, evict only the manifest with this digest instead of the whole repository.",
+            "schema": { "type": "string" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Eviction result. digest is present only when a single manifest was evicted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "evicted": { "type": "string", "description": "Repository that was evicted" },
+                    "digest": { "type": "string", "description": "Manifest digest that was evicted" },
+                    "blobsPurged": { "type": "integer", "description": "Number of blobs removed" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Missing/invalid repository name, invalid digest, or repository is locally owned" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "404": { "description": "Repository not found" },
+          "500": { "$ref": "#/components/responses/InternalError" }
+        }
+      }
+    },
+    "/gc": {
+      "get": {
+        "tags": ["gc"],
+        "summary": "Get garbage collector status",
+        "operationId": "adminGCStatus",
+        "responses": {
+          "200": {
+            "description": "Garbage collector status",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/GCStatus" } }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      },
+      "post": {
+        "tags": ["gc"],
+        "summary": "Run garbage collection once",
+        "operationId": "adminRunGC",
+        "responses": {
+          "200": {
+            "description": "GC run triggered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "status": { "type": "string", "example": "ok" } }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/peers/blocked": {
+      "get": {
+        "tags": ["peers"],
+        "summary": "List blocked domains and actors",
+        "operationId": "adminListBlocked",
+        "responses": {
+          "200": {
+            "description": "Blocked peers",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "domains": { "type": "array", "items": { "type": "string" } },
+                    "actors": { "type": "array", "items": { "type": "string" } }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/peers/pause": {
+      "post": {
+        "tags": ["peers"],
+        "summary": "Block inbound federation from a domain or actor",
+        "description": "The block is in-memory and does not survive a config reload.",
+        "operationId": "adminPausePeer",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/PeerBlockRequest" } }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Peer paused",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "paused": { "$ref": "#/components/schemas/PeerBlockRequest" } }
+                }
+              }
+            }
+          },
+          "400": { "description": "Missing domain/actor, or domain is not a bare hostname" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/peers/resume": {
+      "post": {
+        "tags": ["peers"],
+        "summary": "Unblock inbound federation from a domain or actor",
+        "operationId": "adminResumePeer",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": { "schema": { "$ref": "#/components/schemas/PeerBlockRequest" } }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Peer resumed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": { "resumed": { "$ref": "#/components/schemas/PeerBlockRequest" } }
+                }
+              }
+            }
+          },
+          "400": { "description": "Missing domain/actor, or domain is not a bare hostname" },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    },
+    "/replication": {
+      "get": {
+        "tags": ["replication"],
+        "summary": "Get replication status",
+        "operationId": "adminReplicationStatus",
+        "responses": {
+          "200": {
+            "description": "Replication status. When replication is disabled, enabled is false and targets is empty.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ReplicationStatus" } }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Admin bearer token (AdminToken)."
+      }
+    },
+    "responses": {
+      "Unauthorized": {
+        "description": "Missing or invalid admin bearer token",
+        "content": { "text/plain": { "schema": { "type": "string" } } }
+      },
+      "BadRequest": {
+        "description": "Malformed request body or missing required fields",
+        "content": { "text/plain": { "schema": { "type": "string" } } }
+      },
+      "InternalError": {
+        "description": "Internal server error",
+        "content": { "text/plain": { "schema": { "type": "string" } } }
+      }
+    },
+    "schemas": {
+      "Identity": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "actorURL": { "type": "string" },
+          "keyID": { "type": "string" },
+          "domain": { "type": "string" },
+          "accountDomain": { "type": "string" },
+          "endpoint": { "type": "string" },
+          "publicKey": { "type": "string", "description": "PEM-encoded public key" }
+        }
+      },
+      "ImageEntry": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "tags": { "type": "array", "items": { "type": "string" } },
+          "size_bytes": { "type": "integer", "format": "int64" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "Actor": {
+        "type": "object",
+        "description": "A remote ActivityPub actor. Consolidates peers, follows, and outgoing follows.",
+        "properties": {
+          "id": { "type": "integer", "format": "int64" },
+          "actor_url": { "type": "string" },
+          "name": { "type": "string" },
+          "alias": { "type": "string" },
+          "endpoint": { "type": "string" },
+          "public_key_pem": { "type": "string" },
+          "they_follow_us": { "type": "boolean" },
+          "they_follow_us_at": { "type": "string", "format": "date-time" },
+          "we_follow_them": { "type": "boolean" },
+          "we_follow_status": { "type": "string", "description": "pending, accepted, or rejected" },
+          "we_follow_accept_at": { "type": "string", "format": "date-time" },
+          "is_healthy": { "type": "boolean" },
+          "replication_policy": { "type": "string" },
+          "last_seen_at": { "type": "string", "format": "date-time" },
+          "federation_tag_globs": { "type": "string" },
+          "created_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "GCStatus": {
+        "type": "object",
+        "description": "Snapshot of the collector's last-run timing and current state.",
+        "properties": {
+          "running": { "type": "boolean" },
+          "lastRun": { "type": "string", "format": "date-time" },
+          "lastDurationMs": { "type": "integer", "format": "int64" },
+          "intervalMs": { "type": "integer", "format": "int64" },
+          "nextRunEstimate": { "type": "string", "format": "date-time" }
+        }
+      },
+      "TargetStatus": {
+        "type": "object",
+        "properties": {
+          "name": { "type": "string" },
+          "lastRun": { "type": "string", "format": "date-time" },
+          "lastError": { "type": "string" },
+          "replicated": { "type": "integer", "format": "int64" },
+          "failed": { "type": "integer", "format": "int64" },
+          "dropped": { "type": "integer", "format": "int64" }
+        }
+      },
+      "ReplicationStatus": {
+        "type": "object",
+        "properties": {
+          "enabled": { "type": "boolean" },
+          "targets": { "type": "array", "items": { "$ref": "#/components/schemas/TargetStatus" } }
+        }
+      },
+      "FollowRequest": {
+        "type": "object",
+        "required": ["target"],
+        "properties": {
+          "target": { "type": "string", "description": "Actor handle or URL to act on" },
+          "force": { "type": "boolean", "description": "Force removal even if delivery fails (used by DELETE)" }
+        }
+      },
+      "FollowFilterRequest": {
+        "type": "object",
+        "required": ["target"],
+        "properties": {
+          "target": { "type": "string", "description": "Follower actor handle or URL" },
+          "tag_globs": { "type": "array", "items": { "type": "string" }, "description": "Tag glob patterns to filter federated content" }
+        }
+      },
+      "PeerBlockRequest": {
+        "type": "object",
+        "description": "At least one of domain or actor must be supplied.",
+        "properties": {
+          "domain": { "type": "string", "description": "Bare hostname (no scheme or path)" },
+          "actor": { "type": "string", "description": "Full actor URL" }
+        }
+      }
+    }
+  }
+}

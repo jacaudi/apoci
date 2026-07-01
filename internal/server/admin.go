@@ -11,6 +11,7 @@ import (
 
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/admin"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/database"
+	"git.erwanleboucher.dev/eleboucher/apoci/internal/server/adminapi"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/validate"
 )
 
@@ -38,8 +39,17 @@ func (s *Server) adminRouter() http.Handler {
 	r.Post("/peers/pause", s.adminPausePeer)
 	r.Post("/peers/resume", s.adminResumePeer)
 	r.Get("/replication", s.adminReplicationStatus)
+	r.Get("/openapi.json", s.adminOpenAPISpec)
 
 	return r
+}
+
+// adminOpenAPISpec serves the embedded OpenAPI document describing this API.
+func (s *Server) adminOpenAPISpec(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if _, err := w.Write(adminapi.Spec); err != nil {
+		s.logger.Error("admin: writing openapi spec", "error", err)
+	}
 }
 
 func (s *Server) adminGetIdentity(w http.ResponseWriter, r *http.Request) {
