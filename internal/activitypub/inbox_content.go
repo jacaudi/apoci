@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/jellydator/ttlcache/v3"
+	"golang.org/x/net/publicsuffix"
 
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/database"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/validate"
@@ -345,10 +346,27 @@ func (h *InboxHandler) fetchSenderNamespace(ctx context.Context, actorURL string
 	return ns, nil
 }
 
-// validNamespaceForHost requires an exact host match: a subdomain may not claim
-// its parent domain's namespace (that would collide with sibling tenants).
+// validNamespaceForHost reports whether a remote actor may claim OCI namespace
+// ns. The namespace is valid when it exactly matches the actor's host or is a
+// parent domain of it (e.g. actor registry.example.com may claim example.com,
+// the split-domain convention). The parent claim is capped at the registrable
+// domain (eTLD+1): an actor may not claim a public suffix such as "com" or
+// "co.uk", which is shared by every sibling under that suffix. Unrelated
+// domains are rejected, so an actor cannot spoof a foreign tenant's namespace.
 func validNamespaceForHost(ns, actorHost string) bool {
-	return strings.EqualFold(ns, actorHost)
+	ns, actorHost = strings.ToLower(ns), strings.ToLower(actorHost)
+	if ns == actorHost {
+		return true
+	}
+	if !strings.HasSuffix(actorHost, "."+ns) {
+		return false
+	}
+	etld1, err := publicsuffix.EffectiveTLDPlusOne(actorHost)
+	if err != nil {
+		return false
+	}
+	// ns must be the registrable domain or a subdomain of it, never above it.
+	return ns == etld1 || strings.HasSuffix(ns, "."+etld1)
 }
 
 func (h *InboxHandler) ingestTag(ctx context.Context, obj map[string]any, actorURL string) error {

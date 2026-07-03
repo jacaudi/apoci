@@ -1302,11 +1302,15 @@ func TestValidNamespaceForHost(t *testing.T) {
 		ns, host string
 		want     bool
 	}{
-		{exampleHost, "example.com", true},           // exact match
-		{exampleHost, "registry.example.com", false}, // subdomain may not claim parent namespace
-		{exampleHost, "evil.test", false},
-		{exampleHost, "notexample.com", false},
-		{"a.b.c", "x.a.b.c", false}, // subdomain may not claim parent namespace
+		{exampleHost, "example.com", true},                // exact match
+		{exampleHost, "registry.example.com", true},       // subdomain may claim parent (split-domain)
+		{exampleHost, "evil.test", false},                 // unrelated domain
+		{exampleHost, "notexample.com", false},            // suffix but not a domain-boundary parent
+		{"a.b.c", "x.a.b.c", true},                        // subdomain may claim parent
+		{"victim.test", "evil.test", false},               // sibling/foreign namespace spoof rejected
+		{"com", "example.com", false},                     // may not claim a public suffix
+		{"co.uk", "example.co.uk", false},                 // may not claim a multi-label public suffix
+		{"example.co.uk", "registry.example.co.uk", true}, // registrable domain under a public suffix
 		{aliceDomain, "127.0.0.1", false},
 	}
 	for _, tt := range tests {
