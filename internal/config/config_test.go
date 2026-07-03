@@ -25,7 +25,7 @@ endpoint: "https://test.example.com"
 dataDir: %q
 `, dir))
 
-	cfg, err := Load(path)
+	cfg, err := Load(path, true)
 	require.NoError(t, err)
 	require.Equal(t, "https://test.example.com", cfg.Endpoint)
 	require.Equal(t, "test.example.com", cfg.Domain)
@@ -44,7 +44,7 @@ logLevel: debug
 logFormat: text
 `, dir))
 
-	cfg, err := Load(path)
+	cfg, err := Load(path, true)
 	require.NoError(t, err)
 	require.Equal(t, "my-registry", cfg.Name)
 	require.Equal(t, ":8080", cfg.Listen)
@@ -59,7 +59,7 @@ endpoint: "https://test.example.com"
 dataDir: %q
 `, dir))
 
-	cfg, err := Load(path)
+	cfg, err := Load(path, true)
 	require.NoError(t, err)
 	require.Equal(t, ":5000", cfg.Listen)
 	require.Equal(t, dir, cfg.DataDir)
@@ -74,7 +74,7 @@ func TestMissingEndpoint(t *testing.T) {
 name: "test"
 dataDir: %q
 `, dir))
-	_, err := Load(path)
+	_, err := Load(path, true)
 	require.Error(t, err, "expected error for missing endpoint")
 }
 
@@ -85,13 +85,23 @@ endpoint: "https://test.example.com"
 dataDir: %q
 logLevel: verbose
 `, dir))
-	_, err := Load(path)
+	_, err := Load(path, true)
 	require.Error(t, err, "expected error for invalid log level")
 }
 
-func TestFileNotFound(t *testing.T) {
-	_, err := Load("/nonexistent/path/apoci.yaml")
-	require.Error(t, err, "expected error for missing file")
+func TestFileNotFoundExplicit(t *testing.T) {
+	_, err := Load("/nonexistent/path/apoci.yaml", true)
+	require.Error(t, err, "explicit path must fail when the file is missing")
+	require.ErrorIs(t, err, os.ErrNotExist)
+}
+
+func TestFileNotFoundTolerated(t *testing.T) {
+	// mustExist=false: a missing file falls back to defaults, so the error is
+	// validation (endpoint required), not a file read error.
+	_, err := Load("/nonexistent/path/apoci.yaml", false)
+	require.Error(t, err)
+	require.NotErrorIs(t, err, os.ErrNotExist)
+	require.Contains(t, err.Error(), "endpoint is required")
 }
 
 func TestBackendsDefaults(t *testing.T) {
@@ -100,7 +110,7 @@ func TestBackendsDefaults(t *testing.T) {
 endpoint: "https://test.example.com"
 dataDir: %q
 `, dir))
-	cfg, err := Load(path)
+	cfg, err := Load(path, true)
 	require.NoError(t, err)
 
 	for _, name := range []string{"npm", "cargo", "pypi"} {
@@ -131,7 +141,7 @@ backends:
     federate: false
     token: cargo-only
 `, dir))
-	cfg, err := Load(path)
+	cfg, err := Load(path, true)
 	require.NoError(t, err)
 
 	require.False(t, cfg.Backends.NPM.IsEnabled())
@@ -148,7 +158,7 @@ func TestLimitsDefaults(t *testing.T) {
 endpoint: "https://test.example.com"
 dataDir: %q
 `, dir))
-	cfg, err := Load(path)
+	cfg, err := Load(path, true)
 	require.NoError(t, err)
 	require.Equal(t, DefaultMaxManifestSize, cfg.Limits.MaxManifestSize)
 	require.Equal(t, DefaultMaxBlobSize, cfg.Limits.MaxBlobSize)
@@ -161,13 +171,13 @@ endpoint: "https://test.example.com"
 dataDir: %q
 `, dir))
 
-	cfg, err := Load(path)
+	cfg, err := Load(path, true)
 	require.NoError(t, err)
 	require.NotEmpty(t, cfg.RegistryToken, "token should be auto-generated")
 	require.Len(t, cfg.RegistryToken, 64, "token should be 32 bytes hex-encoded")
 
 	// Second load should return the same token.
-	cfg2, err := Load(path)
+	cfg2, err := Load(path, true)
 	require.NoError(t, err)
 	require.Equal(t, cfg.RegistryToken, cfg2.RegistryToken, "token should be stable across loads")
 }
@@ -180,7 +190,7 @@ dataDir: %q
 registryToken: "my-secret-token"
 `, dir))
 
-	cfg, err := Load(path)
+	cfg, err := Load(path, true)
 	require.NoError(t, err)
 	require.Equal(t, "my-secret-token", cfg.RegistryToken)
 }
@@ -191,7 +201,7 @@ func TestAccountDomainDefault(t *testing.T) {
 endpoint: "https://registry.example.com"
 dataDir: %q
 `, dir))
-	cfg, err := Load(path)
+	cfg, err := Load(path, true)
 	require.NoError(t, err)
 	require.Equal(t, "registry.example.com", cfg.AccountDomain)
 }
@@ -203,7 +213,7 @@ endpoint: "https://registry.example.com"
 dataDir: %q
 accountDomain: "example.com"
 `, dir))
-	cfg, err := Load(path)
+	cfg, err := Load(path, true)
 	require.NoError(t, err)
 	require.Equal(t, "example.com", cfg.AccountDomain)
 	require.Equal(t, "registry.example.com", cfg.Domain)
@@ -216,7 +226,7 @@ endpoint: "https://registry.example.com"
 dataDir: %q
 accountDomain: "https://example.com"
 `, dir))
-	_, err := Load(path)
+	_, err := Load(path, true)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "bare hostname")
 }
@@ -228,7 +238,7 @@ endpoint: "https://registry.example.com"
 dataDir: %q
 accountDomain: "example.com:8080"
 `, dir))
-	_, err := Load(path)
+	_, err := Load(path, true)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "bare hostname")
 }
@@ -242,7 +252,7 @@ limits:
   maxManifestSize: 5242880
   maxBlobSize: 1073741824
 `, dir))
-	cfg, err := Load(path)
+	cfg, err := Load(path, true)
 	require.NoError(t, err)
 	require.Equal(t, int64(5242880), cfg.Limits.MaxManifestSize)
 	require.Equal(t, int64(1073741824), cfg.Limits.MaxBlobSize)
@@ -254,7 +264,7 @@ func TestGCDefaults(t *testing.T) {
 endpoint: "https://test.example.com"
 dataDir: %q
 `, dir))
-	cfg, err := Load(path)
+	cfg, err := Load(path, true)
 	require.NoError(t, err)
 	require.NotNil(t, cfg.GC.Enabled)
 	require.True(t, *cfg.GC.Enabled)
@@ -276,7 +286,7 @@ gc:
   stalePeerBlobAge: 168h
   orphanBatchSize: 100
 `, dir))
-	cfg, err := Load(path)
+	cfg, err := Load(path, true)
 	require.NoError(t, err)
 	require.NotNil(t, cfg.GC.Enabled)
 	require.False(t, *cfg.GC.Enabled)
@@ -295,7 +305,7 @@ notifications:
     - peer_health
     - gc_error
 `, dir))
-	cfg, err := Load(path)
+	cfg, err := Load(path, true)
 	require.NoError(t, err)
 	require.Equal(t, []string{"peer_health", "gc_error"}, cfg.Notifications.Events)
 }
@@ -309,7 +319,7 @@ notifications:
   events:
     - bogus_event
 `, dir))
-	_, err := Load(path)
+	_, err := Load(path, true)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "bogus_event")
 }
@@ -322,7 +332,7 @@ dataDir: %q
 gc:
   interval: -1h
 `, dir))
-	_, err := Load(path)
+	_, err := Load(path, true)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "gc.interval")
 }
@@ -343,7 +353,7 @@ dataDir: %q
 gc:
   diskUsageThreshold: %d
 `, dir, tc.value))
-			_, err := Load(path)
+			_, err := Load(path, true)
 			require.Error(t, err)
 			require.Contains(t, err.Error(), "gc.diskUsageThreshold")
 		})
@@ -359,7 +369,7 @@ gc:
   diskUsageThreshold: 85
   diskUsageCheckInterval: 30s
 `, dir))
-	cfg, err := Load(path)
+	cfg, err := Load(path, true)
 	require.NoError(t, err)
 	require.Equal(t, 85, cfg.GC.DiskUsageThreshold)
 	require.Equal(t, 30*time.Second, cfg.GC.DiskUsageCheckInterval)
@@ -380,7 +390,7 @@ func TestFederationDefaults(t *testing.T) {
 endpoint: "https://test.example.com"
 dataDir: %q
 `, dir))
-	cfg, err := Load(path)
+	cfg, err := Load(path, true)
 	require.NoError(t, err)
 	require.Equal(t, "none", cfg.Federation.AutoAccept)
 	require.Equal(t, 7*24*time.Hour, cfg.Federation.OutgoingFollowPendingTTL)
@@ -396,7 +406,7 @@ federation:
   outgoingFollowPendingTTL: 48h
   outgoingFollowRejectedTTL: 12h
 `, dir))
-	cfg, err := Load(path)
+	cfg, err := Load(path, true)
 	require.NoError(t, err)
 	require.Equal(t, 48*time.Hour, cfg.Federation.OutgoingFollowPendingTTL)
 	require.Equal(t, 12*time.Hour, cfg.Federation.OutgoingFollowRejectedTTL)
@@ -412,7 +422,7 @@ federation:
     - eleboucher/agentmemory
     - user/glob-*
 `, dir))
-	cfg, err := Load(path)
+	cfg, err := Load(path, true)
 	require.NoError(t, err)
 	require.Equal(t, []string{"eleboucher/agentmemory", "user/glob-*"}, cfg.Federation.ExcludedRepos)
 }
@@ -426,7 +436,7 @@ federation:
   excludedRepos:
     - "[bad"
 `, dir))
-	_, err := Load(path)
+	_, err := Load(path, true)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "federation.excludedRepos")
 }
@@ -449,7 +459,7 @@ gc:
       - repo: "foo.com/legacy"
         keepLastN: 1
 `, dir))
-	cfg, err := Load(path)
+	cfg, err := Load(path, true)
 	require.NoError(t, err)
 	require.Len(t, cfg.GC.Retention.PerRepo, 2)
 	require.Equal(t, "foo.com/myapp", cfg.GC.Retention.PerRepo[0].Repo)
@@ -468,7 +478,7 @@ dataDir: %q
 	t.Setenv("APOCI_GC_RETENTION_PER_REPO",
 		`[{"repo":"foo.com/myapp","keepLastN":10,"maxAge":"168h","pinnedGlobs":["latest"]},{"repo":"foo.com/legacy","keepLastN":1}]`)
 
-	cfg, err := Load(path)
+	cfg, err := Load(path, true)
 	require.NoError(t, err)
 	require.Len(t, cfg.GC.Retention.PerRepo, 2)
 	require.Equal(t, "foo.com/myapp", cfg.GC.Retention.PerRepo[0].Repo)
@@ -492,7 +502,7 @@ gc:
       - repo: "foo.com/myapp"
         keepLastN: 5
 `, dir))
-	_, err := Load(path)
+	_, err := Load(path, true)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "duplicate")
 }

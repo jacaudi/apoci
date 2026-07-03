@@ -345,15 +345,17 @@ func (b BackendConfig) TokenOr(fallback string) string {
 	return fallback
 }
 
-func Load(path string) (*Config, error) {
+// Load reads and validates config from path. When mustExist is true a missing
+// file is an error; otherwise it falls back to env vars and defaults.
+func Load(path string, mustExist bool) (*Config, error) {
 	cfg := &Config{}
 
 	data, err := os.ReadFile(path) //nolint:gosec // config path is provided by operator
 	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
+		if mustExist || !errors.Is(err, os.ErrNotExist) {
 			return nil, fmt.Errorf("reading config file: %w", err)
 		}
-		// No config file — will rely on env vars and defaults.
+		// No config file: rely on env vars and defaults.
 	} else {
 		if err := yaml.Unmarshal(data, cfg); err != nil {
 			return nil, fmt.Errorf("parsing config file: %w", err)

@@ -53,7 +53,8 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 ENV PATH="/apoci:${PATH}" \
-    APOCI_DATA_DIR="/apoci/storage"
+    APOCI_DATA_DIR="/apoci/storage" \
+    APOCI_CONFIG="/apoci/config/apoci.yaml"
 
 USER 1000:1000
 
@@ -69,5 +70,6 @@ EXPOSE 5000
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
   CMD wget -q --spider http://localhost:5000/healthz || exit 1
 
+# Config path comes from APOCI_CONFIG, so every subcommand resolves it.
 ENTRYPOINT ["apoci"]
-CMD ["serve", "-c", "/apoci/config/apoci.yaml"]
+CMD ["serve"]

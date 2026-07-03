@@ -41,6 +41,10 @@ var (
 
 var verbose bool
 
+// configMustExist is true when the config path was set explicitly (-c or
+// APOCI_CONFIG), so a missing file errors instead of falling back to defaults.
+var configMustExist bool
+
 const (
 	colActor    = "ACTOR"
 	colEndpoint = "ENDPOINT"
@@ -54,6 +58,7 @@ func main() {
 	}
 
 	defaultConfig := "configs/apoci.yaml"
+	envConfig := os.Getenv("APOCI_CONFIG") != ""
 	if env := os.Getenv("APOCI_CONFIG"); env != "" {
 		defaultConfig = env
 	}
@@ -61,6 +66,10 @@ func main() {
 	var configPath string
 	rootCmd.PersistentFlags().StringVarP(&configPath, "config", "c", defaultConfig, "config file path")
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "enable debug logging")
+
+	rootCmd.PersistentPreRun = func(cmd *cobra.Command, _ []string) {
+		configMustExist = envConfig || cmd.Flags().Changed("config")
+	}
 
 	rootCmd.AddCommand(serveCmd(&configPath))
 	rootCmd.AddCommand(followCmd(&configPath))
@@ -80,7 +89,7 @@ func serveCmd(configPath *string) *cobra.Command {
 		Use:   "serve",
 		Short: "Start the OCI registry server",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			cfg, err := config.Load(*configPath)
+			cfg, err := config.Load(*configPath, configMustExist)
 			if err != nil {
 				return err
 			}
@@ -846,7 +855,7 @@ func identityCmd(configPath *string) *cobra.Command {
 				return nil
 			}
 
-			cfg, err := config.Load(*configPath)
+			cfg, err := config.Load(*configPath, configMustExist)
 			if err != nil {
 				return err
 			}
@@ -965,7 +974,7 @@ func openDB(cfg *config.Config, logger *slog.Logger) (*database.DB, error) {
 
 func openAll(configPath string, logger *slog.Logger) (*database.DB, *activitypub.Identity, *config.Config, error) {
 	logger.Debug("loading config", "path", configPath)
-	cfg, err := config.Load(configPath)
+	cfg, err := config.Load(configPath, configMustExist)
 	if err != nil {
 		return nil, nil, nil, err
 	}
