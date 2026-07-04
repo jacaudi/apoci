@@ -205,7 +205,12 @@ func (f *Fetcher) CheckHealth(ctx context.Context, peerEndpoint string) error {
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode != http.StatusOK {
+	// A healthy peer answers /v2/ with either 200 (older build) or 401 +
+	// WWW-Authenticate: Bearer (this build's anonymous-ping challenge, like
+	// Docker Hub/ghcr.io). Anything else is a failure.
+	healthy := resp.StatusCode == http.StatusOK ||
+		(resp.StatusCode == http.StatusUnauthorized && strings.Contains(resp.Header.Get("WWW-Authenticate"), "Bearer"))
+	if !healthy {
 		return fmt.Errorf("health check returned %d for %s", resp.StatusCode, peerEndpoint)
 	}
 	return nil

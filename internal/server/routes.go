@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
@@ -36,6 +37,15 @@ func (s *Server) routes() http.Handler {
 	mux.Handle("/v2/auth", registryPushRateLimitMiddleware(s.registryPushLimiter)(http.HandlerFunc(s.handleRegistryAuth)))
 	mux.HandleFunc("/v2/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v2/" || r.URL.Path == "/v2" {
+			// OCI clients read an unconditional 200 ping as "no auth needed" and
+			// never arm their bearer-token flow, so they can't push. Challenge an
+			// anonymous ping; a client re-pinging with a token gets 200. Anonymous
+			// pulls still work since reads are anon-allowed regardless of the token.
+			if r.Header.Get("Authorization") == "" {
+				setBearerChallenge(w, s.cfg.Endpoint)
+				http.Error(w, "authentication required", http.StatusUnauthorized)
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{}`))
 			return
@@ -163,7 +173,15 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleRegistryAuth(w http.ResponseWriter, r *http.Request) {
 	_, pass, ok := r.BasicAuth()
-	if !ok || subtle.ConstantTimeCompare([]byte(pass), []byte(s.cfg.RegistryToken)) != 1 {
+	if !ok {
+		// No credentials: issue a random, non-empty anonymous token. It arms the
+		// client's bearer flow but can never equal RegistryToken, so it cannot
+		// authorize a write. OCI clients need it to exist for anonymous pulls.
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"token": rand.Text()})
+		return
+	}
+	if subtle.ConstantTimeCompare([]byte(pass), []byte(s.cfg.RegistryToken)) != 1 {
 		w.Header().Set("WWW-Authenticate", `Basic realm="apoci"`)
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return

@@ -31,6 +31,33 @@ func TestCheckHealthFailure(t *testing.T) {
 	require.Error(t, fetcher.CheckHealth(context.Background(), "http://127.0.0.1:1"), "expected health check failure")
 }
 
+// A peer on the bearer-challenge build answers /v2/ with 401 + Bearer;
+// CheckHealth must treat that as healthy.
+func TestCheckHealthAcceptsBearerChallenge(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v2/" {
+			w.Header().Set("WWW-Authenticate", `Bearer realm="https://x/v2/auth",service="registry"`)
+			w.WriteHeader(http.StatusUnauthorized)
+		}
+	}))
+	defer srv.Close()
+
+	fetcher := NewFetcher(10*time.Second, config.DefaultMaxBlobSize, config.DefaultMaxManifestSize, nopLog())
+	require.NoError(t, fetcher.CheckHealth(context.Background(), srv.URL))
+}
+
+// A bare 401 with no Bearer challenge stays a failure — we don't accept
+// every 401 indiscriminately.
+func TestCheckHealthRejectsUnauthenticatedWithoutChallenge(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	fetcher := NewFetcher(10*time.Second, config.DefaultMaxBlobSize, config.DefaultMaxManifestSize, nopLog())
+	require.Error(t, fetcher.CheckHealth(context.Background(), srv.URL), "plain 401 without a Bearer challenge must be unhealthy")
+}
+
 func TestFetchManifestRejectsOversized(t *testing.T) {
 	bigManifest := make([]byte, 200)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
