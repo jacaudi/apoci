@@ -193,3 +193,49 @@ func TestAdminTokenFromFileUnsetFromEnvAfterLoad(t *testing.T) {
 	require.Empty(t, os.Getenv("APOCI_ADMIN_TOKEN"),
 		"a file-mounted admin token must NOT remain in the process environment")
 }
+
+// Interaction with upstream's mustExist semantics: when there is NO config file
+// and mustExist=false (the env/defaults path — a missing file is tolerated),
+// expandFileSecrets must still run, so a token supplied via
+// APOCI_REGISTRY_TOKEN_FILE is honored instead of a random one being minted.
+// This guards against the *_FILE expansion being mis-wired to only fire on the
+// config-file-present branch after the rebase.
+func TestFileSecretHonoredOnEnvDefaultsPath(t *testing.T) {
+	dataDir := t.TempDir()
+	missing := filepath.Join(t.TempDir(), "no-such-config.yaml")
+
+	t.Setenv("APOCI_ENDPOINT", "https://test.example.com")
+	t.Setenv("APOCI_DATA_DIR", dataDir)
+	t.Setenv("APOCI_REGISTRY_TOKEN", "")
+	t.Setenv("APOCI_REGISTRY_TOKEN_FILE", writeSecret(t, "file-mounted-token\n"))
+
+	cfg, err := Load(missing, false)
+	require.NoError(t, err, "a missing file with mustExist=false must fall back to env/defaults")
+
+	require.Equal(t, "file-mounted-token", cfg.RegistryToken,
+		"the *_FILE secret must be honored on the env/defaults path, not auto-generated")
+	require.NotContains(t, cfg.GeneratedTokenPaths, filepath.Join(dataDir, "registry.token"),
+		"a file-sourced registry token must not be flagged as generated")
+}
+
+// Ordering guarantee across the mustExist × auto-gen boundary: when mustExist=true
+// and the explicit config path is missing, Load must error at the config-read step
+// BEFORE expandFileSecrets/applyTokenDefaults run — so no token is minted and
+// persisted to disk. A valid APOCI_REGISTRY_TOKEN_FILE is present precisely to prove
+// the *_FILE/auto-gen machinery never got the chance to run.
+func TestMissingExplicitConfigErrorsBeforeMintingToken(t *testing.T) {
+	dataDir := t.TempDir()
+	missing := filepath.Join(t.TempDir(), "no-such-config.yaml")
+
+	t.Setenv("APOCI_DATA_DIR", dataDir)
+	t.Setenv("APOCI_REGISTRY_TOKEN", "")
+	t.Setenv("APOCI_REGISTRY_TOKEN_FILE", writeSecret(t, "file-mounted-token\n"))
+
+	_, err := Load(missing, true)
+	require.ErrorIs(t, err, os.ErrNotExist,
+		"an explicit missing config path must fail at the read step")
+
+	_, statErr := os.Stat(filepath.Join(dataDir, "registry.token"))
+	require.ErrorIs(t, statErr, os.ErrNotExist,
+		"Load must bail before applyTokenDefaults mints and persists a token")
+}
