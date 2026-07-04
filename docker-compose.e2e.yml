@@ -4,6 +4,9 @@ services:
     volumes:
       - alice-data:/apoci/storage
     environment:
+      # No config file is mounted; unset the image's baked APOCI_CONFIG so a
+      # missing file falls back to these env vars instead of erroring.
+      APOCI_CONFIG: ""
       APOCI_ENDPOINT: "http://alice.test:5000"
       APOCI_ADMIN_TOKEN: "alice-e2e-token"
       APOCI_REGISTRY_TOKEN: "alice-registry-token"
@@ -26,6 +29,7 @@ services:
     volumes:
       - bob-data:/apoci/storage
     environment:
+      APOCI_CONFIG: ""
       APOCI_ENDPOINT: "http://bob.test:5000"
       APOCI_ADMIN_TOKEN: "bob-e2e-token"
       APOCI_REGISTRY_TOKEN: "bob-registry-token"
@@ -48,6 +52,7 @@ services:
     volumes:
       - charlie-data:/apoci/storage
     environment:
+      APOCI_CONFIG: ""
       APOCI_ENDPOINT: "http://charlie.test:5000"
       APOCI_ADMIN_TOKEN: "charlie-e2e-token"
       APOCI_REGISTRY_TOKEN: "charlie-registry-token"
