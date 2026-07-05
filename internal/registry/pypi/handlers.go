@@ -2,6 +2,7 @@ package pypi
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -276,21 +277,34 @@ func (b *Backend) handleDownload(w http.ResponseWriter, r *http.Request) {
 		writePlainError(w, http.StatusInternalServerError, "lookup package")
 		return
 	}
-	if dbPkg == nil {
-		writePlainError(w, http.StatusNotFound, "project not found")
-		return
+
+	var file *database.PackageFile
+	if dbPkg != nil {
+		v, err := b.db.GetPackageVersion(ctx, dbPkg.ID, version)
+		if err != nil {
+			writePlainError(w, http.StatusInternalServerError, "lookup version")
+			return
+		}
+		if v != nil {
+			file, err = b.db.GetPackageFile(ctx, v.ID, filename)
+			if err != nil {
+				writePlainError(w, http.StatusInternalServerError, "lookup file")
+				return
+			}
+		}
 	}
-	v, err := b.db.GetPackageVersion(ctx, dbPkg.ID, version)
-	if err != nil {
-		writePlainError(w, http.StatusInternalServerError, "lookup version")
-		return
+
+	// Cache-fill on miss — but never for locally-pushed projects, which always
+	// shadow upstream entirely.
+	if file == nil && b.upstreamEnabled() && (dbPkg == nil || dbPkg.OwnerID == upstreamOwner) {
+		file, err = b.cacheFromUpstream(ctx, name, version, filename)
+		if err != nil {
+			b.logger.Warn("pypi upstream: cache fill failed", "project", name, "version", version, "file", filename, "err", err)
+			writePlainError(w, http.StatusBadGateway, "upstream fetch failed")
+			return
+		}
 	}
-	if v == nil {
-		writePlainError(w, http.StatusNotFound, "version not found")
-		return
-	}
-	file, err := b.db.GetPackageFile(ctx, v.ID, filename)
-	if err != nil || file == nil {
+	if file == nil {
 		writePlainError(w, http.StatusNotFound, "file not found")
 		return
 	}
@@ -319,6 +333,98 @@ func (b *Backend) handleDownload(w http.ResponseWriter, r *http.Request) {
 	if _, err := io.Copy(w, rc); err != nil {
 		b.logger.Warn("pypi download: copy failed", "err", err, "project", name, "version", version, "file", filename)
 	}
+}
+
+// cacheFromUpstream backfills one distribution file from the upstream index:
+// verify the upstream's declared sha256 BEFORE storing (a corrupt or tampered
+// file must never enter the cache), then persist through the same store calls
+// as a local upload, owned by the upstream sentinel. Returns (nil, nil) when
+// the upstream doesn't have the project or the file.
+func (b *Backend) cacheFromUpstream(ctx context.Context, name, version, filename string) (*database.PackageFile, error) {
+	proj, err := b.upstream.FetchProject(ctx, name)
+	if errors.Is(err, upstream.ErrProjectNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("fetching upstream index: %w", err)
+	}
+
+	var entry *upstream.PyPIProjectFile
+	for i := range proj.Files {
+		if proj.Files[i].Filename == filename {
+			entry = &proj.Files[i]
+			break
+		}
+	}
+	if entry == nil {
+		return nil, nil
+	}
+	if v, ok := versionFromFilename(filename); !ok || v != version {
+		return nil, nil
+	}
+	expected := entry.Hashes["sha256"]
+	if expected == "" {
+		return nil, fmt.Errorf("upstream index has no sha256 for %s", filename)
+	}
+
+	body, err := b.upstream.FetchFile(ctx, entry.URL)
+	if err != nil {
+		return nil, fmt.Errorf("fetching upstream file: %w", err)
+	}
+	got := sha256.Sum256(body)
+	if !strings.EqualFold(hex.EncodeToString(got[:]), expected) {
+		return nil, fmt.Errorf("upstream file %s sha256 mismatch (index says %s)", filename, expected)
+	}
+
+	digest, _, err := b.blobs.Put(ctx, bytes.NewReader(body), "")
+	if err != nil {
+		return nil, fmt.Errorf("storing blob: %w", err)
+	}
+	mediaType := fileMediaType
+	if err := b.db.PutBlob(ctx, digest, int64(len(body)), &mediaType, true); err != nil {
+		return nil, fmt.Errorf("recording blob: %w", err)
+	}
+
+	dbPkg, err := b.db.GetOrCreatePackage(ctx, packageType, name, upstreamOwner)
+	if err != nil {
+		return nil, fmt.Errorf("creating cached package: %w", err)
+	}
+	v, err := b.db.GetPackageVersion(ctx, dbPkg.ID, version)
+	if err != nil {
+		return nil, fmt.Errorf("looking up cached version: %w", err)
+	}
+	if v == nil {
+		stored := storedVersion{Meta: &gtpypi.Metadata{RequiresPython: entry.RequiresPython}}
+		raw, err := json.Marshal(stored)
+		if err != nil {
+			return nil, fmt.Errorf("encoding cached metadata: %w", err)
+		}
+		v = &database.PackageVersion{
+			PackageID: dbPkg.ID,
+			Version:   version,
+			Metadata:  raw,
+			MediaType: versionMediaType,
+			SizeBytes: int64(len(raw)),
+		}
+		if err := b.db.PutPackageVersion(ctx, v); err != nil {
+			return nil, fmt.Errorf("recording cached version: %w", err)
+		}
+	}
+	contentType := contentTypeForFilename(filename)
+	file := &database.PackageFile{
+		VersionID:   v.ID,
+		Filename:    filename,
+		BlobDigest:  digest,
+		SizeBytes:   int64(len(body)),
+		ContentType: &contentType,
+	}
+	if err := b.db.PutPackageFile(ctx, file); err != nil {
+		return nil, fmt.Errorf("recording cached file: %w", err)
+	}
+	// Deliberately NO publishFile: upstream-cached content is never federated
+	// (same stance as goproxy's cacheFromUpstream).
+	b.logger.Info("pypi: cached from upstream", "project", name, "version", version, "file", filename, "bytes", len(body))
+	return file, nil
 }
 
 func (b *Backend) fileURL(name, version, filename string) string {
