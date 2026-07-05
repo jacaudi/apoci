@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -1308,4 +1310,119 @@ func TestAdminListImagesInternalError(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 
 	require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+}
+
+func deleteRepoReq(t *testing.T, srvURL, repo, token string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodDelete, srvURL+"/api/admin/repos/"+repo, nil)
+	require.NoError(t, err)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	return resp
+}
+
+func TestAdminDeleteRepoHappyPath(t *testing.T) {
+	s := testServerWithMock(t, &mockAPFederator{})
+	s.cfg.RegistryToken = testToken
+	s.cfg.AdminToken = testToken
+	srv := httptest.NewServer(s.routes())
+	defer srv.Close()
+	ctx := context.Background()
+
+	repo, err := s.db.GetOrCreateRepository(ctx, "test/deleteme", s.identity.ActorURL)
+	require.NoError(t, err)
+	m := &database.Manifest{
+		RepositoryID: repo.ID,
+		Digest:       "sha256:eeee000000000000000000000000000000000000000000000000000000000001",
+		MediaType:    "application/vnd.oci.image.manifest.v1+json",
+		SizeBytes:    2,
+		Content:      []byte("{}"),
+	}
+	require.NoError(t, s.db.PutManifestWithLayers(ctx, m, nil))
+	require.NoError(t, s.db.PutTag(ctx, repo.ID, "v1", m.Digest))
+
+	resp := deleteRepoReq(t, srv.URL, "test/deleteme", testToken)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var body map[string]any
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	require.Equal(t, "test/deleteme", body["deleted"])
+	require.Equal(t, float64(1), body["manifests"])
+	require.Equal(t, float64(1), body["tags"])
+
+	// Gone from the catalog; second delete is a 404.
+	got, err := s.db.GetRepository(ctx, "test/deleteme")
+	require.NoError(t, err)
+	require.Nil(t, got)
+	resp2 := deleteRepoReq(t, srv.URL, "test/deleteme", testToken)
+	defer func() { _ = resp2.Body.Close() }()
+	require.Equal(t, http.StatusNotFound, resp2.StatusCode)
+}
+
+func TestAdminDeleteRepoRefusesMirrored(t *testing.T) {
+	s := testServerWithMock(t, &mockAPFederator{})
+	s.cfg.RegistryToken = testToken
+	s.cfg.AdminToken = testToken
+	srv := httptest.NewServer(s.routes())
+	defer srv.Close()
+
+	_, err := s.db.GetOrCreateRepository(context.Background(), "docker.io/library/nginx", "upstream:docker.io")
+	require.NoError(t, err)
+
+	resp := deleteRepoReq(t, srv.URL, "docker.io/library/nginx", testToken)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	b, _ := io.ReadAll(resp.Body)
+	require.Contains(t, string(b), "mirrors")
+}
+
+func TestAdminDeleteRepoNotFound(t *testing.T) {
+	s := testServerWithMock(t, &mockAPFederator{})
+	s.cfg.RegistryToken = testToken
+	s.cfg.AdminToken = testToken
+	srv := httptest.NewServer(s.routes())
+	defer srv.Close()
+
+	resp := deleteRepoReq(t, srv.URL, "test/never-existed", testToken)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusNotFound, resp.StatusCode)
+}
+
+func TestAdminDeleteRepoRequiresAdminToken(t *testing.T) {
+	s := testServerWithMock(t, &mockAPFederator{})
+	s.cfg.RegistryToken = testToken
+	s.cfg.AdminToken = testToken
+	srv := httptest.NewServer(s.routes())
+	defer srv.Close()
+
+	resp := deleteRepoReq(t, srv.URL, "test/whatever", "")
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+}
+
+func TestAdminDeleteRepoConflictsOnOpenUpload(t *testing.T) {
+	s := testServerWithMock(t, &mockAPFederator{})
+	s.cfg.RegistryToken = testToken
+	s.cfg.AdminToken = testToken
+	srv := httptest.NewServer(s.routes())
+	defer srv.Close()
+	ctx := context.Background()
+
+	repo, err := s.db.GetOrCreateRepository(ctx, "test/uploading", s.identity.ActorURL)
+	require.NoError(t, err)
+	_, err = s.db.CreateUploadSession(ctx, "inflight-uuid", repo.ID, time.Hour)
+	require.NoError(t, err)
+
+	resp := deleteRepoReq(t, srv.URL, "test/uploading", testToken)
+	defer func() { _ = resp.Body.Close() }()
+	require.Equal(t, http.StatusConflict, resp.StatusCode)
+
+	// Still present.
+	got, err := s.db.GetRepository(ctx, "test/uploading")
+	require.NoError(t, err)
+	require.NotNil(t, got)
 }
