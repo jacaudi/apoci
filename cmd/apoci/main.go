@@ -860,6 +860,7 @@ func identityCmd(configPath *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			warnGeneratedTokens(buildLogger(cfg), cfg)
 
 			identity, err := activitypub.LoadOrCreateIdentity(
 				cfg.Endpoint, cfg.Domain, cfg.AccountDomain, cfg.KeyPath, nopLogger(),

@@ -666,7 +666,7 @@ func expandFileSecrets(vars ...string) ([]string, error) {
 			return nil, fmt.Errorf("secret file %s for %s_FILE is empty", path, name)
 		}
 		if err := os.Setenv(name, value); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("setting %s from %s_FILE: %w", name, name, err)
 		}
 		fileSourced = append(fileSourced, name)
 	}
