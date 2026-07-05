@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -728,4 +729,25 @@ func TestFederationWithdrawalSweepEmitsDeletesAndStamps(t *testing.T) {
 	final, err := s.db.ListActivitiesPage(ctx, s.identity.ActorURL, 0, 100)
 	require.NoError(t, err)
 	require.Len(t, final, len(after), "second sweep must not re-emit")
+}
+
+func TestFaviconServedAtRoot(t *testing.T) {
+	for _, uiEnabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("uiEnabled=%v", uiEnabled), func(t *testing.T) {
+			s := testServer(t)
+			s.cfg.UI.Enabled = uiEnabled
+			srv := httptest.NewServer(s.routes())
+			defer srv.Close()
+
+			resp, err := http.Get(srv.URL + "/favicon.ico")
+			require.NoError(t, err)
+			defer func() { _ = resp.Body.Close() }()
+
+			require.Equal(t, http.StatusOK, resp.StatusCode)
+			body, err := io.ReadAll(resp.Body)
+			require.NoError(t, err)
+			require.NotEmpty(t, body)
+			require.Contains(t, resp.Header.Get("Content-Type"), "icon")
+		})
+	}
 }
