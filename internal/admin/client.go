@@ -20,6 +20,17 @@ type ImageEntry struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// IdentityResponse is the payload returned by GET /api/admin/identity.
+type IdentityResponse struct {
+	Name          string `json:"name"`
+	ActorURL      string `json:"actorURL"`
+	KeyID         string `json:"keyID"`
+	Domain        string `json:"domain"`
+	AccountDomain string `json:"accountDomain"`
+	Endpoint      string `json:"endpoint"`
+	PublicKey     string `json:"publicKey"`
+}
+
 type Client struct {
 	base   string
 	token  string

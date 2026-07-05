@@ -75,6 +75,10 @@ func (s *Server) routes() http.Handler {
 		mux.Handle(prefix, b.Handler())
 	}
 
+	// Swagger UI + OpenAPI spec for the admin API. Served unauthenticated: it
+	// exposes only the API schema, not any registry data. More specific than the
+	// "/api/admin/" pattern below, so ServeMux routes it here first.
+	mux.Handle("GET /api/admin/docs/", swaggerHandler())
 	mux.Handle("/api/admin/", http.StripPrefix("/api/admin", s.adminRouter()))
 
 	var handler http.Handler = mux

@@ -1,4 +1,8 @@
-.PHONY: build test lint clean docker lint-fix fmt tidy up down e2e
+.PHONY: build test lint clean docker lint-fix fmt tidy up down e2e docs docs-check
+
+SWAG_VERSION := v1.16.6
+SWAG := go run github.com/swaggo/swag/cmd/swag@$(SWAG_VERSION)
+SWAG_ARGS := init -g internal/server/openapi.go -d . --parseInternal --parseDependency --parseDepth 2 --output internal/apidocs
 
 BINARY := apoci
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
@@ -21,6 +25,15 @@ fmt:
 
 tidy:
 	go mod tidy
+
+# Regenerate the admin API OpenAPI spec (internal/apidocs) from swaggo annotations.
+docs:
+	$(SWAG) $(SWAG_ARGS)
+
+# Fail if the committed spec is stale relative to the annotations.
+docs-check:
+	$(SWAG) $(SWAG_ARGS)
+	git diff --exit-code -- internal/apidocs
 
 clean:
 	rm -rf bin/

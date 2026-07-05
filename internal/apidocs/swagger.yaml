@@ -1,0 +1,591 @@
+basePath: /api/admin
+definitions:
+  git_erwanleboucher_dev_eleboucher_apoci_internal_admin.IdentityResponse:
+    properties:
+      accountDomain:
+        type: string
+      actorURL:
+        type: string
+      domain:
+        type: string
+      endpoint:
+        type: string
+      keyID:
+        type: string
+      name:
+        type: string
+      publicKey:
+        type: string
+    type: object
+  git_erwanleboucher_dev_eleboucher_apoci_internal_admin.ImageEntry:
+    properties:
+      name:
+        type: string
+      size_bytes:
+        type: integer
+      tags:
+        items:
+          type: string
+        type: array
+      updated_at:
+        type: string
+    type: object
+  git_erwanleboucher_dev_eleboucher_apoci_internal_database.Actor:
+    properties:
+      actor_url:
+        type: string
+      alias:
+        type: string
+      created_at:
+        type: string
+      endpoint:
+        type: string
+      federation_tag_globs:
+        type: string
+      id:
+        type: integer
+      is_healthy:
+        description: Health & replication (for blob fetching)
+        type: boolean
+      last_seen_at:
+        type: string
+      name:
+        type: string
+      public_key_pem:
+        type: string
+      replication_policy:
+        type: string
+      they_follow_us:
+        description: 'Inbound: they follow us'
+        type: boolean
+      they_follow_us_at:
+        type: string
+      we_follow_accept_at:
+        type: string
+      we_follow_status:
+        description: pending, accepted, rejected
+        type: string
+      we_follow_them:
+        description: 'Outbound: we follow them'
+        type: boolean
+    type: object
+  git_erwanleboucher_dev_eleboucher_apoci_internal_database.FollowRequest:
+    properties:
+      actorURL:
+        type: string
+      alias:
+        type: string
+      endpoint:
+        type: string
+      id:
+        type: integer
+      publicKeyPEM:
+        type: string
+      requestedAt:
+        type: string
+    type: object
+  internal_server.GCStatusResponse:
+    properties:
+      intervalMs:
+        type: integer
+      lastDurationMs:
+        type: integer
+      lastRun:
+        type: string
+      nextRunEstimate:
+        type: string
+      running:
+        type: boolean
+    type: object
+  internal_server.adminFollowFilterRequest:
+    properties:
+      tag_globs:
+        items:
+          type: string
+        type: array
+      target:
+        type: string
+    type: object
+  internal_server.adminFollowRequest:
+    properties:
+      force:
+        type: boolean
+      target:
+        type: string
+    type: object
+  internal_server.adminPeerBlockRequest:
+    properties:
+      actor:
+        type: string
+      domain:
+        type: string
+    type: object
+info:
+  contact: {}
+  description: Administrative API for an apoci federated OCI registry node.
+  title: apoci admin API
+  version: "1.0"
+paths:
+  /actors:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/git_erwanleboucher_dev_eleboucher_apoci_internal_database.Actor'
+            type: array
+        "500":
+          description: internal error
+          schema:
+            type: string
+      security:
+      - Bearer: []
+      summary: List known actors
+      tags:
+      - actors
+  /follows:
+    delete:
+      consumes:
+      - application/json
+      description: Removes a follow relationship; set force to purge local records
+        even if the peer is unreachable.
+      parameters:
+      - description: Target to unfollow
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/internal_server.adminFollowRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: removed
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: missing target
+          schema:
+            type: string
+        "500":
+          description: internal error
+          schema:
+            type: string
+      security:
+      - Bearer: []
+      summary: Unfollow a peer
+      tags:
+      - follows
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/git_erwanleboucher_dev_eleboucher_apoci_internal_database.Actor'
+            type: array
+        "500":
+          description: internal error
+          schema:
+            type: string
+      security:
+      - Bearer: []
+      summary: List followers
+      tags:
+      - follows
+    patch:
+      consumes:
+      - application/json
+      description: Sets the tag-glob filter controlling which tags are delivered to
+        an inbound follower.
+      parameters:
+      - description: Target and tag globs
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/internal_server.adminFollowFilterRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: updated, tag_globs
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: missing target or invalid glob
+          schema:
+            type: string
+        "404":
+          description: follower not found
+          schema:
+            type: string
+        "500":
+          description: internal error
+          schema:
+            type: string
+      security:
+      - Bearer: []
+      summary: Set follower tag filter
+      tags:
+      - follows
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Target to follow
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/internal_server.adminFollowRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: followed
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: missing target
+          schema:
+            type: string
+        "502":
+          description: could not add follow
+          schema:
+            type: string
+      security:
+      - Bearer: []
+      summary: Follow a peer
+      tags:
+      - follows
+  /follows/accept:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Target to accept
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/internal_server.adminFollowRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: accepted, optional followed_back
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: missing target
+          schema:
+            type: string
+        "500":
+          description: internal error
+          schema:
+            type: string
+      security:
+      - Bearer: []
+      summary: Accept a follow request
+      tags:
+      - follows
+  /follows/outgoing:
+    get:
+      parameters:
+      - description: Filter by status
+        enum:
+        - pending
+        - accepted
+        - rejected
+        in: query
+        name: status
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/git_erwanleboucher_dev_eleboucher_apoci_internal_database.Actor'
+            type: array
+        "500":
+          description: internal error
+          schema:
+            type: string
+      security:
+      - Bearer: []
+      summary: List outgoing follows
+      tags:
+      - follows
+  /follows/pending:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/git_erwanleboucher_dev_eleboucher_apoci_internal_database.FollowRequest'
+            type: array
+        "500":
+          description: internal error
+          schema:
+            type: string
+      security:
+      - Bearer: []
+      summary: List pending follow requests
+      tags:
+      - follows
+  /follows/reject:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Target to reject
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/internal_server.adminFollowRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: rejected
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: missing target
+          schema:
+            type: string
+        "500":
+          description: internal error
+          schema:
+            type: string
+      security:
+      - Bearer: []
+      summary: Reject a follow request
+      tags:
+      - follows
+  /gc:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_server.GCStatusResponse'
+      security:
+      - Bearer: []
+      summary: Garbage collector status
+      tags:
+      - gc
+    post:
+      description: Runs a single garbage-collection cycle synchronously.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: status
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - Bearer: []
+      summary: Run garbage collection
+      tags:
+      - gc
+  /identity:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/git_erwanleboucher_dev_eleboucher_apoci_internal_admin.IdentityResponse'
+        "500":
+          description: internal error
+          schema:
+            type: string
+      security:
+      - Bearer: []
+      summary: Get node identity
+      tags:
+      - identity
+  /images:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/git_erwanleboucher_dev_eleboucher_apoci_internal_admin.ImageEntry'
+            type: array
+        "500":
+          description: internal error
+          schema:
+            type: string
+      security:
+      - Bearer: []
+      summary: List locally hosted images
+      tags:
+      - images
+  /mirrors/{repo}:
+    delete:
+      description: Drops a locally-mirrored upstream repository (or a single manifest
+        by digest). Does not affect the upstream.
+      parameters:
+      - description: Repository name
+        in: path
+        name: repo
+        required: true
+        type: string
+      - description: Evict only this manifest digest (sha256:...)
+        in: query
+        name: digest
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: evicted, blobsPurged
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: invalid request or locally-owned repository
+          schema:
+            type: string
+        "404":
+          description: repository not found
+          schema:
+            type: string
+        "500":
+          description: internal error
+          schema:
+            type: string
+      security:
+      - Bearer: []
+      summary: Evict a mirrored repository
+      tags:
+      - mirrors
+  /peers/blocked:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: domains, actors
+          schema:
+            additionalProperties:
+              items:
+                type: string
+              type: array
+            type: object
+      security:
+      - Bearer: []
+      summary: List blocked peers
+      tags:
+      - peers
+  /peers/pause:
+    post:
+      consumes:
+      - application/json
+      description: Blocks inbound federation from a domain or actor without a restart.
+        The block is in-memory and does not survive a config reload.
+      parameters:
+      - description: Domain or actor to block
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/internal_server.adminPeerBlockRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: paused
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: missing or invalid domain/actor
+          schema:
+            type: string
+      security:
+      - Bearer: []
+      summary: Pause a peer
+      tags:
+      - peers
+  /peers/resume:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Domain or actor to unblock
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/internal_server.adminPeerBlockRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: resumed
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: missing or invalid domain/actor
+          schema:
+            type: string
+      security:
+      - Bearer: []
+      summary: Resume a peer
+      tags:
+      - peers
+  /replication:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: enabled, targets
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - Bearer: []
+      summary: Replication status
+      tags:
+      - replication
+securityDefinitions:
+  Bearer:
+    description: Admin token as "Bearer <token>".
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"

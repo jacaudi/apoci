@@ -42,6 +42,14 @@ func (s *Server) adminRouter() http.Handler {
 	return r
 }
 
+// adminGetIdentity godoc
+// @Summary  Get node identity
+// @Tags     identity
+// @Produce  json
+// @Success  200  {object}  admin.IdentityResponse
+// @Failure  500  {string}  string  "internal error"
+// @Security Bearer
+// @Router   /identity [get]
 func (s *Server) adminGetIdentity(w http.ResponseWriter, r *http.Request) {
 	s.logger.Debug("admin: GET /identity")
 	pubPEM, err := s.identity.PublicKeyPEM()
@@ -50,17 +58,25 @@ func (s *Server) adminGetIdentity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, map[string]string{
-		"name":          s.cfg.Name,
-		"actorURL":      s.identity.ActorURL,
-		"keyID":         s.identity.KeyID(),
-		"domain":        s.identity.Domain,
-		"accountDomain": s.identity.AccountDomain,
-		"endpoint":      s.cfg.Endpoint,
-		"publicKey":     pubPEM,
+	writeJSON(w, admin.IdentityResponse{
+		Name:          s.cfg.Name,
+		ActorURL:      s.identity.ActorURL,
+		KeyID:         s.identity.KeyID(),
+		Domain:        s.identity.Domain,
+		AccountDomain: s.identity.AccountDomain,
+		Endpoint:      s.cfg.Endpoint,
+		PublicKey:     pubPEM,
 	})
 }
 
+// adminListImages godoc
+// @Summary  List locally hosted images
+// @Tags     images
+// @Produce  json
+// @Success  200  {array}   admin.ImageEntry
+// @Failure  500  {string}  string  "internal error"
+// @Security Bearer
+// @Router   /images [get]
 func (s *Server) adminListImages(w http.ResponseWriter, r *http.Request) {
 	s.logger.Debug("admin: GET /images")
 	repos, err := s.db.ListLocallyHostedRepos(r.Context())
@@ -82,6 +98,14 @@ func (s *Server) adminListImages(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, entries)
 }
 
+// adminListActors godoc
+// @Summary  List known actors
+// @Tags     actors
+// @Produce  json
+// @Success  200  {array}   database.Actor
+// @Failure  500  {string}  string  "internal error"
+// @Security Bearer
+// @Router   /actors [get]
 func (s *Server) adminListActors(w http.ResponseWriter, r *http.Request) {
 	s.logger.Debug("admin: GET /actors")
 	actors, err := s.db.ListActors(r.Context())
@@ -94,6 +118,14 @@ func (s *Server) adminListActors(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, actors)
 }
 
+// adminListFollows godoc
+// @Summary  List followers
+// @Tags     follows
+// @Produce  json
+// @Success  200  {array}   database.Actor
+// @Failure  500  {string}  string  "internal error"
+// @Security Bearer
+// @Router   /follows [get]
 func (s *Server) adminListFollows(w http.ResponseWriter, r *http.Request) {
 	s.logger.Debug("admin: GET /follows")
 	follows, err := s.db.ListFollows(r.Context())
@@ -106,6 +138,14 @@ func (s *Server) adminListFollows(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, follows)
 }
 
+// adminListPending godoc
+// @Summary  List pending follow requests
+// @Tags     follows
+// @Produce  json
+// @Success  200  {array}   database.FollowRequest
+// @Failure  500  {string}  string  "internal error"
+// @Security Bearer
+// @Router   /follows/pending [get]
 func (s *Server) adminListPending(w http.ResponseWriter, r *http.Request) {
 	s.logger.Debug("admin: GET /follows/pending")
 	requests, err := s.db.ListFollowRequests(r.Context())
@@ -118,6 +158,15 @@ func (s *Server) adminListPending(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, requests)
 }
 
+// adminListOutgoingFollows godoc
+// @Summary  List outgoing follows
+// @Tags     follows
+// @Produce  json
+// @Param    status  query     string  false  "Filter by status"  Enums(pending, accepted, rejected)
+// @Success  200     {array}   database.Actor
+// @Failure  500     {string}  string  "internal error"
+// @Security Bearer
+// @Router   /follows/outgoing [get]
 func (s *Server) adminListOutgoingFollows(w http.ResponseWriter, r *http.Request) {
 	status := r.URL.Query().Get("status")
 	s.logger.Debug("admin: GET /follows/outgoing", "status", status)
@@ -154,6 +203,17 @@ func decodeTarget(w http.ResponseWriter, r *http.Request) (string, bool) {
 	return req.Target, true
 }
 
+// adminAddFollow godoc
+// @Summary  Follow a peer
+// @Tags     follows
+// @Accept   json
+// @Produce  json
+// @Param    request  body      adminFollowRequest  true  "Target to follow"
+// @Success  200      {object}  map[string]string   "followed"
+// @Failure  400      {string}  string              "missing target"
+// @Failure  502      {string}  string              "could not add follow"
+// @Security Bearer
+// @Router   /follows [post]
 func (s *Server) adminAddFollow(w http.ResponseWriter, r *http.Request) {
 	target, ok := decodeTarget(w, r)
 	if !ok {
@@ -172,6 +232,17 @@ func (s *Server) adminAddFollow(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"followed": result.ActorID})
 }
 
+// adminAcceptFollow godoc
+// @Summary  Accept a follow request
+// @Tags     follows
+// @Accept   json
+// @Produce  json
+// @Param    request  body      adminFollowRequest  true  "Target to accept"
+// @Success  200      {object}  map[string]string   "accepted, optional followed_back"
+// @Failure  400      {string}  string              "missing target"
+// @Failure  500      {string}  string              "internal error"
+// @Security Bearer
+// @Router   /follows/accept [post]
 func (s *Server) adminAcceptFollow(w http.ResponseWriter, r *http.Request) {
 	target, ok := decodeTarget(w, r)
 	if !ok {
@@ -194,6 +265,17 @@ func (s *Server) adminAcceptFollow(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, resp)
 }
 
+// adminRejectFollow godoc
+// @Summary  Reject a follow request
+// @Tags     follows
+// @Accept   json
+// @Produce  json
+// @Param    request  body      adminFollowRequest  true  "Target to reject"
+// @Success  200      {object}  map[string]string   "rejected"
+// @Failure  400      {string}  string              "missing target"
+// @Failure  500      {string}  string              "internal error"
+// @Security Bearer
+// @Router   /follows/reject [post]
 func (s *Server) adminRejectFollow(w http.ResponseWriter, r *http.Request) {
 	target, ok := decodeTarget(w, r)
 	if !ok {
@@ -212,6 +294,18 @@ func (s *Server) adminRejectFollow(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"rejected": actorURL})
 }
 
+// adminRemoveFollow godoc
+// @Summary  Unfollow a peer
+// @Description  Removes a follow relationship; set force to purge local records even if the peer is unreachable.
+// @Tags     follows
+// @Accept   json
+// @Produce  json
+// @Param    request  body      adminFollowRequest  true  "Target to unfollow"
+// @Success  200      {object}  map[string]string   "removed"
+// @Failure  400      {string}  string              "missing target"
+// @Failure  500      {string}  string              "internal error"
+// @Security Bearer
+// @Router   /follows [delete]
 func (s *Server) adminRemoveFollow(w http.ResponseWriter, r *http.Request) {
 	var req adminFollowRequest
 	r.Body = http.MaxBytesReader(w, r.Body, adminMaxBody)
@@ -237,6 +331,19 @@ type adminFollowFilterRequest struct {
 	TagGlobs []string `json:"tag_globs"`
 }
 
+// adminUpdateFollowFilter godoc
+// @Summary  Set follower tag filter
+// @Description  Sets the tag-glob filter controlling which tags are delivered to an inbound follower.
+// @Tags     follows
+// @Accept   json
+// @Produce  json
+// @Param    request  body      adminFollowFilterRequest  true  "Target and tag globs"
+// @Success  200      {object}  map[string]interface{}    "updated, tag_globs"
+// @Failure  400      {string}  string                    "missing target or invalid glob"
+// @Failure  404      {string}  string                    "follower not found"
+// @Failure  500      {string}  string                    "internal error"
+// @Security Bearer
+// @Router   /follows [patch]
 func (s *Server) adminUpdateFollowFilter(w http.ResponseWriter, r *http.Request) {
 	var req adminFollowFilterRequest
 	r.Body = http.MaxBytesReader(w, r.Body, adminMaxBody)
@@ -261,6 +368,19 @@ func (s *Server) adminUpdateFollowFilter(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, map[string]any{"updated": req.Target, "tag_globs": req.TagGlobs})
 }
 
+// adminEvictMirror godoc
+// @Summary  Evict a mirrored repository
+// @Description  Drops a locally-mirrored upstream repository (or a single manifest by digest). Does not affect the upstream.
+// @Tags     mirrors
+// @Produce  json
+// @Param    repo    path      string                  true   "Repository name"
+// @Param    digest  query     string                  false  "Evict only this manifest digest (sha256:...)"
+// @Success  200     {object}  map[string]interface{}  "evicted, blobsPurged"
+// @Failure  400     {string}  string                  "invalid request or locally-owned repository"
+// @Failure  404     {string}  string                  "repository not found"
+// @Failure  500     {string}  string                  "internal error"
+// @Security Bearer
+// @Router   /mirrors/{repo} [delete]
 func (s *Server) adminEvictMirror(w http.ResponseWriter, r *http.Request) {
 	repo := chi.URLParam(r, "*")
 	if repo == "" {
@@ -349,8 +469,17 @@ func decodePeerBlock(w http.ResponseWriter, r *http.Request) (adminPeerBlockRequ
 	return req, true
 }
 
-// adminPausePeer blocks inbound federation from a domain or actor without a
-// restart. The block is in-memory and does not survive a config reload.
+// adminPausePeer godoc
+// @Summary  Pause a peer
+// @Description  Blocks inbound federation from a domain or actor without a restart. The block is in-memory and does not survive a config reload.
+// @Tags     peers
+// @Accept   json
+// @Produce  json
+// @Param    request  body      adminPeerBlockRequest   true  "Domain or actor to block"
+// @Success  200      {object}  map[string]interface{}  "paused"
+// @Failure  400      {string}  string                  "missing or invalid domain/actor"
+// @Security Bearer
+// @Router   /peers/pause [post]
 func (s *Server) adminPausePeer(w http.ResponseWriter, r *http.Request) {
 	req, ok := decodePeerBlock(w, r)
 	if !ok {
@@ -366,6 +495,16 @@ func (s *Server) adminPausePeer(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"paused": req})
 }
 
+// adminResumePeer godoc
+// @Summary  Resume a peer
+// @Tags     peers
+// @Accept   json
+// @Produce  json
+// @Param    request  body      adminPeerBlockRequest   true  "Domain or actor to unblock"
+// @Success  200      {object}  map[string]interface{}  "resumed"
+// @Failure  400      {string}  string                  "missing or invalid domain/actor"
+// @Security Bearer
+// @Router   /peers/resume [post]
 func (s *Server) adminResumePeer(w http.ResponseWriter, r *http.Request) {
 	req, ok := decodePeerBlock(w, r)
 	if !ok {
@@ -381,6 +520,13 @@ func (s *Server) adminResumePeer(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"resumed": req})
 }
 
+// adminListBlocked godoc
+// @Summary  List blocked peers
+// @Tags     peers
+// @Produce  json
+// @Success  200  {object}  map[string][]string  "domains, actors"
+// @Security Bearer
+// @Router   /peers/blocked [get]
 func (s *Server) adminListBlocked(w http.ResponseWriter, r *http.Request) {
 	s.logger.Debug("admin: GET /peers/blocked")
 	writeJSON(w, map[string][]string{
@@ -389,6 +535,13 @@ func (s *Server) adminListBlocked(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// adminReplicationStatus godoc
+// @Summary  Replication status
+// @Tags     replication
+// @Produce  json
+// @Success  200  {object}  map[string]interface{}  "enabled, targets"
+// @Security Bearer
+// @Router   /replication [get]
 func (s *Server) adminReplicationStatus(w http.ResponseWriter, r *http.Request) {
 	s.logger.Debug("admin: GET /replication")
 	if s.replication == nil {
@@ -398,11 +551,26 @@ func (s *Server) adminReplicationStatus(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, map[string]any{"enabled": true, "targets": s.replication.Status()})
 }
 
+// adminGCStatus godoc
+// @Summary  Garbage collector status
+// @Tags     gc
+// @Produce  json
+// @Success  200  {object}  GCStatusResponse
+// @Security Bearer
+// @Router   /gc [get]
 func (s *Server) adminGCStatus(w http.ResponseWriter, r *http.Request) {
 	s.logger.Debug("admin: GET /gc")
 	writeJSON(w, s.gc.Status())
 }
 
+// adminRunGC godoc
+// @Summary  Run garbage collection
+// @Description  Runs a single garbage-collection cycle synchronously.
+// @Tags     gc
+// @Produce  json
+// @Success  200  {object}  map[string]string  "status"
+// @Security Bearer
+// @Router   /gc [post]
 func (s *Server) adminRunGC(w http.ResponseWriter, r *http.Request) {
 	s.logger.Debug("admin: POST /gc")
 	s.gc.RunOnce(r.Context())
