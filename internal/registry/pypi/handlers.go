@@ -278,9 +278,10 @@ func (b *Backend) handleDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var v *database.PackageVersion
 	var file *database.PackageFile
 	if dbPkg != nil {
-		v, err := b.db.GetPackageVersion(ctx, dbPkg.ID, version)
+		v, err = b.db.GetPackageVersion(ctx, dbPkg.ID, version)
 		if err != nil {
 			writePlainError(w, http.StatusInternalServerError, "lookup version")
 			return
@@ -305,7 +306,14 @@ func (b *Backend) handleDownload(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if file == nil {
-		writePlainError(w, http.StatusNotFound, "file not found")
+		switch {
+		case dbPkg == nil:
+			writePlainError(w, http.StatusNotFound, "project not found")
+		case v == nil:
+			writePlainError(w, http.StatusNotFound, "version not found")
+		default:
+			writePlainError(w, http.StatusNotFound, "file not found")
+		}
 		return
 	}
 
@@ -509,6 +517,10 @@ func (b *Backend) writeUpstreamIndex(w http.ResponseWriter, name string, proj *u
 			b.logger.Debug("pypi upstream: skipping file with unparseable version", "file", f.Filename)
 			continue
 		}
+		// href (including the upstream-controlled #sha256= fragment) is raw
+		// here — html.EscapeString at the Fprintf write site below is the
+		// single escape point; keep them together so a future edit can't
+		// move the escape and open an XSS surface.
 		href := b.fileURL(name, version, f.Filename)
 		if sha := f.Hashes["sha256"]; sha != "" {
 			href += "#sha256=" + sha

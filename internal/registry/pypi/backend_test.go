@@ -248,9 +248,34 @@ func TestSimplePackageNotFound(t *testing.T) {
 
 func TestDownloadNotFound(t *testing.T) {
 	srv := newTestServer(t)
+
+	// Unknown project.
 	resp := doGet(t, srv, "/pypi/files/missing/1.0.0/missing-1.0.0.tar.gz")
 	defer func() { _ = resp.Body.Close() }()
 	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	body, _ := io.ReadAll(resp.Body)
+	assert.Equal(t, "project not found\n", string(body))
+
+	uploadResp := uploadRequest(t, srv, uploadOpts{
+		name: testPkgDemo, version: testVersion,
+		filename: testFileTgz, content: []byte("data"), withDigest: true,
+	}, true)
+	defer func() { _ = uploadResp.Body.Close() }()
+	require.Equal(t, http.StatusOK, uploadResp.StatusCode)
+
+	// Known project, unknown version.
+	resp2 := doGet(t, srv, "/pypi/files/"+testPkgDemo+"/9.9.9/demo-9.9.9.tar.gz")
+	defer func() { _ = resp2.Body.Close() }()
+	assert.Equal(t, http.StatusNotFound, resp2.StatusCode)
+	body2, _ := io.ReadAll(resp2.Body)
+	assert.Equal(t, "version not found\n", string(body2))
+
+	// Known project + version, unknown filename.
+	resp3 := doGet(t, srv, "/pypi/files/"+testPkgDemo+"/"+testVersion+"/missing-1.0.0.tar.gz")
+	defer func() { _ = resp3.Body.Close() }()
+	assert.Equal(t, http.StatusNotFound, resp3.StatusCode)
+	body3, _ := io.ReadAll(resp3.Body)
+	assert.Equal(t, "file not found\n", string(body3))
 }
 
 func TestNormalizeName(t *testing.T) {
