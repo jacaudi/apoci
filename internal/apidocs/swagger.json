@@ -735,6 +735,65 @@
                     }
                 }
             }
+        },
+        "/repos/{repo}": {
+            "delete": {
+                "security": [
+                    {
+                        "Bearer": []
+                    }
+                ],
+                "description": "Removes a locally-owned repository in one call: manifests, tags, and its catalog entry, with unreferenced blobs purged. Tombstones are recorded so federation peers cannot resurrect the content, and deletes are published to followers. Refuses while an upload session is open (409). For mirrored repositories use /mirrors instead.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "repos"
+                ],
+                "summary": "Delete a locally-owned repository",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Repository name",
+                        "name": "repo",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "deleted, manifests, tags, blobsPurged",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "400": {
+                        "description": "invalid request or not locally owned",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "404": {
+                        "description": "repository not found",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "409": {
+                        "description": "repository has open upload sessions",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "500": {
+                        "description": "internal error",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
         }
     },
     "definitions": {
