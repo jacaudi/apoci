@@ -2,7 +2,6 @@ package cargo
 
 import (
 	"bytes"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -166,25 +165,6 @@ func (b *Backend) handlePublish(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte(`{"warnings":{"invalid_categories":[],"invalid_badges":[],"other":[]}}`))
 }
 
-// denyPrivate writes 401 and returns true when the package is private and the
-// request is not authenticated, mirroring the npm backend's privacy check.
-func (b *Backend) denyPrivate(w http.ResponseWriter, r *http.Request, dbPkg *database.Package) bool {
-	if dbPkg.Private && b.token != "" && !checkBearer(r, b.token) {
-		writeError(w, http.StatusUnauthorized, "authentication required")
-		return true
-	}
-	return false
-}
-
-func checkBearer(r *http.Request, token string) bool {
-	const bearer = "Bearer "
-	auth := r.Header.Get("Authorization")
-	if !strings.HasPrefix(auth, bearer) {
-		return false
-	}
-	return subtle.ConstantTimeCompare([]byte(auth[len(bearer):]), []byte(token)) == 1
-}
-
 func (b *Backend) handleIndex(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	name := strings.ToLower(chi.URLParam(r, "name"))
@@ -198,10 +178,6 @@ func (b *Backend) handleIndex(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "crate not found")
 		return
 	}
-	if b.denyPrivate(w, r, dbPkg) {
-		return
-	}
-
 	versions, err := b.db.ListPackageVersions(ctx, dbPkg.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "list versions")
@@ -245,9 +221,6 @@ func (b *Backend) handleDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	if v == nil {
 		writeError(w, http.StatusNotFound, "version not found")
-		return
-	}
-	if b.denyPrivate(w, r, dbPkg) {
 		return
 	}
 	file, err := b.db.GetPackageFile(ctx, v.ID, crateFilename(name, version))

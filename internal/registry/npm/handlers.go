@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/sha1" //nolint:gosec // npm dist.shasum is hex sha1 by spec
 	"crypto/sha512"
-	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -176,12 +175,6 @@ func (b *Backend) handlePackument(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "package not found")
 		return
 	}
-	if dbPkg.Private && b.token != "" && !checkBearer(r, b.token) {
-		w.Header().Set("WWW-Authenticate", `Bearer realm="apoci"`)
-		writeError(w, http.StatusUnauthorized, "unauthorized")
-		return
-	}
-
 	versions, err := b.db.ListPackageVersions(ctx, dbPkg.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "list versions")
@@ -246,12 +239,6 @@ func (b *Backend) handleTarball(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "package not found")
 		return
 	}
-	if dbPkg.Private && b.token != "" && !checkBearer(r, b.token) {
-		w.Header().Set("WWW-Authenticate", `Bearer realm="apoci"`)
-		writeError(w, http.StatusUnauthorized, "unauthorized")
-		return
-	}
-
 	file, err := b.findTarball(ctx, dbPkg, tarball)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "lookup tarball")
@@ -419,15 +406,6 @@ func tarballFilename(name, version string) string {
 		bare = after
 	}
 	return fmt.Sprintf("%s-%s.tgz", bare, version)
-}
-
-func checkBearer(r *http.Request, token string) bool {
-	auth := r.Header.Get("Authorization")
-	const bearer = "Bearer "
-	if !strings.HasPrefix(auth, bearer) {
-		return false
-	}
-	return subtle.ConstantTimeCompare([]byte(auth[len(bearer):]), []byte(token)) == 1
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {
