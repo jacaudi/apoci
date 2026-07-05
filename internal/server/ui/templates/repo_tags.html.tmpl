@@ -80,6 +80,15 @@
                     <code>docker pull {{$.RegistryHost}}/{{$.RepoName}}:{{.Name}}</code>
                     <button class="copy-btn" data-copy="docker pull {{$.RegistryHost}}/{{$.RepoName}}:{{.Name}}">Copy</button>
                 </div>
+                {{if ne $.RepoName $.FullRepoName}}
+                <details>
+                    <summary class="cmd-label" style="margin-top: 0.5rem;">Fully-qualified address</summary>
+                    <div class="pull-cmd">
+                        <code>docker pull {{$.RegistryHost}}/{{$.FullRepoName}}:{{.Name}}</code>
+                        <button class="copy-btn" data-copy="docker pull {{$.RegistryHost}}/{{$.FullRepoName}}:{{.Name}}">Copy</button>
+                    </div>
+                </details>
+                {{end}}
 
                 {{if .IsOCI}}
                 <div class="cmd-label" style="margin-top: 0.5rem;">OCI Artifact</div>

@@ -22,6 +22,7 @@ const digestDisplayLen = 19 // sha256:abc... truncated for display
 
 type RepoView struct {
 	Name       string
+	FullName   string // fully-qualified stored name (namespace/name); == Name unless stripped
 	Tags       []string
 	TagCount   int
 	FirstTag   string
@@ -57,6 +58,7 @@ type RepoTagsData struct {
 	Endpoint     string
 	RegistryHost string // Endpoint without scheme, for docker pull commands
 	RepoName     string
+	FullRepoName string // fully-qualified stored name; == RepoName unless stripped
 	Tags         []TagView
 	Page         int
 	TotalPages   int
@@ -186,8 +188,31 @@ func (s *Server) handleUIRepoTags(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if repo == nil {
+		// Locally-owned repos are displayed (and thus linked) without the
+		// account-domain namespace prefix that normalizeRepo bakes in. Re-prepend
+		// it to resolve the stored name when the stripped form misses.
+		if prefix := s.localRepoPrefix(); !strings.HasPrefix(repoName, prefix) {
+			stored := prefix + repoName
+			repo, err = s.db.GetRepository(ctx, stored)
+			if err != nil {
+				s.logger.Error("failed to get repository for tags UI", "error", err, "repo", stored)
+				http.Error(w, "internal server error", http.StatusInternalServerError)
+				return
+			}
+			if repo != nil {
+				repoName = stored
+			}
+		}
+	}
+	if repo == nil {
 		http.NotFound(w, r)
 		return
+	}
+
+	// Display locally-owned repos without the doubled instance domain.
+	displayName := repoName
+	if repo.OwnerID == s.identity.ActorURL {
+		displayName = s.localDisplayName(displayName)
 	}
 
 	// Parse pagination params
@@ -225,11 +250,12 @@ func (s *Server) handleUIRepoTags(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := RepoTagsData{
-		Title:        repoName + " - Tags",
+		Title:        displayName + " - Tags",
 		RegistryName: s.cfg.Name,
 		Endpoint:     s.cfg.Endpoint,
 		RegistryHost: stripScheme(s.cfg.Endpoint),
-		RepoName:     repoName,
+		RepoName:     displayName,
+		FullRepoName: repoName, // full stored name; displayName may be stripped
 		Tags:         tagViews,
 		Page:         tagsPage.Page,
 		TotalPages:   tagsPage.TotalPages,
@@ -289,6 +315,7 @@ func (s *Server) buildIndexData(reposPage *database.ReposPage, query string, fol
 		}
 		rv := RepoView{
 			Name:       r.Name,
+			FullName:   r.Name, // full stored name; Name may be stripped below
 			Tags:       r.Tags,
 			TagCount:   len(r.Tags),
 			FirstTag:   firstTag,
@@ -297,6 +324,7 @@ func (s *Server) buildIndexData(reposPage *database.ReposPage, query string, fol
 		}
 
 		if r.OwnerID == selfActor {
+			rv.Name = s.localDisplayName(rv.Name)
 			localRepos = append(localRepos, rv)
 		} else {
 			// Extract peer domain from owner ID (actor URL)
@@ -333,6 +361,31 @@ func (s *Server) buildIndexData(reposPage *database.ReposPage, query string, fol
 		HasPrev:         reposPage.Page > 1,
 		HasNext:         reposPage.Page < reposPage.TotalPages,
 	}
+}
+
+// localRepoPrefix is the namespace prefix normalizeRepo bakes into locally-pushed
+// repo names (e.g. "registry.example.com/"), read straight from the registry so
+// the UI strips exactly what storage prepended. Empty when no namespace applies.
+func (s *Server) localRepoPrefix() string {
+	ns := s.registry.Namespace()
+	if ns == "" {
+		return ""
+	}
+	return ns + "/"
+}
+
+// localDisplayName strips the namespace prefix from a locally-pushed repo name
+// (e.g. "registry.example.com/app" -> "app") so the UI shows the bare name and
+// the pull command isn't doubled. Display-only; storage keeps the full name.
+//
+// Guarded: if the stripped name's first segment contains a dot, a bare pull
+// would not resolve (normalizeRepo won't re-prepend), so the full name is kept.
+func (s *Server) localDisplayName(name string) string {
+	stripped := strings.TrimPrefix(name, s.localRepoPrefix())
+	if first, _, _ := strings.Cut(stripped, "/"); strings.Contains(first, ".") {
+		return name
+	}
+	return stripped
 }
 
 func stripScheme(endpoint string) string {

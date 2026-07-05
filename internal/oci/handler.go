@@ -171,6 +171,13 @@ func (r *Registry) Repo() RegistryRepository {
 	return r.db
 }
 
+// Namespace returns the resolved local namespace normalizeRepo prepends to
+// non-domain-scoped repo names (empty when none is enforced). The UI reads it to
+// strip that prefix from locally-owned repos, so display matches storage.
+func (r *Registry) Namespace() string {
+	return r.namespace
+}
+
 func (r *Registry) SetPublisher(p Publisher) {
 	r.publisher = p
 }
