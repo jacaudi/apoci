@@ -61,6 +61,10 @@ type Config struct {
 	Replication   Replication   `yaml:"replication"   envPrefix:"APOCI_REPLICATION_"`
 
 	Domain string `yaml:"-" env:"-"`
+
+	// GeneratedTokenPaths lists token files this load auto-generated because no
+	// value was supplied. The CLI warns on each; never serialized.
+	GeneratedTokenPaths []string `yaml:"-" env:"-"`
 }
 
 type Storage struct {
@@ -362,9 +366,32 @@ func Load(path string, mustExist bool) (*Config, error) {
 		}
 	}
 
+	// Honor the *_FILE secret convention (Docker/Kubernetes file-mounted
+	// secrets) before parsing env vars, so a file-mounted secret is loaded
+	// into its bare env var and picked up by cenv.Parse below.
+	fileSourced, err := expandFileSecrets(
+		"APOCI_REGISTRY_TOKEN",
+		"APOCI_ADMIN_TOKEN",
+		"APOCI_DB_DSN",
+		"APOCI_STORAGE_S3_ACCESS_KEY",
+		"APOCI_STORAGE_S3_SECRET_KEY",
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	// Env vars override YAML values.
 	if err := cenv.Parse(cfg); err != nil {
 		return nil, fmt.Errorf("parsing environment variables: %w", err)
+	}
+
+	// Scrub file-sourced secrets from the environment now they are in cfg, so
+	// spawned children (e.g. the trivy scanner) don't inherit them. Only vars we
+	// set from a file are scrubbed; operator-set env vars are left untouched.
+	for _, name := range fileSourced {
+		if err := os.Unsetenv(name); err != nil {
+			return nil, fmt.Errorf("scrubbing file-sourced secret %s from environment: %w", name, err)
+		}
 	}
 
 	// Handle TLS env vars — the pointer may be nil from YAML.
@@ -600,48 +627,90 @@ func applyUpstreamDefaults(cfg *Config) {
 	}
 }
 
+// expandFileSecrets implements the *_FILE secret convention (Docker/Kubernetes):
+// for each var, if the bare env var is unset, its value is read from the file
+// named by <VAR>_FILE. A set bare env var wins; an unreadable or empty _FILE is a
+// hard error. Returns the vars it populated from a file so the caller can scrub
+// just those from the environment afterwards.
+func expandFileSecrets(vars ...string) ([]string, error) {
+	var fileSourced []string
+	for _, name := range vars {
+		if os.Getenv(name) != "" {
+			continue
+		}
+		path := os.Getenv(name + "_FILE")
+		if path == "" {
+			continue
+		}
+		b, err := os.ReadFile(path) //nolint:gosec // path is operator-controlled via the *_FILE env var
+		if err != nil {
+			return nil, fmt.Errorf("reading %s_FILE (%s): %w", name, path, err)
+		}
+		value := strings.TrimSpace(string(b))
+		if value == "" {
+			// Fail loudly rather than fall through to an auto-generated token.
+			return nil, fmt.Errorf("secret file %s for %s_FILE is empty", path, name)
+		}
+		if err := os.Setenv(name, value); err != nil {
+			return nil, fmt.Errorf("setting %s from %s_FILE: %w", name, name, err)
+		}
+		fileSourced = append(fileSourced, name)
+	}
+	return fileSourced, nil
+}
+
 func applyTokenDefaults(cfg *Config) error {
 	if cfg.RegistryToken == "" {
-		token, err := loadOrGenerateToken(filepath.Join(cfg.DataDir, "registry.token"))
+		path := filepath.Join(cfg.DataDir, "registry.token")
+		token, generated, err := loadOrGenerateToken(path)
 		if err != nil {
 			return fmt.Errorf("setting up registry token: %w", err)
 		}
 		cfg.RegistryToken = token
+		if generated {
+			cfg.GeneratedTokenPaths = append(cfg.GeneratedTokenPaths, path)
+		}
 	}
 	if cfg.AdminToken == "" {
-		token, err := loadOrGenerateToken(filepath.Join(cfg.DataDir, "admin.token"))
+		path := filepath.Join(cfg.DataDir, "admin.token")
+		token, generated, err := loadOrGenerateToken(path)
 		if err != nil {
 			return fmt.Errorf("setting up admin token: %w", err)
 		}
 		cfg.AdminToken = token
+		if generated {
+			cfg.GeneratedTokenPaths = append(cfg.GeneratedTokenPaths, path)
+		}
 	}
 	return nil
 }
 
-func loadOrGenerateToken(path string) (string, error) {
+// loadOrGenerateToken returns the token at path, minting and persisting a new
+// one when the file is absent or empty. generated reports whether a new token
+// was created (true) versus read from an existing file (false).
+func loadOrGenerateToken(path string) (token string, generated bool, err error) {
 	data, err := os.ReadFile(path) //nolint:gosec // operator-controlled path
 	if err == nil {
-		token := strings.TrimSpace(string(data))
-		if token != "" {
-			return token, nil
+		if existing := strings.TrimSpace(string(data)); existing != "" {
+			return existing, false, nil
 		}
 	}
 
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
-		return "", fmt.Errorf("creating directory for token: %w", err)
+		return "", false, fmt.Errorf("creating directory for token: %w", err)
 	}
 
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {
-		return "", fmt.Errorf("generating random token: %w", err)
+		return "", false, fmt.Errorf("generating random token: %w", err)
 	}
-	token := hex.EncodeToString(buf)
+	token = hex.EncodeToString(buf)
 
 	if err := os.WriteFile(path, []byte(token+"\n"), 0o600); err != nil {
-		return "", fmt.Errorf("writing token file: %w", err)
+		return "", false, fmt.Errorf("writing token file: %w", err)
 	}
 
-	return token, nil
+	return token, true, nil
 }
 
 func validate(cfg *Config) error {

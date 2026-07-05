@@ -195,6 +195,77 @@ registryToken: "my-secret-token"
 	require.Equal(t, "my-secret-token", cfg.RegistryToken)
 }
 
+func TestGeneratedTokenPathsSignalOnAutoGen(t *testing.T) {
+	dir := t.TempDir()
+	path := writeConfig(t, fmt.Sprintf(`
+endpoint: "https://test.example.com"
+dataDir: %q
+`, dir))
+	// Clear any ambient tokens so both are auto-generated regardless of the env.
+	t.Setenv("APOCI_REGISTRY_TOKEN", "")
+	t.Setenv("APOCI_ADMIN_TOKEN", "")
+
+	cfg, err := Load(path, true)
+	require.NoError(t, err)
+	require.ElementsMatch(t,
+		[]string{
+			filepath.Join(dir, "registry.token"),
+			filepath.Join(dir, "admin.token"),
+		},
+		cfg.GeneratedTokenPaths,
+		"both tokens were minted, so both paths must be recorded as generated",
+	)
+}
+
+func TestGeneratedTokenPathsEmptyWhenExplicit(t *testing.T) {
+	dir := t.TempDir()
+	path := writeConfig(t, fmt.Sprintf(`
+endpoint: "https://test.example.com"
+dataDir: %q
+registryToken: "my-registry-token"
+adminToken: "my-admin-token"
+`, dir))
+
+	cfg, err := Load(path, true)
+	require.NoError(t, err)
+	require.Empty(t, cfg.GeneratedTokenPaths,
+		"explicitly-provided tokens must not be flagged as generated")
+}
+
+func TestGeneratedTokenPathsEmptyWhenTokenFromEnv(t *testing.T) {
+	dir := t.TempDir()
+	path := writeConfig(t, fmt.Sprintf(`
+endpoint: "https://test.example.com"
+dataDir: %q
+`, dir))
+	t.Setenv("APOCI_REGISTRY_TOKEN", "env-registry-token")
+	t.Setenv("APOCI_ADMIN_TOKEN", "env-admin-token")
+
+	cfg, err := Load(path, true)
+	require.NoError(t, err)
+	require.Equal(t, "env-registry-token", cfg.RegistryToken)
+	require.Empty(t, cfg.GeneratedTokenPaths,
+		"tokens supplied via env must not be flagged as generated")
+}
+
+func TestGeneratedTokenPathsEmptyWhenLoadedFromFile(t *testing.T) {
+	dir := t.TempDir()
+	path := writeConfig(t, fmt.Sprintf(`
+endpoint: "https://test.example.com"
+dataDir: %q
+`, dir))
+
+	// First load mints and persists both tokens.
+	_, err := Load(path, true)
+	require.NoError(t, err)
+
+	// Second load reads them from disk — nothing is generated.
+	cfg, err := Load(path, true)
+	require.NoError(t, err)
+	require.Empty(t, cfg.GeneratedTokenPaths,
+		"tokens loaded from existing files must not be flagged as generated")
+}
+
 func TestAccountDomainDefault(t *testing.T) {
 	dir := t.TempDir()
 	path := writeConfig(t, fmt.Sprintf(`

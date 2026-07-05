@@ -95,6 +95,7 @@ func serveCmd(configPath *string) *cobra.Command {
 			}
 
 			logger := buildLogger(cfg)
+			warnGeneratedTokens(logger, cfg)
 
 			db, err := openDB(cfg, logger)
 			if err != nil {
@@ -859,6 +860,7 @@ func identityCmd(configPath *string) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			warnGeneratedTokens(buildLogger(cfg), cfg)
 
 			identity, err := activitypub.LoadOrCreateIdentity(
 				cfg.Endpoint, cfg.Domain, cfg.AccountDomain, cfg.KeyPath, nopLogger(),
@@ -978,6 +980,7 @@ func openAll(configPath string, logger *slog.Logger) (*database.DB, *activitypub
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	warnGeneratedTokens(logger, cfg)
 
 	logger.Debug("opening database", "driver", cfg.Database.Driver)
 	db, err := openDB(cfg, logger)
@@ -1033,4 +1036,12 @@ func buildLogger(cfg *config.Config) *slog.Logger {
 	}
 
 	return slog.New(handler)
+}
+
+// warnGeneratedTokens logs a startup warning for each token config.Load
+// auto-generated because none was supplied. The token value is never logged.
+func warnGeneratedTokens(logger *slog.Logger, cfg *config.Config) {
+	for _, path := range cfg.GeneratedTokenPaths {
+		logger.Warn("no token supplied; auto-generated a random one and wrote it to disk", "path", path)
+	}
 }
