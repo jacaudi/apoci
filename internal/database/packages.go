@@ -22,6 +22,16 @@ var ErrRepositoryBusy = errors.New("repository has open upload sessions")
 // path's transactions (a repo-level delete won the race). Failing loudly here
 // is what prevents a silently-lost push: the client retries, the retry
 // recreates the repo, and the push lands.
+//
+// PutManifestWithLayers and PutPackageTag guard against this with a
+// SELECT EXISTS parent-exists check in the same transaction as the write. On
+// SQLite that check is race-proof because BEGIN IMMEDIATE takes a global
+// writer lock for the whole transaction. On Postgres, under the default READ
+// COMMITTED isolation, that SELECT EXISTS takes no row lock and there is no
+// FK from package_versions/package_tags to packages, so a concurrent repo
+// delete can still commit between the check and the write there; Postgres-safe
+// locking (e.g. SELECT ... FOR UPDATE or an FK) is a known follow-up, not a
+// guarantee this code makes today.
 var ErrRepositoryGone = errors.New("repository no longer exists")
 
 const ociPackageType = "oci"
@@ -779,7 +789,14 @@ type RepoDeletion struct {
 //
 // The owner re-check, the open-upload-session check, and the delete all run
 // in one immediate transaction: under BEGIN IMMEDIATE nothing can create a
-// session or land a manifest between the checks and the delete.
+// session or land a manifest between the checks and the delete. That
+// guarantee is a SQLite property (the DSN sets _txlock=immediate, so BEGIN
+// IMMEDIATE takes a single global writer lock for the transaction's
+// lifetime). On Postgres, under the default READ COMMITTED isolation, these
+// checks take no row locks, so a concurrent push can still interleave with
+// this delete and land a manifest or tag the delete doesn't see —
+// Postgres-safe locking (e.g. SELECT ... FOR UPDATE) is a known follow-up,
+// not something this transaction enforces today.
 //
 // Returns (nil, nil) if the repository does not exist, ErrPackageOwnerMismatch
 // if it is not owned by ownerID, ErrRepositoryBusy if an unexpired upload
