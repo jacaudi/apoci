@@ -14,6 +14,10 @@ import (
 
 var ErrPackageOwnerMismatch = errors.New("package is owned by another actor")
 
+// ErrRepositoryBusy is returned when a repo-level delete finds unexpired
+// upload sessions — a push is mid-flight and the delete must not race it.
+var ErrRepositoryBusy = errors.New("repository has open upload sessions")
+
 const ociPackageType = "oci"
 
 // isPostgresDB reports whether the given bun IDB speaks the Postgres dialect.
@@ -677,6 +681,24 @@ func (db *DB) DeletePackageWithBlobs(ctx context.Context, packageID int64) ([]st
 	}
 	defer func() { _ = tx.Rollback() }()
 
+	candidates, err := deletePackageRowsTx(ctx, tx, packageID)
+	if err != nil {
+		return nil, err
+	}
+	purged, err := purgeUnreferencedBlobs(ctx, tx, candidates)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("committing delete package transaction: %w", err)
+	}
+	return purged, nil
+}
+
+// deletePackageRowsTx deletes a package's files, tags, versions, and its own
+// row inside tx, returning the distinct blob digests those files referenced
+// (the purge candidates).
+func deletePackageRowsTx(ctx context.Context, tx bun.Tx, packageID int64) ([]string, error) {
 	var candidates []string
 	if err := tx.NewRaw(
 		`SELECT DISTINCT pf.blob_digest
@@ -710,15 +732,112 @@ func (db *DB) DeletePackageWithBlobs(ctx context.Context, packageID int64) ([]st
 	).Exec(ctx); err != nil {
 		return nil, fmt.Errorf("deleting package: %w", err)
 	}
+	return candidates, nil
+}
 
+// RepoDeletion reports what a repo-level delete removed.
+type RepoDeletion struct {
+	Name            string
+	ManifestDigests []string
+	TagNames        []string
+	PurgedBlobs     []string
+}
+
+// DeleteOwnedRepositoryWithBlobs deletes an OCI repository owned by ownerID:
+// manifests, tags, files, the packages row, and any blob rows left
+// unreferenced. Per-manifest tombstones are recorded in the SAME transaction,
+// so a federation peer can never resurrect the deleted content (getManifest
+// re-stores peer fetches unless IsManifestDeleted says otherwise).
+//
+// The owner re-check, the open-upload-session check, and the delete all run
+// in one immediate transaction: under BEGIN IMMEDIATE nothing can create a
+// session or land a manifest between the checks and the delete.
+//
+// Returns (nil, nil) if the repository does not exist, ErrPackageOwnerMismatch
+// if it is not owned by ownerID, ErrRepositoryBusy if an unexpired upload
+// session exists (a push is mid-flight).
+func (db *DB) DeleteOwnedRepositoryWithBlobs(ctx context.Context, repoID int64, ownerID string) (*RepoDeletion, error) {
+	tx, err := db.bun.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("beginning repo delete transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// Re-check existence and ownership inside the transaction — the caller's
+	// lookup ran in a separate transaction and may be stale.
+	var row struct {
+		Name    string `bun:"name"`
+		OwnerID string `bun:"owner_id"`
+	}
+	err = tx.NewRaw(
+		"SELECT name, owner_id FROM packages WHERE id = ? AND type = ?",
+		repoID, ociPackageType,
+	).Scan(ctx, &row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("looking up repository for delete: %w", err)
+	}
+	if row.OwnerID != ownerID {
+		return nil, ErrPackageOwnerMismatch
+	}
+
+	// App clock, not CURRENT_TIMESTAMP — matches GetUploadSession.
+	var busy bool
+	if err := tx.NewRaw(
+		"SELECT EXISTS(SELECT 1 FROM upload_sessions WHERE repository_id = ? AND expires_at > ?)",
+		repoID, time.Now(),
+	).Scan(ctx, &busy); err != nil {
+		return nil, fmt.Errorf("checking upload sessions: %w", err)
+	}
+	if busy {
+		return nil, ErrRepositoryBusy
+	}
+
+	var digests []string
+	if err := tx.NewRaw(
+		"SELECT version FROM package_versions WHERE package_id = ? ORDER BY id",
+		repoID,
+	).Scan(ctx, &digests); err != nil {
+		return nil, fmt.Errorf("listing manifests for delete: %w", err)
+	}
+	var tags []string
+	if err := tx.NewRaw(
+		"SELECT name FROM package_tags WHERE package_id = ? ORDER BY name",
+		repoID,
+	).Scan(ctx, &tags); err != nil {
+		return nil, fmt.Errorf("listing tags for delete: %w", err)
+	}
+
+	// Tombstone every manifest in the same transaction (same statement shape
+	// as RecordDeletedVersion, set-based).
+	if _, err := tx.NewRaw(
+		`INSERT INTO deleted_versions (package_type, package_name, version, source_actor)
+		 SELECT ?, ?, pv.version, ? FROM package_versions pv WHERE pv.package_id = ?
+		 ON CONFLICT(package_type, package_name, version) DO NOTHING`,
+		ociPackageType, row.Name, ownerID, repoID,
+	).Exec(ctx); err != nil {
+		return nil, fmt.Errorf("recording manifest tombstones: %w", err)
+	}
+
+	candidates, err := deletePackageRowsTx(ctx, tx, repoID)
+	if err != nil {
+		return nil, err
+	}
 	purged, err := purgeUnreferencedBlobs(ctx, tx, candidates)
 	if err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("committing delete package transaction: %w", err)
+		return nil, fmt.Errorf("committing repo delete transaction: %w", err)
 	}
-	return purged, nil
+	return &RepoDeletion{
+		Name:            row.Name,
+		ManifestDigests: digests,
+		TagNames:        tags,
+		PurgedBlobs:     purged,
+	}, nil
 }
 
 func (db *DB) DeletePackageVersionWithBlobs(ctx context.Context, packageID int64, version string) ([]string, error) {
