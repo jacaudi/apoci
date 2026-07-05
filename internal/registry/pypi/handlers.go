@@ -20,6 +20,7 @@ import (
 
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/blobstore"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/database"
+	"git.erwanleboucher.dev/eleboucher/apoci/internal/upstream"
 )
 
 const (
@@ -210,9 +211,28 @@ func (b *Backend) handleSimplePackage(w http.ResponseWriter, r *http.Request) {
 		writePlainError(w, http.StatusInternalServerError, "lookup package")
 		return
 	}
-	if dbPkg == nil {
-		writePlainError(w, http.StatusNotFound, "project not found")
-		return
+
+	// Locally-pushed projects always shadow upstream. Anything else — unknown
+	// or previously cached from upstream — asks upstream first so new releases
+	// appear, with the cached listing as the fallback.
+	if dbPkg == nil || dbPkg.OwnerID == upstreamOwner {
+		if b.upstreamEnabled() {
+			proj, err := b.upstream.FetchProject(ctx, name)
+			switch {
+			case err == nil:
+				b.writeUpstreamIndex(w, name, proj)
+				return
+			case errors.Is(err, upstream.ErrProjectNotFound):
+				// fall through to the local listing / 404 below
+			default:
+				b.logger.Warn("pypi upstream: index fetch failed", "project", name, "err", err)
+				// fall through: serve the cached listing if we have one
+			}
+		}
+		if dbPkg == nil {
+			writePlainError(w, http.StatusNotFound, "project not found")
+			return
+		}
 	}
 
 	versions, err := b.db.ListPackageVersions(ctx, dbPkg.ID)
@@ -329,4 +349,69 @@ func writePlainError(w http.ResponseWriter, status int, msg string) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(status)
 	_, _ = io.WriteString(w, msg+"\n") //nolint:gosec // text/plain response, msg is from server-side strings
+}
+
+// versionFromFilename extracts the version from a wheel (PEP 427:
+// name-version[-build]-python-abi-platform.whl) or sdist (PEP 625:
+// name-version.tar.gz/.tgz/.zip) filename. Distribution names in these
+// filenames use underscores, so the version is the second dash-separated
+// field in wheels and the last dash-separated field in sdists.
+func versionFromFilename(filename string) (string, bool) {
+	base := filename
+	isWheel := false
+	switch {
+	case strings.HasSuffix(base, ".whl"):
+		base = strings.TrimSuffix(base, ".whl")
+		isWheel = true
+	case strings.HasSuffix(base, ".tar.gz"):
+		base = strings.TrimSuffix(base, ".tar.gz")
+	case strings.HasSuffix(base, ".tgz"):
+		base = strings.TrimSuffix(base, ".tgz")
+	case strings.HasSuffix(base, ".zip"):
+		base = strings.TrimSuffix(base, ".zip")
+	default:
+		return "", false
+	}
+	parts := strings.Split(base, "-")
+	if isWheel {
+		// name-version[-build]-python-abi-platform → at least 5 fields.
+		if len(parts) < 5 {
+			return "", false
+		}
+		return parts[1], true
+	}
+	if len(parts) < 2 {
+		return "", false
+	}
+	v := parts[len(parts)-1]
+	if v == "" || !strings.ContainsAny(v, "0123456789") {
+		return "", false
+	}
+	return v, true
+}
+
+// writeUpstreamIndex renders a PEP 503 HTML index from upstream PEP 691
+// metadata, pointing every href at our own file route so downloads flow
+// through the cache. The upstream's sha256 rides the fragment so pip's
+// verification works before we have the file.
+func (b *Backend) writeUpstreamIndex(w http.ResponseWriter, name string, proj *upstream.PyPIProject) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = fmt.Fprintf(w, "<!DOCTYPE html><html><head><title>Links for %s</title></head><body>\n<h1>Links for %s</h1>\n", html.EscapeString(name), html.EscapeString(name))
+	for _, f := range proj.Files {
+		version, ok := versionFromFilename(f.Filename)
+		if !ok {
+			b.logger.Debug("pypi upstream: skipping file with unparseable version", "file", f.Filename)
+			continue
+		}
+		href := b.fileURL(name, version, f.Filename)
+		if sha := f.Hashes["sha256"]; sha != "" {
+			href += "#sha256=" + sha
+		}
+		extra := ""
+		if f.RequiresPython != "" {
+			extra = ` data-requires-python="` + html.EscapeString(f.RequiresPython) + `"`
+		}
+		_, _ = fmt.Fprintf(w, "<a href=\"%s\"%s>%s</a><br>\n", html.EscapeString(href), extra, html.EscapeString(f.Filename)) //nolint:gosec // all interpolated values are html.EscapeString'd
+	}
+	_, _ = io.WriteString(w, "</body></html>\n")
 }
