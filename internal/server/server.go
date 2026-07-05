@@ -228,11 +228,13 @@ func New(cfg *config.Config, db *database.DB, blobs blobstore.BlobStore, identit
 			})
 			return b, b.FederationAdapter()
 		}},
-		{"pypi", cfg.Backends.PyPI, func(pub activitypub.PackagePublisher) (pkgreg.Backend, activitypub.FederationAdapter) {
+		{"pypi", cfg.Backends.PyPI.BackendConfig, func(pub activitypub.PackagePublisher) (pkgreg.Backend, activitypub.FederationAdapter) {
 			b := pypi.New(pypi.Config{
 				DB: db, Blobs: blobs, Endpoint: cfg.Endpoint, Owner: identity.ActorURL,
 				Token: cfg.Backends.PyPI.TokenOr(cfg.RegistryToken), Publisher: pub,
-				Replicator: blobReplicator, Logger: logger,
+				Replicator: blobReplicator,
+				Upstream:   upstream.NewPyPIFetcher(cfg.Backends.PyPI.Upstreams, cfg.Upstreams.FetchTimeout, cfg.Limits.MaxBlobSize),
+				Logger:     logger,
 			})
 			return b, b.FederationAdapter()
 		}},

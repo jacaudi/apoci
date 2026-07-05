@@ -121,7 +121,7 @@ dataDir: %q
 		case "cargo":
 			b = cfg.Backends.Cargo
 		case "pypi":
-			b = cfg.Backends.PyPI
+			b = cfg.Backends.PyPI.BackendConfig
 		}
 		require.True(t, b.IsEnabled(), "%s default-enabled", name)
 		require.True(t, b.IsFederated(), "%s default-federated", name)
@@ -558,6 +558,30 @@ dataDir: %q
 	require.Equal(t, []string{tagLatest}, cfg.GC.Retention.PerRepo[0].PinnedGlobs)
 	require.Equal(t, "foo.com/legacy", cfg.GC.Retention.PerRepo[1].Repo)
 	require.Equal(t, 1, cfg.GC.Retention.PerRepo[1].KeepLastN)
+}
+
+func TestPyPIUpstreamsFromEnv(t *testing.T) {
+	dir := t.TempDir()
+	path := writeConfig(t, fmt.Sprintf(`
+endpoint: "https://test.example.com"
+dataDir: %q
+`, dir))
+	t.Setenv("APOCI_BACKENDS_PYPI_UPSTREAMS", "https://pypi.org, https://mirror.example.com")
+
+	cfg, err := Load(path, true)
+	require.NoError(t, err)
+	require.Equal(t, []string{"https://pypi.org", " https://mirror.example.com"}, cfg.Backends.PyPI.Upstreams)
+}
+
+func TestPyPIUpstreamsDefaultEmpty(t *testing.T) {
+	dir := t.TempDir()
+	path := writeConfig(t, fmt.Sprintf(`
+endpoint: "https://test.example.com"
+dataDir: %q
+`, dir))
+	cfg, err := Load(path, true)
+	require.NoError(t, err)
+	require.Empty(t, cfg.Backends.PyPI.Upstreams, "opt-in: no default upstream")
 }
 
 func TestRetentionPerRepoDuplicate(t *testing.T) {
