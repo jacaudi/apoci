@@ -790,3 +790,40 @@ func TestDeleteOwnedRepositoryKeepsSharedBlobs(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, blob)
 }
+
+func TestPutManifestWithLayersAfterRepoDeleteFailsLoudly(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	repo, err := db.GetOrCreateRepository(ctx, "test/race-manifest", "https://local.example.com/ap/actor")
+	require.NoError(t, err)
+
+	// Simulate the delete winning the race between pushManifest's
+	// GetOrCreateRepository and PutManifestWithLayers.
+	require.NoError(t, db.DeletePackage(ctx, repo.ID))
+
+	m := &Manifest{
+		RepositoryID: repo.ID,
+		Digest:       "sha256:dddd000000000000000000000000000000000000000000000000000000000001",
+		MediaType:    "application/vnd.oci.image.manifest.v1+json",
+		SizeBytes:    2,
+		Content:      []byte("{}"),
+	}
+	err = db.PutManifestWithLayers(ctx, m, nil)
+	require.ErrorIs(t, err, ErrRepositoryGone)
+
+	// Nothing was stored against the dead repo id.
+	got, err := db.GetManifestByDigest(ctx, repo.ID, m.Digest)
+	require.NoError(t, err)
+	require.Nil(t, got)
+}
+
+func TestPutTagAfterRepoDeleteFailsLoudly(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	repo, err := db.GetOrCreateRepository(ctx, "test/race-tag", "https://local.example.com/ap/actor")
+	require.NoError(t, err)
+	require.NoError(t, db.DeletePackage(ctx, repo.ID))
+
+	err = db.PutTag(ctx, repo.ID, "latest", "sha256:dddd000000000000000000000000000000000000000000000000000000000002")
+	require.ErrorIs(t, err, ErrRepositoryGone)
+}

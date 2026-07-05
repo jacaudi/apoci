@@ -18,6 +18,12 @@ var ErrPackageOwnerMismatch = errors.New("package is owned by another actor")
 // upload sessions — a push is mid-flight and the delete must not race it.
 var ErrRepositoryBusy = errors.New("repository has open upload sessions")
 
+// ErrRepositoryGone means the parent packages row vanished between the push
+// path's transactions (a repo-level delete won the race). Failing loudly here
+// is what prevents a silently-lost push: the client retries, the retry
+// recreates the repo, and the push lands.
+var ErrRepositoryGone = errors.New("repository no longer exists")
+
 const ociPackageType = "oci"
 
 // isPostgresDB reports whether the given bun IDB speaks the Postgres dialect.
@@ -417,18 +423,31 @@ func (db *DB) GetPackageTag(ctx context.Context, packageID int64, name string) (
 }
 
 // PutPackageTag upserts a tag, repointing it at version if it already exists.
+// The parent-exists check runs in the same transaction so a tag can never be
+// written for a package that a concurrent repo delete just removed.
 func (db *DB) PutPackageTag(ctx context.Context, packageID int64, name, version string) error {
-	if _, err := db.bun.NewRaw(
-		`INSERT INTO package_tags (package_id, name, version, updated_at)
-		 VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-		 ON CONFLICT(package_id, name) DO UPDATE SET
-		   version = excluded.version,
-		   updated_at = excluded.updated_at`,
-		packageID, name, version,
-	).Exec(ctx); err != nil {
-		return fmt.Errorf("putting tag: %w", err)
-	}
-	return nil
+	return db.bun.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		var exists bool
+		if err := tx.NewRaw(
+			"SELECT EXISTS(SELECT 1 FROM packages WHERE id = ?)", packageID,
+		).Scan(ctx, &exists); err != nil {
+			return fmt.Errorf("checking package exists: %w", err)
+		}
+		if !exists {
+			return fmt.Errorf("putting tag for package %d: %w", packageID, ErrRepositoryGone)
+		}
+		if _, err := tx.NewRaw(
+			`INSERT INTO package_tags (package_id, name, version, updated_at)
+			 VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+			 ON CONFLICT(package_id, name) DO UPDATE SET
+			   version = excluded.version,
+			   updated_at = excluded.updated_at`,
+			packageID, name, version,
+		).Exec(ctx); err != nil {
+			return fmt.Errorf("putting tag: %w", err)
+		}
+		return nil
+	})
 }
 
 func (db *DB) DeletePackageTag(ctx context.Context, packageID int64, name string) error {
@@ -584,6 +603,15 @@ func (db *DB) PutManifest(ctx context.Context, m *Manifest) error {
 // been written yet (the manifest and refs were previously separate writes).
 func (db *DB) PutManifestWithLayers(ctx context.Context, m *Manifest, refs []BlobRef) error {
 	return db.bun.RunInTx(ctx, nil, func(ctx context.Context, tx bun.Tx) error {
+		var exists bool
+		if err := tx.NewRaw(
+			"SELECT EXISTS(SELECT 1 FROM packages WHERE id = ?)", m.RepositoryID,
+		).Scan(ctx, &exists); err != nil {
+			return fmt.Errorf("checking repository exists: %w", err)
+		}
+		if !exists {
+			return fmt.Errorf("storing manifest for repository %d: %w", m.RepositoryID, ErrRepositoryGone)
+		}
 		v := manifestAsVersion(m)
 		if err := putPackageVersion(ctx, tx, v); err != nil {
 			return err
