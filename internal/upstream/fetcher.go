@@ -25,6 +25,9 @@ const (
 	authNone  = "none"
 	authBasic = "basic"
 	authToken = "token"
+
+	schemeHTTP  = "http"
+	schemeHTTPS = "https"
 )
 
 // challengeCache holds a cached auth challenge discovery result.
@@ -378,7 +381,7 @@ func (f *Fetcher) fetchToken(ctx context.Context, reg *registry, repo string, us
 	// The realm host legitimately differs from the registry host (auth.docker.io
 	// vs registry-1.docker.io), so don't pin it; SafeDialContext blocks private-IP
 	// realms. But an https upstream must not be downgraded to a plaintext realm.
-	if endpointURL, perr := url.Parse(reg.config.Endpoint); perr == nil && endpointURL.Scheme == "https" && tokenURL.Scheme != "https" {
+	if endpointURL, perr := url.Parse(reg.config.Endpoint); perr == nil && endpointURL.Scheme == schemeHTTPS && tokenURL.Scheme != schemeHTTPS {
 		return "", fmt.Errorf("refusing non-https token realm %q for https upstream %s", realm, reg.config.Name)
 	}
 	q := tokenURL.Query()

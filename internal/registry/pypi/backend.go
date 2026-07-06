@@ -13,11 +13,17 @@ import (
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/blobstore"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/database"
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/registry/pkgfed"
+	"git.erwanleboucher.dev/eleboucher/apoci/internal/upstream"
 )
 
 const (
 	packageType = "pypi"
 	routePrefix = "/pypi"
+
+	// upstreamOwner marks packages cached from an upstream index, the same
+	// owner-sentinel convention as goproxy ("upstream:goproxy") and OCI
+	// mirrors ("upstream:<registry>"). Cached ≠ locally-pushed.
+	upstreamOwner = "upstream:pypi"
 )
 
 type Backend struct {
@@ -29,6 +35,7 @@ type Backend struct {
 	owner      string
 	publisher  activitypub.PackagePublisher
 	replicator pkgfed.Replicator
+	upstream   *upstream.PyPIFetcher
 	handler    http.Handler
 }
 
@@ -40,6 +47,7 @@ type Config struct {
 	Owner      string
 	Publisher  activitypub.PackagePublisher
 	Replicator pkgfed.Replicator
+	Upstream   *upstream.PyPIFetcher
 	Logger     *slog.Logger
 }
 
@@ -56,10 +64,13 @@ func New(cfg Config) *Backend {
 		owner:      cfg.Owner,
 		publisher:  cfg.Publisher,
 		replicator: cfg.Replicator,
+		upstream:   cfg.Upstream,
 	}
 	b.handler = b.routes()
 	return b
 }
+
+func (b *Backend) upstreamEnabled() bool { return b.upstream != nil && b.upstream.Enabled() }
 
 func (b *Backend) Type() string          { return packageType }
 func (b *Backend) RoutePrefix() string   { return routePrefix }
