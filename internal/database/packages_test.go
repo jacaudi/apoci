@@ -3,6 +3,7 @@ package database
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -673,4 +674,156 @@ func TestMarkPackageWithdrawn(t *testing.T) {
 	pending, err = db.ListPackagesPendingWithdrawal(ctx, "oci")
 	require.NoError(t, err)
 	require.Empty(t, pending)
+}
+
+// seedOwnedRepo creates a locally-owned OCI repo with one tagged manifest whose
+// layer references blobDigest, returning the repo. Callers pass distinct names.
+func seedOwnedRepo(t *testing.T, db *DB, name, owner, manifestDigest, blobDigest string) *Repository {
+	t.Helper()
+	ctx := context.Background()
+	repo, err := db.GetOrCreateRepository(ctx, name, owner)
+	require.NoError(t, err)
+	require.NoError(t, db.PutBlob(ctx, blobDigest, 42, nil, true))
+	m := &Manifest{
+		RepositoryID: repo.ID,
+		Digest:       manifestDigest,
+		MediaType:    "application/vnd.oci.image.manifest.v1+json",
+		SizeBytes:    100,
+		Content:      []byte("{}"),
+	}
+	require.NoError(t, db.PutManifestWithLayers(ctx, m, []BlobRef{{Digest: blobDigest, Size: 42}}))
+	require.NoError(t, db.PutTag(ctx, repo.ID, "latest", manifestDigest))
+	return repo
+}
+
+func TestDeleteOwnedRepositoryWithBlobs(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	const owner = "https://local.example.com/ap/actor"
+	repo := seedOwnedRepo(t, db, "test/owned-delete", owner,
+		"sha256:aaaa000000000000000000000000000000000000000000000000000000000001",
+		"sha256:bbbb000000000000000000000000000000000000000000000000000000000001")
+
+	res, err := db.DeleteOwnedRepositoryWithBlobs(ctx, repo.ID, owner)
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	require.Equal(t, "test/owned-delete", res.Name)
+	require.Equal(t, []string{"sha256:aaaa000000000000000000000000000000000000000000000000000000000001"}, res.ManifestDigests)
+	require.Equal(t, []string{"latest"}, res.TagNames)
+	require.Equal(t, []string{"sha256:bbbb000000000000000000000000000000000000000000000000000000000001"}, res.PurgedBlobs)
+
+	// Repo row is gone from the catalog.
+	got, err := db.GetRepository(ctx, "test/owned-delete")
+	require.NoError(t, err)
+	require.Nil(t, got)
+
+	// Tombstone recorded inside the same delete, so federation cannot resurrect it.
+	deleted, err := db.IsManifestDeleted(ctx, "sha256:aaaa000000000000000000000000000000000000000000000000000000000001")
+	require.NoError(t, err)
+	require.True(t, deleted)
+}
+
+func TestDeleteOwnedRepositoryMissingReturnsNilNil(t *testing.T) {
+	db := testDB(t)
+	res, err := db.DeleteOwnedRepositoryWithBlobs(context.Background(), 999999, "https://local.example.com/ap/actor")
+	require.NoError(t, err)
+	require.Nil(t, res)
+}
+
+func TestDeleteOwnedRepositoryOwnerMismatch(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	repo := seedOwnedRepo(t, db, "test/peer-owned", "https://peer.example.com/ap/actor",
+		"sha256:aaaa000000000000000000000000000000000000000000000000000000000002",
+		"sha256:bbbb000000000000000000000000000000000000000000000000000000000002")
+
+	res, err := db.DeleteOwnedRepositoryWithBlobs(ctx, repo.ID, "https://local.example.com/ap/actor")
+	require.ErrorIs(t, err, ErrPackageOwnerMismatch)
+	require.Nil(t, res)
+
+	// Untouched.
+	got, err := db.GetRepository(ctx, "test/peer-owned")
+	require.NoError(t, err)
+	require.NotNil(t, got)
+}
+
+func TestDeleteOwnedRepositoryBusyWithOpenUpload(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	const owner = "https://local.example.com/ap/actor"
+	repo := seedOwnedRepo(t, db, "test/busy", owner,
+		"sha256:aaaa000000000000000000000000000000000000000000000000000000000003",
+		"sha256:bbbb000000000000000000000000000000000000000000000000000000000003")
+	_, err := db.CreateUploadSession(ctx, "busy-uuid-1", repo.ID, time.Hour)
+	require.NoError(t, err)
+
+	res, err := db.DeleteOwnedRepositoryWithBlobs(ctx, repo.ID, owner)
+	require.ErrorIs(t, err, ErrRepositoryBusy)
+	require.Nil(t, res)
+
+	// An EXPIRED session must not block.
+	require.NoError(t, db.DeleteUploadSession(ctx, "busy-uuid-1"))
+	_, err = db.CreateUploadSession(ctx, "busy-uuid-2", repo.ID, -time.Hour)
+	require.NoError(t, err)
+	res, err = db.DeleteOwnedRepositoryWithBlobs(ctx, repo.ID, owner)
+	require.NoError(t, err)
+	require.NotNil(t, res)
+}
+
+func TestDeleteOwnedRepositoryKeepsSharedBlobs(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	const owner = "https://local.example.com/ap/actor"
+	const sharedBlob = "sha256:cccc000000000000000000000000000000000000000000000000000000000001"
+	repoA := seedOwnedRepo(t, db, "test/share-a", owner,
+		"sha256:aaaa000000000000000000000000000000000000000000000000000000000004", sharedBlob)
+	_ = repoA
+	repoB := seedOwnedRepo(t, db, "test/share-b", owner,
+		"sha256:aaaa000000000000000000000000000000000000000000000000000000000005", sharedBlob)
+
+	res, err := db.DeleteOwnedRepositoryWithBlobs(ctx, repoB.ID, owner)
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	// The blob is still referenced by repoA — it must NOT be purged.
+	require.Empty(t, res.PurgedBlobs)
+	blob, err := db.GetBlob(ctx, sharedBlob)
+	require.NoError(t, err)
+	require.NotNil(t, blob)
+}
+
+func TestPutManifestWithLayersAfterRepoDeleteFailsLoudly(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	repo, err := db.GetOrCreateRepository(ctx, "test/race-manifest", "https://local.example.com/ap/actor")
+	require.NoError(t, err)
+
+	// Simulate the delete winning the race between pushManifest's
+	// GetOrCreateRepository and PutManifestWithLayers.
+	require.NoError(t, db.DeletePackage(ctx, repo.ID))
+
+	m := &Manifest{
+		RepositoryID: repo.ID,
+		Digest:       "sha256:dddd000000000000000000000000000000000000000000000000000000000001",
+		MediaType:    "application/vnd.oci.image.manifest.v1+json",
+		SizeBytes:    2,
+		Content:      []byte("{}"),
+	}
+	err = db.PutManifestWithLayers(ctx, m, nil)
+	require.ErrorIs(t, err, ErrRepositoryGone)
+
+	// Nothing was stored against the dead repo id.
+	got, err := db.GetManifestByDigest(ctx, repo.ID, m.Digest)
+	require.NoError(t, err)
+	require.Nil(t, got)
+}
+
+func TestPutTagAfterRepoDeleteFailsLoudly(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	repo, err := db.GetOrCreateRepository(ctx, "test/race-tag", "https://local.example.com/ap/actor")
+	require.NoError(t, err)
+	require.NoError(t, db.DeletePackage(ctx, repo.ID))
+
+	err = db.PutTag(ctx, repo.ID, "latest", "sha256:dddd000000000000000000000000000000000000000000000000000000000002")
+	require.ErrorIs(t, err, ErrRepositoryGone)
 }

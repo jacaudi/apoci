@@ -582,6 +582,48 @@ paths:
       summary: Replication status
       tags:
       - replication
+  /repos/{repo}:
+    delete:
+      description: 'Removes a locally-owned repository in one call: manifests, tags,
+        and its catalog entry, with unreferenced blobs purged. Tombstones are recorded
+        so federation peers cannot resurrect the content, and deletes are published
+        to followers. Refuses while an upload session is open (409). For mirrored
+        repositories use /mirrors instead.'
+      parameters:
+      - description: Repository name
+        in: path
+        name: repo
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: deleted, manifests, tags, blobsPurged
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: invalid request or not locally owned
+          schema:
+            type: string
+        "404":
+          description: repository not found
+          schema:
+            type: string
+        "409":
+          description: repository has open upload sessions
+          schema:
+            type: string
+        "500":
+          description: internal error
+          schema:
+            type: string
+      security:
+      - Bearer: []
+      summary: Delete a locally-owned repository
+      tags:
+      - repos
 securityDefinitions:
   Bearer:
     description: Admin token as "Bearer <token>".

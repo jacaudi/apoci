@@ -7,9 +7,12 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/mod/semver"
 
 	gtnuget "code.gitea.io/gitea/modules/packages/nuget"
 	"github.com/go-chi/chi/v5"
@@ -349,6 +352,13 @@ func (b *Backend) handleRegistrationIndex(w http.ResponseWriter, r *http.Request
 		_ = json.Unmarshal(v.Metadata, &stored)
 		leaves = append(leaves, b.buildLeaf(id, v.Version, v.CreatedAt, stored))
 	}
+
+	// NuGet V3 registration indices must list leaves ascending by version;
+	// ListPackageVersions has no ordering guarantee, so sort here. This also
+	// makes lowerVersion/upperVersion (first/last) correct.
+	sort.SliceStable(leaves, func(i, j int) bool {
+		return semver.Compare("v"+leaves[i].CatalogEntry.Version, "v"+leaves[j].CatalogEntry.Version) < 0
+	})
 
 	regBase := b.registrationBase(id)
 	idx := registrationIndex{

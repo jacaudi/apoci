@@ -14,7 +14,10 @@ import (
 	"git.erwanleboucher.dev/eleboucher/apoci/internal/validate"
 )
 
-const adminMaxBody int64 = 4 * 1024 // 4 KB
+const (
+	adminMaxBody   int64 = 4 * 1024 // 4 KB
+	keyBlobsPurged       = "blobsPurged"
+)
 
 func (s *Server) adminRouter() http.Handler {
 	r := chi.NewRouter()
@@ -32,6 +35,7 @@ func (s *Server) adminRouter() http.Handler {
 	r.Delete("/follows", s.adminRemoveFollow)
 	r.Patch("/follows", s.adminUpdateFollowFilter)
 	r.Delete("/mirrors/*", s.adminEvictMirror)
+	r.Delete("/repos/*", s.adminDeleteRepo)
 	r.Get("/gc", s.adminGCStatus)
 	r.Post("/gc", s.adminRunGC)
 	r.Get("/peers/blocked", s.adminListBlocked)
@@ -427,7 +431,7 @@ func (s *Server) adminEvictMirror(w http.ResponseWriter, r *http.Request) {
 				s.logger.Warn("evict: failed to delete blob bytes", "digest", d, "error", err)
 			}
 		}
-		writeJSON(w, map[string]any{"evicted": repo, "digest": digest, "blobsPurged": len(purged)})
+		writeJSON(w, map[string]any{"evicted": repo, "digest": digest, keyBlobsPurged: len(purged)})
 		return
 	}
 
@@ -442,7 +446,86 @@ func (s *Server) adminEvictMirror(w http.ResponseWriter, r *http.Request) {
 			s.logger.Warn("evict: failed to delete blob bytes", "digest", d, "error", err)
 		}
 	}
-	writeJSON(w, map[string]any{"evicted": repo, "blobsPurged": len(purged)})
+	writeJSON(w, map[string]any{"evicted": repo, keyBlobsPurged: len(purged)})
+}
+
+// adminDeleteRepo godoc
+// @Summary  Delete a locally-owned repository
+// @Description  Removes a locally-owned repository in one call: manifests, tags, and its catalog entry, with unreferenced blobs purged. Tombstones are recorded so federation peers cannot resurrect the content, and deletes are published to followers. Refuses while an upload session is open (409). For mirrored repositories use /mirrors instead.
+// @Tags     repos
+// @Produce  json
+// @Param    repo  path      string                  true  "Repository name"
+// @Success  200   {object}  map[string]interface{}  "deleted, manifests, tags, blobsPurged"
+// @Failure  400   {string}  string                  "invalid request or not locally owned"
+// @Failure  404   {string}  string                  "repository not found"
+// @Failure  409   {string}  string                  "repository has open upload sessions"
+// @Failure  500   {string}  string                  "internal error"
+// @Security Bearer
+// @Router   /repos/{repo} [delete]
+func (s *Server) adminDeleteRepo(w http.ResponseWriter, r *http.Request) {
+	repo := chi.URLParam(r, "*")
+	if repo == "" {
+		http.Error(w, "missing repository", http.StatusBadRequest)
+		return
+	}
+	if err := validate.RepoName(repo); err != nil {
+		http.Error(w, "invalid repository name", http.StatusBadRequest)
+		return
+	}
+	s.logger.Debug("admin: DELETE /repos", "repo", repo)
+
+	repoObj, err := s.db.GetRepository(r.Context(), repo)
+	if err != nil {
+		s.logger.Error("looking up repo for delete", "repo", repo, "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if repoObj == nil {
+		http.Error(w, "repository not found", http.StatusNotFound)
+		return
+	}
+	if repoObj.OwnerID != s.identity.ActorURL {
+		http.Error(w, "repository is not locally owned; use /api/admin/mirrors to evict a mirror", http.StatusBadRequest)
+		return
+	}
+
+	res, err := s.db.DeleteOwnedRepositoryWithBlobs(r.Context(), repoObj.ID, s.identity.ActorURL)
+	switch {
+	case errors.Is(err, database.ErrRepositoryBusy):
+		http.Error(w, "repository has open upload sessions; retry after they finish or expire", http.StatusConflict)
+		return
+	case errors.Is(err, database.ErrPackageOwnerMismatch):
+		http.Error(w, "repository is not locally owned; use /api/admin/mirrors to evict a mirror", http.StatusBadRequest)
+		return
+	case err != nil:
+		s.logger.Error("deleting repository", "repo", repo, "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	case res == nil:
+		http.Error(w, "repository not found", http.StatusNotFound)
+		return
+	}
+
+	for _, d := range res.PurgedBlobs {
+		if err := s.blobs.Delete(r.Context(), d); err != nil {
+			s.logger.Warn("repo delete: failed to delete blob bytes", "digest", d, "error", err)
+		}
+	}
+	// Best-effort, post-commit — same stance as the v2 per-manifest delete.
+	if s.publisher != nil {
+		if err := s.publisher.WithdrawRepo(r.Context(), res.Name, res.TagNames, res.ManifestDigests); err != nil {
+			s.logger.Warn("repo delete: failed to publish deletes to federation", "repo", res.Name, "error", err)
+		}
+	}
+
+	s.logger.Info("repository deleted", "repo", repo,
+		"manifests", len(res.ManifestDigests), "tags", len(res.TagNames), keyBlobsPurged, len(res.PurgedBlobs))
+	writeJSON(w, map[string]any{
+		"deleted":      repo,
+		"manifests":    len(res.ManifestDigests),
+		"tags":         len(res.TagNames),
+		keyBlobsPurged: len(res.PurgedBlobs),
+	})
 }
 
 type adminPeerBlockRequest struct {
