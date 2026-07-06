@@ -30,6 +30,13 @@ func (s *Server) routes() http.Handler {
 		mux.HandleFunc("GET /{$}", s.handleMinimalRoot)
 	}
 
+	// Browsers request /favicon.ico regardless of the page's <link> icons (and
+	// on pages without any, e.g. JSON endpoints), so serve the embedded icon at
+	// the conventional root path even when the UI is disabled.
+	mux.HandleFunc("GET /favicon.ico", func(w http.ResponseWriter, r *http.Request) {
+		http.ServeFileFS(w, r, ui.StaticFS, "static/favicon.ico")
+	})
+
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /readyz", s.handleReadyz)
 	// Rate-limit the auth oracle so failed Basic-auth attempts can't be
