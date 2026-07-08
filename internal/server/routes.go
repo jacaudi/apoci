@@ -190,14 +190,20 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleRegistryAuth(w http.ResponseWriter, r *http.Request) {
 	_, pass, ok := r.BasicAuth()
+	if !ok {
+		// containerd's docker resolver (Helm 3.17+, oras, buildx) defaults to
+		// the OAuth2 password grant, POSTing credentials as a urlencoded body
+		// instead of a Basic Authorization header. Read that shape too, or the
+		// client is treated as anonymous and hard-fails with ErrNoToken.
+		pass, ok = postFormPassword(r)
+	}
 	switch {
 	case !ok:
 		// Strict clients (Flux, go-containerregistry) fetch a token here before
 		// an anonymous pull. Hand pull-only scopes a random token that reads
 		// don't validate and pushes can't use; refuse everything else.
 		if s.anonymousPullAllowed(r.Context(), r.URL.Query().Get("scope")) {
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]string{"token": rand.Text()})
+			writeTokenResponse(w, rand.Text())
 			return
 		}
 		setBearerChallenge(w, s.cfg.Endpoint)
@@ -217,8 +223,30 @@ func (s *Server) handleRegistryAuth(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "registry is not properly configured", http.StatusServiceUnavailable)
 		return
 	}
+	writeTokenResponse(w, s.cfg.RegistryToken)
+}
+
+// postFormPassword extracts the password from an OAuth2 password-grant POST
+// body, the credential shape containerd's docker resolver uses instead of a
+// Basic Authorization header. Only password grants are honored so arbitrary
+// POST bodies aren't mistaken for credentials; ok reports whether the request
+// is such a grant, leaving password validation to the caller's usual checks.
+func postFormPassword(r *http.Request) (pass string, ok bool) {
+	if r.Method != http.MethodPost || r.PostFormValue("grant_type") != "password" {
+		return "", false
+	}
+	return r.PostFormValue("password"), true
+}
+
+// writeTokenResponse encodes a token body carrying both "token" (the Docker/GET
+// form) and "access_token" (the OAuth2 key containerd's POST flow requires) with
+// the same value; GET clients ignore the extra key, so this is safe for both.
+func writeTokenResponse(w http.ResponseWriter, token string) {
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{"token": s.cfg.RegistryToken})
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"token":        token,
+		"access_token": token,
+	})
 }
 
 // anonymousPullAllowed reports whether an unauthenticated /v2/auth request may be

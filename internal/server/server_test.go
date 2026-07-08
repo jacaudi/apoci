@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -545,6 +546,80 @@ func TestRegistryAuthEndpointIssuesToken(t *testing.T) {
 	var body map[string]string
 	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
 	require.Equal(t, testRegistryToken, body["token"])
+	require.Equal(t, testRegistryToken, body["access_token"],
+		"OAuth2 POST-flow clients read access_token; it must mirror token on the GET/Basic path too")
+}
+
+// Modern OCI clients (containerd's resolver behind Helm 3.17+/oras/buildx)
+// default to the OAuth2 password grant: a urlencoded POST body instead of a
+// Basic Authorization header. The handler must authenticate that credential
+// shape and return access_token, or the client hard-fails with ErrNoToken.
+func TestRegistryAuthEndpointIssuesTokenViaPostForm(t *testing.T) {
+	s := testServer(t)
+	srv := httptest.NewServer(s.routes())
+	defer srv.Close()
+
+	form := url.Values{
+		"grant_type": {"password"},
+		"service":    {"registry"},
+		"username":   {"registry"},
+		"password":   {testRegistryToken},
+		"scope":      {"repository:foo:pull,push"},
+	}
+	resp, err := http.Post(srv.URL+"/v2/auth", "application/x-www-form-urlencoded",
+		strings.NewReader(form.Encode()))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	require.Equal(t, http.StatusOK, resp.StatusCode)
+
+	var body map[string]string
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	require.Equal(t, testRegistryToken, body["token"])
+	require.Equal(t, testRegistryToken, body["access_token"],
+		"OAuth2 POST flow requires the access_token key")
+}
+
+func TestRegistryAuthEndpointRejectsWrongPasswordViaPostForm(t *testing.T) {
+	s := testServer(t)
+	srv := httptest.NewServer(s.routes())
+	defer srv.Close()
+
+	form := url.Values{
+		"grant_type": {"password"},
+		"service":    {"registry"},
+		"username":   {"registry"},
+		"password":   {"wrong-password"},
+	}
+	resp, err := http.Post(srv.URL+"/v2/auth", "application/x-www-form-urlencoded",
+		strings.NewReader(form.Encode()))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	require.Equal(t, http.StatusUnauthorized, resp.StatusCode)
+	require.Equal(t, `Basic realm="apoci"`, resp.Header.Get("WWW-Authenticate"))
+}
+
+// A POST body that is not a password grant carries no credential the handler
+// understands, so it must fall through to the existing anonymous handling
+// rather than be treated as an authenticated request.
+func TestRegistryAuthEndpointPostNonPasswordGrantFallsThrough(t *testing.T) {
+	s := testServer(t)
+	srv := httptest.NewServer(s.routes())
+	defer srv.Close()
+
+	form := url.Values{
+		"grant_type": {"refresh_token"},
+		"service":    {"registry"},
+	}
+	resp, err := http.Post(srv.URL+"/v2/auth", "application/x-www-form-urlencoded",
+		strings.NewReader(form.Encode()))
+	require.NoError(t, err)
+	defer func() { _ = resp.Body.Close() }()
+
+	require.Equal(t, http.StatusUnauthorized, resp.StatusCode,
+		"non-password grant with no scope must challenge, exactly like the no-credentials case")
+	require.Contains(t, resp.Header.Get("WWW-Authenticate"), `Bearer realm="`)
 }
 
 func TestRegistryAuthEndpointRejectsWrongPassword(t *testing.T) {
